@@ -28,3 +28,15 @@ def test_no_false_positive():
     text = "The patient scored 28/30 on MMSE."
     result = scrub_pii(text)
     assert "28/30" in result
+
+def test_scrub_postcode():
+    result = scrub_pii("Patient lives at SW1A 2AA.")
+    assert "SW1A 2AA" not in result
+
+def test_scrub_medicare():
+    result = scrub_pii("Medicare ID: 12A345678B.")
+    assert "12A345678B" not in result
+
+def test_scrub_dob_dash():
+    result = scrub_pii("DOB: 05-03-1975.")
+    assert "05-03-1975" not in result

@@ -22,3 +22,18 @@ def test_retry_raises_after_max():
         with pytest.raises(Exception, match="rate_limit_exceeded"):
             with_groq_retry(fn, max_retries=2)
     assert fn.call_count == 2
+
+def test_non_rate_limit_raises_immediately():
+    fn = MagicMock(side_effect=Exception("connection_refused"))
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(Exception, match="connection_refused"):
+            with_groq_retry(fn, max_retries=4)
+    fn.assert_called_once()
+    mock_sleep.assert_not_called()
+
+def test_retry_on_429_string():
+    fn = MagicMock(side_effect=[Exception("HTTP 429 Too Many Requests"), "ok"])
+    with patch("time.sleep"):
+        result = with_groq_retry(fn, max_retries=3)
+    assert result == "ok"
+    assert fn.call_count == 2

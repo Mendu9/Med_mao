@@ -27,3 +27,12 @@ def test_truncate_to_budget_drops_web_second():
     result = truncate_to_budget(chunks, web=web, history=history, budget=200)
     assert result["history"] == ["h " * 100]
     assert len(result["web"]) < 2
+
+def test_truncate_to_budget_full_cascade():
+    chunks = ["c " * 400]
+    web = ["w " * 400]
+    history = ["h " * 400]
+    result = truncate_to_budget(chunks, web=web, history=history, budget=50)
+    assert result["chunks"] == []
+    assert result["web"] == []
+    assert result["history"] == []
