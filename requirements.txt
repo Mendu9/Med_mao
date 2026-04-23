@@ -1,0 +1,79 @@
+# MAO — Multi-Agent Orchestrator
+
+# --- Core orchestration ---
+langgraph>=0.2.0,<0.3.0
+langchain-core>=0.3.0,<0.4.0
+
+# --- LLM (Groq — cloud, no local GPU needed) ---
+groq>=0.9.0
+
+# --- Memory ---
+mem0ai>=0.1.0
+
+# --- Vector store (Pinecone serverless — no Docker) ---
+pinecone>=5.0.0
+
+# --- Embeddings (local sentence-transformers, works on HF Spaces) ---
+sentence-transformers>=3.0.0
+# FlagEmbedding 1.3.x imports is_torch_fx_available removed in transformers>=4.47
+transformers>=4.40.0,<4.47.0
+
+# --- Graph ---
+networkx>=3.3,<4.0
+
+# --- NLP / NER ---
+spacy>=3.7,<4.0
+# After install: python -m spacy download en_core_web_sm
+
+# --- Reranker ---
+FlagEmbedding>=1.2.0
+
+# --- API ---
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0,<3.0.0
+
+# --- Database (optional — metrics only) ---
+sqlalchemy>=2.0,<3.0
+psycopg2-binary>=2.9,<3.0
+
+# --- Tools ---
+duckduckgo-search>=6.1.0
+wikipedia-api>=0.6.0
+numexpr>=2.10.0
+
+# --- Multimodal ---
+openai-whisper>=20231117
+Pillow>=10.3.0
+
+# --- Config / HTTP ---
+requests>=2.32.0
+python-dotenv>=1.0.0
+
+# --- MRI prediction ---
+tensorflow>=2.16.0
+tf-keras>=2.16.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+
+# --- PDF parsing ---
+pypdf>=4.0.0
+
+# --- Data ingestion ---
+datasets>=2.20.0
+tqdm>=4.66
+
+# --- Gradio UI ---
+gradio>=5.29.0
+
+# --- Hallucination detection ---
+ragas>=0.2.0
+
+# --- Observability ---
+prometheus-client>=0.20.0
+prometheus-fastapi-instrumentator>=6.0.0
+
+# --- Dev / testing ---
+pytest>=8.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0

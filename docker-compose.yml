@@ -1,0 +1,30 @@
+# MAO — docker-compose (minimal: Postgres only)
+# Groq + Pinecone are cloud services — no local containers needed.
+# Postgres is optional (used for RAGAS metrics + SQL agent demo data).
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mao-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: mao
+      POSTGRES_PASSWORD: mao
+      POSTGRES_DB: mao
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./mao/data/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mao -d mao"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

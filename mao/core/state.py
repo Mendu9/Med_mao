@@ -1,0 +1,162 @@
+"""
+mao/core/state.py
+-----------------
+Canonical state schema for the MAO LangGraph graph.
+
+Every agent node receives and returns a MAOState dict.
+Adding keys here is the ONLY way to extend the shared state —
+never pass side-channel data between nodes.
+
+Integration points:
+  - agents/router.py          reads user_query, memory_context, chat_history
+  - agents/*.py               read all keys; write response, agent_used, metadata
+  - memory/mem0_handler.py    reads/writes memory_context
+  - api/main.py               constructs initial state from ChatRequest
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional, TypedDict
+import uuid
+
+
+# ---------------------------------------------------------------------------
+# Shared graph state
+# ---------------------------------------------------------------------------
+
+class MAOState(TypedDict, total=False):
+    """
+    Shared state dict passed between every LangGraph node.
+
+    Required fields (must be present in initial state):
+      user_query    -- raw user message
+      user_id       -- identifies the user for Mem0 scoping
+
+    Populated by the Mem0 pre-hook before any agent runs:
+      memory_context -- formatted string of retrieved user memories
+
+    Populated by agents:
+      response       -- final assistant response text
+      agent_used     -- name of the agent that produced the response
+      metadata       -- arbitrary agent-specific payload (tool calls, SQL, etc.)
+      error          -- non-empty string if the agent encountered an error
+
+    Populated by the router:
+      intent         -- classified intent label (matches INTENT_* constants)
+
+    Conversation context (provided by API layer):
+      chat_history   -- list of {"role": str, "content": str} dicts
+    """
+
+    # --- Input ---
+    user_query: str
+    user_id: str
+
+    # --- Router ---
+    intent: str
+
+    # --- Memory (injected by mem0_handler before agent runs) ---
+    memory_context: str
+
+    # --- Conversation history (provided by API layer) ---
+    chat_history: list[dict[str, str]]
+
+    # --- Output (written by agent nodes) ---
+    response: str
+    agent_used: str
+    metadata: dict[str, Any]
+    error: str
+
+    # Query decomposition
+    sub_queries: list[str]
+    domain: str
+
+    # Report card
+    report_card: Optional[dict]
+
+    # Anti-hallucination
+    nli_flags: list[dict]
+    council_verdict: Optional[dict]
+
+    # Senior supervisor
+    completeness_ok: bool
+    missing_sub_queries: list[str]
+
+    # Token budget
+    token_budget_remaining: int
+
+    # Uncertainty
+    uncertainty_flag: bool
+
+    # PII
+    pii_scrubbed_query: str
+
+    # Feedback
+    session_id: str
+
+
+# ---------------------------------------------------------------------------
+# Intent label constants — router classifies into exactly these strings
+# ---------------------------------------------------------------------------
+
+INTENT_SUMMARIZE   = "summarize"
+INTENT_GRAPHRAG    = "graphrag"
+INTENT_TOOL        = "tool"
+INTENT_SQL         = "sql"
+INTENT_MULTIMODAL  = "multimodal"
+INTENT_CODE        = "code"
+INTENT_CRITIC      = "critic"
+INTENT_CLINICAL    = "clinical"
+INTENT_FALLBACK    = "fallback"
+
+ALL_INTENTS: list[str] = [
+    INTENT_SUMMARIZE,
+    INTENT_GRAPHRAG,
+    INTENT_TOOL,
+    INTENT_SQL,
+    INTENT_MULTIMODAL,
+    INTENT_CODE,
+    INTENT_CRITIC,
+    INTENT_CLINICAL,
+    INTENT_FALLBACK,
+]
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def make_initial_state(
+    user_query: str,
+    user_id: str,
+    chat_history: list[dict[str, str]] | None = None,
+) -> MAOState:
+    """
+    Build a fresh MAOState with safe defaults.
+
+    Called by api/main.py before invoking the LangGraph graph.
+    """
+    import uuid as _uuid
+    sid = str(_uuid.uuid4())
+    return MAOState(
+        user_query=user_query,
+        user_id=user_id,
+        intent="",
+        memory_context="",
+        chat_history=chat_history or [],
+        response="",
+        agent_used="",
+        metadata={},
+        error="",
+        sub_queries=[],
+        domain="alzheimer",
+        report_card=None,
+        nli_flags=[],
+        council_verdict=None,
+        completeness_ok=False,
+        missing_sub_queries=[],
+        token_budget_remaining=7050,
+        uncertainty_flag=False,
+        pii_scrubbed_query=user_query,
+        session_id=sid,
+    )
