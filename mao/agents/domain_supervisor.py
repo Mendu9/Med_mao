@@ -35,7 +35,7 @@ def domain_supervisor_node(state: dict) -> dict:
 
     try:
         parsed = json.loads(raw)
-        grounded = parsed.get("grounded_summary", answer)
+        grounded = parsed.get("grounded_summary") or answer
         ungrounded = parsed.get("ungrounded_claims", [])
     except json.JSONDecodeError:
         grounded = answer

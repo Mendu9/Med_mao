@@ -17,6 +17,9 @@ def _get_encoder():
 def check_claim(premise: str, claim: str) -> dict:
     enc = _get_encoder()
     scores = enc.predict([[premise, claim]])[0]
+    if len(scores) < 3:
+        logger.warning("NLI model returned unexpected score shape: %s", scores)
+        return {"claim": claim, "entailed": False, "score": 0.0, "contradiction_score": 0.0}
     entailment_score = float(scores[2])
     return {
         "claim": claim,
@@ -32,6 +35,10 @@ def check_all_claims(claims: list[str], premise: str) -> list[dict]:
     all_scores = enc.predict(pairs)
     results = []
     for claim, scores in zip(claims, all_scores):
+        if len(scores) < 3:
+            logger.warning("NLI model returned unexpected score shape: %s", scores)
+            results.append({"claim": claim, "entailed": False, "score": 0.0, "contradiction_score": 0.0})
+            continue
         entailment_score = float(scores[2])
         results.append({
             "claim": claim,

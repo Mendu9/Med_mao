@@ -102,7 +102,7 @@ def retrieve(
     # Check cache first
     try:
         query_embedding = embed_query(query)
-        cache_key = _cache.make_key(query_embedding + [hash(domain) % 1_000_000])
+        cache_key = _cache.make_key(query_embedding + [hash(domain) % 1_000_000, n, k])
         cached = _cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit for query domain=%s", domain)
