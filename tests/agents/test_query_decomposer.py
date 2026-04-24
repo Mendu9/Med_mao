@@ -15,7 +15,7 @@ def test_multi_question_returns_list():
     assert len(result) == 2
 
 def test_decomposer_node_updates_state():
-    state = {"query": "What is amyloid?", "pii_scrubbed_query": "What is amyloid?", "sub_queries": []}
+    state = {"user_query": "What is amyloid?", "pii_scrubbed_query": "What is amyloid?", "sub_queries": []}
     with patch("mao.agents.query_decomposer._llm_decompose") as mock_llm:
         mock_llm.return_value = ["What is amyloid?"]
         new_state = decomposer_node(state)
@@ -23,7 +23,7 @@ def test_decomposer_node_updates_state():
     assert new_state["missing_sub_queries"] == ["What is amyloid?"]
 
 def test_decomposer_node_scrubs_pii():
-    state = {"query": "Patient john.doe@example.com asks about amyloid", "pii_scrubbed_query": "", "sub_queries": []}
+    state = {"user_query": "Patient john.doe@example.com asks about amyloid", "pii_scrubbed_query": "", "sub_queries": []}
     with patch("mao.agents.query_decomposer._llm_decompose") as mock_llm:
         mock_llm.return_value = ["What is amyloid?"]
         new_state = decomposer_node(state)

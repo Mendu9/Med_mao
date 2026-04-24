@@ -35,7 +35,7 @@ def decompose_query(query: str) -> list[str]:
     return _llm_decompose(query)
 
 def decomposer_node(state: dict) -> dict:
-    clean_query = scrub_pii(state.get("query", ""))
+    clean_query = scrub_pii(state.get("user_query", ""))
     sub_queries = decompose_query(clean_query)
     return {
         **state,

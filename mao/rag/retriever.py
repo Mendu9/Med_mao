@@ -138,7 +138,7 @@ def retrieve(
     # ------------------------------------------------------------------
     graph_chunks: list[dict[str, Any]] = []
     if expanded_entities:
-        graph_chunks = _entity_search(expanded_entities, limit=n)
+        graph_chunks = _entity_search(expanded_entities, limit=n, index_name=index_name)
     logger.debug("Step 4 graph-derived chunks: %d", len(graph_chunks))
 
     # ------------------------------------------------------------------
@@ -195,7 +195,7 @@ def _vector_search(query: str, n: int, index_name: str | None = None) -> list[di
         return []
 
 
-def _entity_search(entities: list[str], limit: int) -> list[dict[str, Any]]:
+def _entity_search(entities: list[str], limit: int, index_name: str | None = None) -> list[dict[str, Any]]:
     """
     Full-text style search: query ChromaDB with entity names as the query.
 
@@ -203,7 +203,7 @@ def _entity_search(entities: list[str], limit: int) -> list[dict[str, Any]]:
     dedicated inverted index.  For our corpus size it's sufficient.
     """
     try:
-        index = _get_index()
+        index = _get_index(index_name)
         entity_query = " ".join(entities[:10])
         query_embedding = embed_query(entity_query)
         results = index.query(vector=query_embedding, top_k=limit, include_metadata=True)

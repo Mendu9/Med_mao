@@ -1,5 +1,5 @@
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from mao.core.config import CLINICAL_MODEL, COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS
 from mao.core.retry import with_groq_retry
 
@@ -41,13 +41,19 @@ def run_council(response: str, context: str) -> dict:
             pool.submit(_call_agent, role, system, response, context): role
             for role, system in _AGENTS.items()
         }
-        for future in as_completed(futures, timeout=COUNCIL_TIMEOUT_SECONDS):
-            role = futures[future]
-            try:
-                verdicts[role] = future.result()
-            except Exception as e:
-                logger.error("Council agent %s failed: %s", role, e)
-                verdicts[role] = "VERDICT: FAIL. Agent error."
+        try:
+            for future in as_completed(futures, timeout=COUNCIL_TIMEOUT_SECONDS):
+                role = futures[future]
+                try:
+                    verdicts[role] = future.result()
+                except Exception as e:
+                    logger.error("Council agent %s failed: %s", role, e)
+                    verdicts[role] = "VERDICT: FAIL. Agent error."
+        except FuturesTimeoutError:
+            for role in _AGENTS:
+                if role not in verdicts:
+                    logger.error("Council agent %s timed out", role)
+                    verdicts[role] = "VERDICT: FAIL. Timeout."
 
     if "FAIL" in verdicts.get("safety", ""):
         return {**verdicts, "passed": False, "blocked_by": "safety"}
