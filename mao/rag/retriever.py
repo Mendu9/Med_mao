@@ -31,10 +31,17 @@ from typing import Any
 
 from pinecone import Pinecone
 
-from mao.core.config import cfg
+from mao.core.config import cfg, PINECONE_INDEX_ALZHEIMER, PINECONE_INDEX_STROKE, CACHE_TTL
+from mao.core.query_cache import QueryCache
 from mao.rag.embedder import embed_query
 from mao.rag.graph_builder import extract_entities, expand_via_graph, load_graph
 from mao.rag.reranker import RankedChunk, rerank
+
+_cache = QueryCache(ttl=CACHE_TTL)
+_DOMAIN_INDEX: dict[str, str] = {
+    "alzheimer": PINECONE_INDEX_ALZHEIMER,
+    "stroke": PINECONE_INDEX_STROKE,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -43,27 +50,27 @@ logger = logging.getLogger(__name__)
 # ChromaDB client — lazy singleton
 # ---------------------------------------------------------------------------
 
-_pinecone_index = None
+_pinecone_indexes: dict[str, Any] = {}
 
 
-def _get_index():
-    global _pinecone_index
-    if _pinecone_index is None:
+def _get_index(index_name: str | None = None):
+    name = index_name or cfg.pinecone_index
+    if name not in _pinecone_indexes:
         pc = Pinecone(api_key=cfg.pinecone_api_key)
         existing = [i.name for i in pc.list_indexes()]
-        if cfg.pinecone_index not in existing:
+        if name not in existing:
             from pinecone import ServerlessSpec
             pc.create_index(
-                name=cfg.pinecone_index,
+                name=name,
                 dimension=cfg.embed_dim,
                 metric="cosine",
                 spec=ServerlessSpec(cloud="aws", region=cfg.pinecone_region),
             )
-            logger.info("Created Pinecone index: %s", cfg.pinecone_index)
-        _pinecone_index = pc.Index(cfg.pinecone_index)
-        stats = _pinecone_index.describe_index_stats()
-        logger.info("Pinecone index '%s' ready (%d vectors)", cfg.pinecone_index, stats.total_vector_count)
-    return _pinecone_index
+            logger.info("Created Pinecone index: %s", name)
+        _pinecone_indexes[name] = pc.Index(name)
+        stats = _pinecone_indexes[name].describe_index_stats()
+        logger.info("Pinecone index '%s' ready (%d vectors)", name, stats.total_vector_count)
+    return _pinecone_indexes[name]
 
 
 # ---------------------------------------------------------------------------
@@ -74,25 +81,40 @@ def retrieve(
     query: str,
     top_n: int | None = None,
     top_k: int | None = None,
+    domain: str = "alzheimer",
 ) -> list[RankedChunk]:
     """
     Execute the full 5-step GraphRAG retrieval pipeline.
 
     Args:
-        query:  User query string.
-        top_n:  Vector search candidate count (default: cfg.reranker_top_n = 20).
-        top_k:  Final results after reranking (default: cfg.reranker_top_k = 5).
+        query:   User query string.
+        top_n:   Vector search candidate count (default: cfg.reranker_top_n = 20).
+        top_k:   Final results after reranking (default: cfg.reranker_top_k = 5).
+        domain:  Domain for index selection: "alzheimer" | "stroke" | "general".
 
     Returns:
         List of RankedChunk objects sorted by reranker score, length <= top_k.
     """
     n = top_n or cfg.reranker_top_n   # 20
     k = top_k or cfg.reranker_top_k   # 5
+    index_name = _DOMAIN_INDEX.get(domain, PINECONE_INDEX_ALZHEIMER)
+
+    # Check cache first
+    try:
+        query_embedding = embed_query(query)
+        cache_key = _cache.make_key(query_embedding + [hash(domain) % 1_000_000])
+        cached = _cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Cache hit for query domain=%s", domain)
+            return cached
+    except Exception:
+        query_embedding = None
+        cache_key = None
 
     # ------------------------------------------------------------------
-    # Step 1: Vector search → top-N from ChromaDB
+    # Step 1: Vector search → top-N from Pinecone
     # ------------------------------------------------------------------
-    vector_chunks = _vector_search(query, n)
+    vector_chunks = _vector_search(query, n, index_name=index_name)
     logger.debug("Step 1 vector search: %d results", len(vector_chunks))
 
     # ------------------------------------------------------------------
@@ -135,6 +157,14 @@ def retrieve(
         len(ranked),
         k,
     )
+
+    # Store in cache
+    if cache_key is not None:
+        try:
+            _cache.set(cache_key, ranked)
+        except Exception:
+            pass
+
     return ranked
 
 
@@ -142,10 +172,10 @@ def retrieve(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _vector_search(query: str, n: int) -> list[dict[str, Any]]:
-    """Embed query and fetch top-n chunks from ChromaDB."""
+def _vector_search(query: str, n: int, index_name: str | None = None) -> list[dict[str, Any]]:
+    """Embed query and fetch top-n chunks from Pinecone."""
     try:
-        index = _get_index()
+        index = _get_index(index_name)
         query_embedding = embed_query(query)
         results = index.query(vector=query_embedding, top_k=n, include_metadata=True)
         chunks = []
