@@ -440,3 +440,90 @@ async def _check_postgres() -> str:
         return "ok"
     except Exception as exc:
         return f"error: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+
+class FeedbackRequest(BaseModel):
+    session_id: str
+    thumbs_up: bool
+    comment: str = ""
+
+
+@app.post("/feedback")
+async def post_feedback(req: FeedbackRequest):
+    import asyncpg
+    import os
+    try:
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        await conn.execute(
+            "INSERT INTO response_feedback (session_id, thumbs_up, comment, created_at) "
+            "VALUES ($1, $2, $3, NOW())",
+            req.session_id, req.thumbs_up, req.comment,
+        )
+        await conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Feedback insert failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+
+# ---------------------------------------------------------------------------
+# PDF Export
+# ---------------------------------------------------------------------------
+
+@app.get("/export/report/{session_id}")
+async def export_report(session_id: str):
+    import asyncpg
+    import json as _json
+    import os
+    from fastapi import Response
+    from mao.report.report_card import build_report_card
+    try:
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        row = await conn.fetchrow(
+            "SELECT report_card FROM chat_sessions WHERE session_id = $1", session_id
+        )
+        await conn.close()
+        if not row or not row["report_card"]:
+            raise HTTPException(status_code=404, detail="Report not found")
+        card = build_report_card(**_json.loads(row["report_card"]))
+        pdf_bytes = card.to_pdf()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=report_{session_id}.pdf"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("PDF export failed: %s", e)
+        raise HTTPException(status_code=500, detail="PDF export failed")
+
+
+# ---------------------------------------------------------------------------
+# Eval Dashboard
+# ---------------------------------------------------------------------------
+
+@app.get("/eval/dashboard")
+async def eval_dashboard():
+    import asyncpg
+    import os
+    try:
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        rows = await conn.fetch(
+            "SELECT faithfulness, answer_relevancy, context_precision, context_recall, "
+            "created_at FROM response_metrics ORDER BY created_at DESC LIMIT 100"
+        )
+        feedback_rows = await conn.fetch(
+            "SELECT thumbs_up, COUNT(*) as cnt FROM response_feedback GROUP BY thumbs_up"
+        )
+        await conn.close()
+        metrics = [dict(r) for r in rows]
+        feedback = {str(r["thumbs_up"]): r["cnt"] for r in feedback_rows}
+        return {"metrics": metrics, "feedback": feedback}
+    except Exception as e:
+        logger.error("Dashboard query failed: %s", e)
+        raise HTTPException(status_code=500, detail="Dashboard unavailable")

@@ -1,275 +1,209 @@
-"""
-app/frontend.py
----------------
-Gradio 5 clinical AI assistant UI for MAO.
-Calls the MAO FastAPI backend at http://localhost:8080.
-
-Usage:
-    python app/frontend.py
-    # Opens at http://127.0.0.1:7860
-
-Requirements:
-    pip install "gradio>=5.0" requests
-"""
-
-from __future__ import annotations
-
-import base64
-import logging
-import uuid
-from pathlib import Path
-from typing import Any
-
 import gradio as gr
-import requests
+import httpx
+import json
+import os
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
-MAO_API_URL = "http://localhost:8080"
-
-_DISCLAIMER_HTML = """
-<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;
-            padding:10px 14px;margin-bottom:8px;font-size:0.88em;color:#333;">
-    <strong>⚠️ AI Decision Support Only</strong> — Not a medical diagnosis.
-    All results must be reviewed by a licensed healthcare professional.
-</div>
-"""
-
-_WELCOME = (
-    "Hello! I'm the MAO Clinical AI Assistant.\n\n"
-    "I can help with:\n"
-    "- **MRI Analysis** — upload a brain scan for Alzheimer's stage prediction\n"
-    "- **Report Analysis** — upload a PDF medical report for structured review\n"
-    "- **Clinical Questions** — ask about stages, biomarkers, or treatments\n"
-    "- **Code / Visualization** — generate NIfTI viewing code\n\n"
-    "Upload a file or type your question below to get started."
-)
+API_BASE = os.getenv("MAO_API_BASE", "http://localhost:8000")
 
 
-# ---------------------------------------------------------------------------
-# API helper
-# ---------------------------------------------------------------------------
-
-def call_mao_api(
-    query: str,
-    user_id: str,
-    chat_history: list[dict],
-    image_path: str | None,
-    report_path: str | None,
-    nifti_path: str | None,
-) -> dict[str, Any]:
-    metadata: dict[str, Any] = {}
-
-    if image_path:
-        metadata["image_b64"] = base64.b64encode(Path(image_path).read_bytes()).decode()
-        if not query.strip():
-            query = "What does this MRI show? Predict the Alzheimer's stage and explain the clinical implications."
-
-    if report_path:
-        metadata["report_b64"] = base64.b64encode(Path(report_path).read_bytes()).decode()
-        if not query.strip():
-            query = "Analyse this medical report: summarise findings, match to research, and suggest clinical guidance."
-
-    if nifti_path:
-        metadata["nifti_b64"] = base64.b64encode(Path(nifti_path).read_bytes()).decode()
-        if not query.strip():
-            query = "Generate an interactive 3D Plotly visualization for this NIfTI brain scan."
-
-    payload = {
-        "query":        query.strip() or "Hello",
-        "user_id":      user_id,
-        "chat_history": chat_history[-6:],
-        "metadata":     metadata,
-    }
-
+def _send_query(query: str, history: list, file_obj) -> tuple:
+    files = {}
+    if file_obj is not None:
+        try:
+            files["file"] = open(file_obj.name, "rb")
+        except Exception:
+            pass
     try:
-        resp = requests.post(f"{MAO_API_URL}/chat", json=payload, timeout=300)
+        payload = {"query": query}
+        resp = httpx.post(f"{API_BASE}/chat", json=payload, timeout=120)
         resp.raise_for_status()
-        return resp.json()
-    except requests.exceptions.ConnectionError:
-        return {
-            "response": (
-                "Cannot connect to MAO API at http://localhost:8080.\n\n"
-                "Start the API first:\n```\nuvicorn mao.api.main:app --port 8080\n```"
-            ),
-            "agent_used": "error", "intent": "error", "metadata": {}, "latency_ms": 0,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "response": f"Request failed: {exc}",
-            "agent_used": "error", "intent": "error", "metadata": {}, "latency_ms": 0,
-        }
+        data = resp.json()
+        answer = data.get("answer", data.get("response", ""))
+        session_id = data.get("session_id", "")
+        report_card = data.get("report_card")
+
+        history = list(history or [])
+        history.append({"role": "user", "content": query})
+        history.append({"role": "assistant", "content": answer})
+
+        report_html = _render_report_card_html(report_card) if report_card else ""
+        return history, report_html, session_id
+    except Exception as e:
+        history = list(history or [])
+        history.append({"role": "user", "content": query})
+        history.append({"role": "assistant", "content": f"Error: {e}"})
+        return history, "", ""
 
 
-# ---------------------------------------------------------------------------
-# Formatters
-# ---------------------------------------------------------------------------
-
-def _format_prediction(pred: dict) -> str:
-    if not pred or pred.get("error"):
+def _render_report_card_html(card: dict) -> str:
+    if not card:
         return ""
-    label      = pred.get("prediction", "?")
-    full_label = pred.get("full_label", label)
-    confidence = pred.get("confidence", 0.0)
-    scores     = pred.get("all_scores", {})
-    lines = [
-        f"### MRI Prediction\n**{full_label}** (`{label}`) — {confidence*100:.1f}% confidence\n",
-        "| Stage | Probability |",
-        "|-------|-------------|",
-    ]
-    for lbl, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-        lines.append(f"| {lbl} | {score*100:.1f}% |")
-    return "\n".join(lines)
-
-
-def _format_sources(sources: list[dict]) -> str:
-    if not sources:
-        return "_No research sources for this response._"
-    lines = ["### Research Sources\n"]
-    for i, s in enumerate(sources, 1):
-        src      = s.get("source", "unknown")
-        chunk_id = s.get("chunk_id", "—")
-        score    = s.get("score", 0.0)
-        snippet  = s.get("snippet", "")[:280]
-        lines.append(
-            f"**[{i}] {src}**  \n"
-            f"Chunk: `{chunk_id}` · Relevance: `{score:.3f}`  \n"
-            f"> {snippet}...\n"
+    uncertainty_banner = ""
+    if card.get("uncertainty_flag"):
+        uncertainty_banner = (
+            '<div style="background:#fee;border:1px solid red;padding:8px;'
+            'border-radius:4px;margin-bottom:12px;">'
+            "<b>LOW CONFIDENCE</b> — MRI model confidence below threshold.</div>"
         )
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Gradio app
-# ---------------------------------------------------------------------------
-
-def build_interface():
-    with gr.Blocks(title="MAO Clinical AI", theme=gr.themes.Soft()) as demo:
-
-        # --- per-session state (plain string defaults — no lambdas) ---
-        session_id    = gr.State(value="")   # filled on first send
-        history_state = gr.State(value=[])
-
-        gr.HTML("<h1 style='text-align:center'>🧠 MAO Clinical AI Assistant</h1>")
-        gr.HTML("<p style='text-align:center;color:#666'>Alzheimer's Disease Decision Support</p>")
-        gr.HTML(_DISCLAIMER_HTML)
-
-        with gr.Row(equal_height=False):
-
-            # ── Left: uploads ──────────────────────────────────────────
-            with gr.Column(scale=1, min_width=220):
-                gr.Markdown("### Upload")
-                image_upload  = gr.Image(label="MRI Image (PNG/JPG)", type="filepath", sources=["upload"])
-                report_upload = gr.File(label="Medical Report (PDF)", file_types=[".pdf"])
-                nifti_upload  = gr.File(label="NIfTI (.nii / .nii.gz)", file_types=[".nii", ".gz"])
-                gr.Markdown("---")
-                prediction_md = gr.Markdown(value="", visible=False)
-                clear_btn     = gr.Button("🗑 Clear", variant="secondary", size="sm")
-
-            # ── Right: chat ────────────────────────────────────────────
-            with gr.Column(scale=3):
-                chatbot = gr.Chatbot(
-                    value=[{"role": "assistant", "content": _WELCOME}],
-                    type="messages",
-                    height=460,
-                    show_label=False,
-                )
-
-                with gr.Accordion("📄 Research Sources", open=False):
-                    sources_md = gr.Markdown("_Sources will appear here._")
-
-                with gr.Row():
-                    agent_box   = gr.Textbox(label="Agent",   interactive=False, scale=1, max_lines=1)
-                    intent_box  = gr.Textbox(label="Intent",  interactive=False, scale=1, max_lines=1)
-                    latency_box = gr.Textbox(label="Latency", interactive=False, scale=1, max_lines=1)
-
-                with gr.Row():
-                    msg_box  = gr.Textbox(placeholder="Type your question...", show_label=False, scale=5, lines=1)
-                    send_btn = gr.Button("Send →", variant="primary", scale=1)
-
-        # ── Respond handler ────────────────────────────────────────────
-
-        def respond(message, chat, hist, uid, image, report, nifti):
-            # Generate session ID on first message
-            if not uid:
-                uid = f"user-{uuid.uuid4().hex[:8]}"
-
-            report_path = report if isinstance(report, str) else (report.name if report else None)
-            nifti_path  = nifti  if isinstance(nifti,  str) else (nifti.name  if nifti  else None)
-
-            result = call_mao_api(
-                query=message,
-                user_id=uid,
-                chat_history=hist,
-                image_path=image,
-                report_path=report_path,
-                nifti_path=nifti_path,
-            )
-
-            response    = result.get("response", "")
-            agent_used  = result.get("agent_used", "unknown")
-            intent      = result.get("intent",     "unknown")
-            latency     = result.get("latency_ms",  0)
-            meta        = result.get("metadata",    {})
-
-            display_msg = message if message.strip() else "(file uploaded)"
-            new_chat = chat + [
-                {"role": "user",      "content": display_msg},
-                {"role": "assistant", "content": response},
-            ]
-            new_hist = hist + [
-                {"role": "user",      "content": display_msg},
-                {"role": "assistant", "content": response},
-            ]
-
-            sources   = meta.get("sources", [])
-            pred_dict = meta.get("prediction", {})
-            pred_text = _format_prediction(pred_dict)
-
-            return (
-                new_chat,                                         # chatbot
-                new_hist,                                         # history_state
-                uid,                                              # session_id
-                "",                                               # clear msg_box
-                _format_sources(sources),                         # sources_md
-                gr.update(value=pred_text, visible=bool(pred_text)),  # prediction_md
-                agent_used,
-                intent,
-                f"{latency:.0f} ms",
-            )
-
-        inputs  = [msg_box, chatbot, history_state, session_id, image_upload, report_upload, nifti_upload]
-        outputs = [chatbot, history_state, session_id, msg_box, sources_md, prediction_md, agent_box, intent_box, latency_box]
-
-        send_btn.click(respond, inputs=inputs, outputs=outputs)
-        msg_box.submit(respond,  inputs=inputs, outputs=outputs)
-
-        # ── Clear handler ──────────────────────────────────────────────
-
-        def clear_all():
-            return (
-                [{"role": "assistant", "content": _WELCOME}],
-                [],
-                "",
-                "",
-                "_Sources will appear here._",
-                gr.update(value="", visible=False),
-                "", "", "",
-            )
-
-        clear_btn.click(
-            clear_all,
-            outputs=[chatbot, history_state, session_id, msg_box, sources_md, prediction_md, agent_box, intent_box, latency_box],
+    meds = card.get("medications", [])
+    meds_html = ""
+    if meds:
+        rows = "".join(
+            f"<tr><td>{m.get('name','')}</td><td>{m.get('dose','')}</td>"
+            f"<td>{m.get('evidence','')}</td><td>{m.get('notes','')}</td></tr>"
+            for m in meds
         )
+        meds_html = (
+            "<h4>Medications</h4><table border='1' cellpadding='4'>"
+            "<tr><th>Drug</th><th>Dose</th><th>Evidence</th><th>Notes</th></tr>"
+            f"{rows}</table>"
+        )
+    steps = "".join(f"<li>{s}</li>" for s in card.get("recommended_next_steps", []))
+    refs = "".join(f"<li>{r}</li>" for r in card.get("literature_evidence", []))
+    conf = card.get("confidence_score", 0)
+    return (
+        f"{uncertainty_banner}"
+        f'<div style="font-family:sans-serif;max-width:800px">'
+        f"<h3>Stage: {card.get('stage', '—')}</h3>"
+        f"<p>{card.get('stage_interpretation', '')}</p>"
+        f"<h4>Clinical Significance</h4><p>{card.get('clinical_significance', '')}</p>"
+        f"{meds_html}"
+        f"<h4>Recommended Next Steps</h4><ul>{steps}</ul>"
+        f"<h4>Literature Evidence</h4><ul>{refs}</ul>"
+        f"<p><b>Confidence:</b> {conf:.0%}</p>"
+        f"<p><i>{card.get('disclaimer', '')}</i></p>"
+        f"</div>"
+    )
 
-    return demo
+
+def _send_feedback(session_id: str, thumbs_up: bool, comment: str) -> str:
+    if not session_id:
+        return "No session to rate."
+    try:
+        httpx.post(
+            f"{API_BASE}/feedback",
+            json={"session_id": session_id, "thumbs_up": thumbs_up, "comment": comment},
+            timeout=10,
+        )
+        return "Feedback submitted. Thank you."
+    except Exception as e:
+        return f"Feedback failed: {e}"
+
+
+def _download_report(session_id: str):
+    if not session_id:
+        return None
+    try:
+        resp = httpx.get(f"{API_BASE}/export/report/{session_id}", timeout=30)
+        resp.raise_for_status()
+        import tempfile, pathlib
+        tmp = pathlib.Path(tempfile.gettempdir()) / f"report_{session_id}.pdf"
+        tmp.write_bytes(resp.content)
+        return str(tmp)
+    except Exception:
+        return None
+
+
+def _load_dashboard():
+    try:
+        resp = httpx.get(f"{API_BASE}/eval/dashboard", timeout=10)
+        data = resp.json()
+        metrics = data.get("metrics", [])
+        feedback = data.get("feedback", {})
+        fb_text = (
+            f"Thumbs up: {feedback.get('True', 0)} | "
+            f"Thumbs down: {feedback.get('False', 0)}"
+        )
+        if not metrics:
+            return None, fb_text
+        import pandas as pd
+        df = pd.DataFrame(metrics)
+        cols = [c for c in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"] if c in df.columns]
+        return df[cols].tail(20) if cols else None, fb_text
+    except Exception as e:
+        return None, f"Dashboard error: {e}"
+
+
+with gr.Blocks(title="MAO Clinical AI", theme=gr.themes.Soft()) as demo:
+    session_id_state = gr.State("")
+
+    with gr.Tabs():
+        # ── Tab 1: Clinical ──────────────────────────────────────────────
+        with gr.Tab("Clinical"):
+            with gr.Row():
+                with gr.Column(scale=3):
+                    chatbot = gr.Chatbot(
+                        label="MAO Clinical Chat", height=500, type="messages"
+                    )
+                    with gr.Row():
+                        query_input = gr.Textbox(
+                            placeholder="Enter your clinical query...",
+                            scale=4,
+                            show_label=False,
+                        )
+                        submit_btn = gr.Button("Send", variant="primary", scale=1)
+
+                with gr.Column(scale=2):
+                    file_upload = gr.File(
+                        label="Upload MRI / PDF Report",
+                        file_types=[".nii", ".nii.gz", ".png", ".jpg", ".pdf"],
+                    )
+                    report_display = gr.HTML(label="Report Card")
+                    with gr.Row():
+                        thumb_up_btn = gr.Button("👍 Helpful", size="sm")
+                        thumb_down_btn = gr.Button("👎 Not helpful", size="sm")
+                    feedback_comment = gr.Textbox(
+                        placeholder="Optional comment...", show_label=False
+                    )
+                    feedback_status = gr.Textbox(show_label=False, interactive=False)
+                    download_btn = gr.Button("📄 Download PDF Report", size="sm")
+                    pdf_file = gr.File(label="PDF", interactive=False)
+
+            submit_btn.click(
+                _send_query,
+                inputs=[query_input, chatbot, file_upload],
+                outputs=[chatbot, report_display, session_id_state],
+            ).then(lambda: "", outputs=query_input)
+
+            query_input.submit(
+                _send_query,
+                inputs=[query_input, chatbot, file_upload],
+                outputs=[chatbot, report_display, session_id_state],
+            )
+
+            thumb_up_btn.click(
+                lambda sid, c: _send_feedback(sid, True, c),
+                inputs=[session_id_state, feedback_comment],
+                outputs=feedback_status,
+            )
+            thumb_down_btn.click(
+                lambda sid, c: _send_feedback(sid, False, c),
+                inputs=[session_id_state, feedback_comment],
+                outputs=feedback_status,
+            )
+            download_btn.click(
+                _download_report, inputs=session_id_state, outputs=pdf_file
+            )
+
+        # ── Tab 2: History ───────────────────────────────────────────────
+        with gr.Tab("History"):
+            gr.Markdown("## Session History\nPrevious queries and answers will appear here.")
+            history_display = gr.JSON(label="Session Log", value=[])
+
+        # ── Tab 3: Eval Dashboard ────────────────────────────────────────
+        with gr.Tab("Eval Dashboard"):
+            refresh_btn = gr.Button("Refresh Dashboard")
+            metrics_df = gr.Dataframe(
+                label="RAGAS Metrics (last 20 turns)",
+                headers=["faithfulness", "answer_relevancy", "context_precision", "context_recall"],
+            )
+            feedback_summary = gr.Textbox(label="User Feedback Summary", interactive=False)
+
+            refresh_btn.click(
+                _load_dashboard,
+                outputs=[metrics_df, feedback_summary],
+            )
 
 
 if __name__ == "__main__":
-    demo = build_interface()
-    demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        show_error=True,
-    )
+    demo.launch(server_name="0.0.0.0", server_port=7860)

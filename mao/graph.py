@@ -35,9 +35,14 @@ from langgraph.graph import END, START, StateGraph
 from mao.agents.clinical_agent import clinical_node
 from mao.agents.code_agent import code_node
 from mao.agents.critic_agent import critic_node
+from mao.agents.domain_classifier import classifier_node
+from mao.agents.domain_supervisor import domain_supervisor_node
 from mao.agents.graphrag_agent import graphrag_node
+from mao.agents.llm_council import council_node
 from mao.agents.multimodal_agent import multimodal_node
+from mao.agents.query_decomposer import decomposer_node
 from mao.agents.router import route_to_agent, router_node
+from mao.agents.senior_supervisor import senior_supervisor_node
 from mao.agents.sql_agent import sql_node
 from mao.agents.summarizer_agent import summarizer_node
 from mao.agents.tool_agent import tool_node
@@ -71,6 +76,23 @@ _ALL_AGENT_NODES = [
 ]
 
 
+def blocked_response_node(state: dict) -> dict:
+    verdict = state.get("council_verdict", {})
+    blocked_by = verdict.get("blocked_by", "council")
+    return {
+        **state,
+        "response": (
+            f"I cannot provide this response. It was flagged by the {blocked_by} review "
+            "for patient safety. Please consult a licensed clinician directly."
+        ),
+    }
+
+
+def _route_after_council(state: dict) -> str:
+    verdict = state.get("council_verdict", {})
+    return "senior_supervisor" if verdict.get("passed", True) else "blocked"
+
+
 def build_graph() -> StateGraph:
     """
     Construct and compile the MAO LangGraph StateGraph.
@@ -80,7 +102,7 @@ def build_graph() -> StateGraph:
     """
     builder = StateGraph(MAOState)
 
-    # --- Register nodes ---
+    # --- Register existing nodes ---
     builder.add_node(NODE_ROUTER,     router_node)
     builder.add_node(NODE_SUMMARIZER, summarizer_node)
     builder.add_node(NODE_GRAPHRAG,   graphrag_node)
@@ -91,8 +113,18 @@ def build_graph() -> StateGraph:
     builder.add_node(NODE_CRITIC,     critic_node)
     builder.add_node(NODE_CLINICAL,   clinical_node)
 
-    # --- Entry point ---
-    builder.add_edge(START, NODE_ROUTER)
+    # --- Register new pipeline nodes ---
+    builder.add_node("decomposer",        decomposer_node)
+    builder.add_node("classifier",        classifier_node)
+    builder.add_node("domain_supervisor", domain_supervisor_node)
+    builder.add_node("council",           council_node)
+    builder.add_node("senior_supervisor", senior_supervisor_node)
+    builder.add_node("blocked",           blocked_response_node)
+
+    # --- Entry point: START → decomposer → classifier → router ---
+    builder.add_edge(START, "decomposer")
+    builder.add_edge("decomposer", "classifier")
+    builder.add_edge("classifier", NODE_ROUTER)
 
     # --- Conditional dispatch from router ---
     builder.add_conditional_edges(
@@ -110,12 +142,28 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # --- All agent nodes terminate at END ---
+    # --- All agent nodes route to domain_supervisor (not END) ---
     for node_name in _ALL_AGENT_NODES:
-        builder.add_edge(node_name, END)
+        builder.add_edge(node_name, "domain_supervisor")
+
+    # --- Post-agent supervision pipeline ---
+    builder.add_edge("domain_supervisor", "council")
+    builder.add_conditional_edges(
+        "council",
+        _route_after_council,
+        {
+            "senior_supervisor": "senior_supervisor",
+            "blocked":           "blocked",
+        },
+    )
+    builder.add_edge("senior_supervisor", END)
+    builder.add_edge("blocked", END)
 
     compiled = builder.compile()
-    logger.info("MAO graph compiled with %d nodes", len(_ALL_AGENT_NODES) + 1)
+    logger.info(
+        "MAO graph compiled with %d nodes",
+        len(_ALL_AGENT_NODES) + 1 + 6,  # agents + router + 6 new nodes
+    )
     return compiled
 
 

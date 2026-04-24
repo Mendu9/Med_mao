@@ -54,10 +54,13 @@ from typing import Any
 import requests
 from mao.core import llm as groq_llm
 
-from mao.core.config import cfg
+from mao.core.config import cfg, MRI_CONFIDENCE_GATE, TOKEN_BUDGET
 from mao.core.state import MAOState
+from mao.core.token_counter import truncate_to_budget
+from mao.eval.nli_checker import check_all_claims
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
 from mao.rag.retriever import retrieve
+from mao.report.report_card import SourceEntry, build_report_card
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +114,9 @@ Respond ONLY with valid JSON matching this schema (use null for missing fields):
 
 def clinical_node(state: MAOState) -> MAOState:
     """LangGraph node: clinical decision support."""
-    user_query: str = state["user_query"]
+    user_query: str = state.get("pii_scrubbed_query") or state["user_query"]
     user_id: str    = state["user_id"]
+    domain: str     = state.get("domain", "alzheimer")
     metadata: dict  = state.get("metadata", {})
     memory_context: str = state.get("memory_context", "")
 
@@ -125,19 +129,64 @@ def clinical_node(state: MAOState) -> MAOState:
     has_report = bool(metadata.get("report_b64") or metadata.get("report_path"))
 
     if has_image:
-        response, result_meta = _handle_mri_image(user_query, metadata, memory_context)
+        response, result_meta = _handle_mri_image(user_query, metadata, memory_context, domain=domain)
     elif has_report:
-        response, result_meta = _handle_pdf_report(user_query, metadata, memory_context)
+        response, result_meta = _handle_pdf_report(user_query, metadata, memory_context, domain=domain)
     else:
-        response, result_meta = _handle_text_question(user_query, memory_context)
+        response, result_meta = _handle_text_question(user_query, memory_context, domain=domain)
+
+    # --- NLI entailment check on key claims ---
+    chunks_text = " ".join(
+        c.text[:300] if hasattr(c, "text") else str(c)
+        for c in result_meta.get("_ranked_chunks", [])[:4]
+    )
+    if chunks_text:
+        claims = [s.strip() for s in response.split(".") if len(s.strip()) > 20][:10]
+        nli_flags = check_all_claims(claims, chunks_text) if claims else []
+    else:
+        nli_flags = []
+
+    # --- Uncertainty flag from MRI confidence ---
+    prediction = result_meta.get("prediction", {})
+    mri_confidence = float(prediction.get("confidence", 1.0))
+    uncertainty_flag = mri_confidence < MRI_CONFIDENCE_GATE if prediction else False
+
+    # --- Build ReportCard ---
+    sources = [
+        SourceEntry(tool="retriever", snippet=str(s.get("snippet", ""))[:500], query=user_query)
+        for s in result_meta.get("sources", [])[:3]
+    ]
+    report = build_report_card(
+        stage=prediction.get("prediction", "N/A") if prediction else "N/A",
+        stage_interpretation=_interpret_stage(prediction.get("prediction", "") if prediction else ""),
+        clinical_significance=response[:300],
+        medications=[],
+        literature_evidence=[s.get("source", "") for s in result_meta.get("sources", [])[:3]],
+        recommended_next_steps=["Consult a specialist for comprehensive evaluation."],
+        confidence_score=mri_confidence if prediction else 1.0,
+        sources=sources,
+        uncertainty_flag=uncertainty_flag,
+    )
 
     response = response + _DISCLAIMER
     save_memory(user_query, response, user_id)
 
-    state["response"]   = response
-    state["agent_used"] = "clinical"
-    state["metadata"]   = {**metadata, **result_meta}
+    state["response"]     = response
+    state["agent_used"]   = "clinical"
+    state["metadata"]     = {**metadata, **{k: v for k, v in result_meta.items() if not k.startswith("_")}}
+    state["report_card"]  = report.to_dict()
+    state["nli_flags"]    = nli_flags
+    state["uncertainty_flag"] = uncertainty_flag
     return state
+
+
+def _interpret_stage(stage: str) -> str:
+    return {
+        "CN":   "Cognitively normal — no significant impairment detected.",
+        "EMCI": "Early mild cognitive impairment — early intervention recommended.",
+        "LMCI": "Late mild cognitive impairment — closer monitoring advised.",
+        "AD":   "Alzheimer's disease — comprehensive care planning recommended.",
+    }.get(stage, "Stage information unavailable.")
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +197,7 @@ def _handle_mri_image(
     user_query: str,
     metadata: dict,
     memory_context: str,
+    domain: str = "alzheimer",
 ) -> tuple[str, dict]:
     """Predict → retrieve → web search → synthesize."""
 
@@ -171,7 +221,7 @@ def _handle_mri_image(
 
     # Step 2: GraphRAG retrieval
     try:
-        ranked_chunks = retrieve(augmented_query)
+        ranked_chunks = retrieve(augmented_query, domain=domain)
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG retrieval failed: %s", exc)
         ranked_chunks = []
@@ -206,6 +256,7 @@ def _handle_mri_image(
         "prediction": prediction,
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
+        "_ranked_chunks": ranked_chunks,
     }
 
 
@@ -247,6 +298,7 @@ def _handle_pdf_report(
     user_query: str,
     metadata: dict,
     memory_context: str,
+    domain: str = "alzheimer",
 ) -> tuple[str, dict]:
     """Extract PDF text → summarize → structured extraction → research → web → synthesize."""
 
@@ -270,7 +322,7 @@ def _handle_pdf_report(
     if extracted.get("diagnosis"):
         retrieval_query = f"{extracted['diagnosis']} {retrieval_query}"
     try:
-        ranked_chunks = retrieve(retrieval_query)
+        ranked_chunks = retrieve(retrieval_query, domain=domain)
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG retrieval failed: %s", exc)
         ranked_chunks = []
@@ -308,6 +360,7 @@ def _handle_pdf_report(
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "report_length": len(report_text),
+        "_ranked_chunks": ranked_chunks,
     }
 
 
@@ -374,10 +427,11 @@ def _extract_structured_fields(report_text: str) -> dict:
 def _handle_text_question(
     user_query: str,
     memory_context: str,
+    domain: str = "alzheimer",
 ) -> tuple[str, dict]:
     """GraphRAG retrieval + synthesis with clinical framing."""
     try:
-        ranked_chunks = retrieve(user_query)
+        ranked_chunks = retrieve(user_query, domain=domain)
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG retrieval failed: %s", exc)
         ranked_chunks = []
@@ -401,6 +455,7 @@ def _handle_text_question(
         "mode": "text_question",
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
+        "_ranked_chunks": ranked_chunks,
     }
 
 
