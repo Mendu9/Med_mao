@@ -136,7 +136,7 @@ def save_graph(G: nx.Graph, path: Path | None = None) -> None:
     """Serialise graph to JSON (node-link format)."""
     target = path or GRAPH_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = nx.node_link_data(G)
+    data = nx.node_link_data(G, edges="edges")
     with open(target, "w", encoding="utf-8") as f:
         json.dump(data, f)
     logger.info("Graph saved to %s", target)
@@ -152,7 +152,7 @@ def load_graph(path: Path | None = None) -> nx.Graph:
         return nx.Graph()
     with open(target, "r", encoding="utf-8") as f:
         data = json.load(f)
-    G = nx.node_link_graph(data)
+    G = nx.node_link_graph(data, edges="edges")
     logger.info("Graph loaded: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
     return G
 

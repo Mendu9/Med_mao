@@ -3,18 +3,23 @@ import httpx
 import json
 import os
 
-API_BASE = os.getenv("MAO_API_BASE", "http://localhost:8000")
+API_BASE = os.getenv("MAO_API_BASE", "http://localhost:8080")
 
 
 def _send_query(query: str, history: list, file_obj) -> tuple:
-    files = {}
-    if file_obj is not None:
-        try:
-            files["file"] = open(file_obj.name, "rb")
-        except Exception:
-            pass
+    if not query or not query.strip():
+        query = "Analyse the uploaded MRI scan and provide a clinical assessment."
     try:
-        payload = {"query": query}
+        import base64
+        metadata = {}
+        if file_obj is not None:
+            try:
+                with open(file_obj.name, "rb") as f:
+                    metadata["image_b64"] = base64.b64encode(f.read()).decode()
+                    metadata["filename"] = os.path.basename(file_obj.name)
+            except Exception:
+                pass
+        payload = {"query": query, "metadata": metadata}
         resp = httpx.post(f"{API_BASE}/chat", json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()

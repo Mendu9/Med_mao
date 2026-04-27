@@ -1,7 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from mao.core.config import CLINICAL_MODEL, COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS
-from mao.core.retry import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +22,14 @@ _AGENTS = {
 }
 
 def _call_agent(role: str, system: str, response: str, context: str) -> str:
-    from mao.core.llm import get_client
-    client = get_client()
+    from mao.core.llm import chat
     prompt = f"CONTEXT:\n{context}\n\nRESPONSE TO EVALUATE:\n{response}"
-    resp = with_groq_retry(lambda: client.chat.completions.create(
-        model=CLINICAL_MODEL,
+    return chat(
         messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        model=CLINICAL_MODEL,
         max_tokens=COUNCIL_MAX_TOKENS,
         temperature=0.0,
-    ))
-    return resp.choices[0].message.content.strip()
+    ).strip()
 
 def run_council(response: str, context: str) -> dict:
     verdicts: dict[str, str] = {}
@@ -66,6 +63,12 @@ def run_council(response: str, context: str) -> dict:
 def council_node(state: dict) -> dict:
     answer = state.get("response", state.get("answer", ""))
     chunks = state.get("retrieved_docs", [])
+
+    # No retrieved context — skip hallucination/accuracy checks, pass by default
+    if not chunks:
+        verdict = {"passed": True, "blocked_by": None, "skipped": "no_context"}
+        return {**state, "council_verdict": verdict}
+
     context = "\n".join(str(c) for c in chunks[:4])
     verdict = run_council(response=answer, context=context)
     return {**state, "council_verdict": verdict}

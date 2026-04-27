@@ -41,12 +41,22 @@ class RankedChunk:
 _reranker: FlagReranker | None = None
 
 
-def _get_reranker() -> FlagReranker:
-    global _reranker
+_reranker_failed: bool = False
+
+
+def _get_reranker() -> FlagReranker | None:
+    global _reranker, _reranker_failed
+    if _reranker_failed:
+        return None
     if _reranker is None:
-        logger.info("Loading reranker model: %s", cfg.reranker_model)
-        _reranker = FlagReranker(cfg.reranker_model, use_fp16=True)
-        logger.info("Reranker loaded.")
+        try:
+            logger.info("Loading reranker model: %s", cfg.reranker_model)
+            _reranker = FlagReranker(cfg.reranker_model, use_fp16=True)
+            logger.info("Reranker loaded.")
+        except Exception as exc:
+            logger.warning("Reranker unavailable (%s) — using score passthrough", exc)
+            _reranker_failed = True
+            return None
     return _reranker
 
 
@@ -76,6 +86,12 @@ def rerank(
 
     k = top_k if top_k is not None else cfg.reranker_top_k
     reranker = _get_reranker()
+
+    if reranker is None:
+        return [
+            RankedChunk(text=c.get("text", ""), score=c.get("score", 0.0), metadata=c)
+            for c in chunks[:k]
+        ]
 
     texts = [c.get("text", "") for c in chunks]
 

@@ -2,7 +2,6 @@ import json
 import logging
 from mao.core.config import FAST_MODEL
 from mao.core.pii_scrubber import scrub_pii
-from mao.core.retry import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +13,13 @@ _SYSTEM = (
 )
 
 def _llm_decompose(query: str) -> list[str]:
-    from mao.core.llm import get_client
-    client = get_client()
-    resp = with_groq_retry(lambda: client.chat.completions.create(
-        model=FAST_MODEL,
+    from mao.core.llm import chat
+    raw = chat(
         messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": query}],
+        model=FAST_MODEL,
         max_tokens=300,
         temperature=0.0,
-    ))
-    raw = resp.choices[0].message.content.strip()
+    ).strip()
     try:
         parts = json.loads(raw)
         if isinstance(parts, list) and all(isinstance(p, str) for p in parts):
