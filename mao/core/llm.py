@@ -1,20 +1,12 @@
 """
-mao/core/llm.py — single Groq call helper used by all agents.
+mao/core/llm.py — Ollama chat helper used by all agents.
 """
 from __future__ import annotations
 import logging
-from groq import Groq
+import ollama
 from mao.core.config import cfg, TOKEN_BUDGET
 
 logger = logging.getLogger(__name__)
-_client: Groq | None = None
-
-
-def get_client() -> Groq:
-    global _client
-    if _client is None:
-        _client = Groq(api_key=cfg.groq_api_key)
-    return _client
 
 
 def chat(
@@ -24,17 +16,16 @@ def chat(
     max_tokens: int = 1024,
     model: str | None = None,
 ) -> str:
-    """Call Groq chat completions. Returns content string."""
+    """Call Ollama chat. Returns content string."""
     try:
-        resp = get_client().chat.completions.create(
+        resp = ollama.chat(
             model=model or cfg.groq_model,
             messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            options={"temperature": temperature, "num_predict": max_tokens},
         )
-        return resp.choices[0].message.content or ""
+        return resp["message"]["content"] or ""
     except Exception as exc:
-        logger.error("Groq LLM call failed: %s", exc)
+        logger.error("Ollama LLM call failed: %s", exc)
         raise
 
 
@@ -50,7 +41,6 @@ def chat_with_budget(
 ) -> str:
     """Call LLM after truncating context to stay within TOKEN_BUDGET."""
     from mao.core.token_counter import truncate_to_budget
-    from mao.core.retry import with_groq_retry
 
     budgeted = truncate_to_budget(chunks=chunks, web=web, history=history, budget=TOKEN_BUDGET)
 
@@ -62,13 +52,12 @@ def chat_with_budget(
 
     full_user = "\n".join(context_parts) + "\n\nQUESTION: " + user_message
 
-    resp = with_groq_retry(lambda: get_client().chat.completions.create(
+    resp = ollama.chat(
         model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": full_user},
         ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    ))
-    return resp.choices[0].message.content.strip()
+        options={"temperature": temperature, "num_predict": max_tokens},
+    )
+    return resp["message"]["content"].strip()

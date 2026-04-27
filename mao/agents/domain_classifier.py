@@ -1,6 +1,5 @@
 import logging
 from mao.core.config import FAST_MODEL
-from mao.core.retry import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -12,15 +11,13 @@ _SYSTEM = (
 )
 
 def _llm_classify(query: str) -> str:
-    from mao.core.llm import get_client
-    client = get_client()
-    resp = with_groq_retry(lambda: client.chat.completions.create(
-        model=FAST_MODEL,
+    from mao.core.llm import chat
+    return chat(
         messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": query}],
+        model=FAST_MODEL,
         max_tokens=5,
         temperature=0.0,
-    ))
-    return resp.choices[0].message.content.strip().lower()
+    ).strip().lower()
 
 def classify_domain(query: str) -> str:
     label = _llm_classify(query)

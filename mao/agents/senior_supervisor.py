@@ -1,7 +1,6 @@
 import json
 import logging
 from mao.core.config import CLINICAL_MODEL
-from mao.core.retry import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +15,14 @@ def senior_supervisor_node(state: dict) -> dict:
     if not sub_queries:
         return {**state, "completeness_ok": True, "missing_sub_queries": []}
 
-    from mao.core.llm import get_client
-    client = get_client()
+    from mao.core.llm import chat
     prompt = f"SUB-QUESTIONS:\n{json.dumps(sub_queries)}\n\nANSWER:\n{answer}"
-    resp = with_groq_retry(lambda: client.chat.completions.create(
-        model=CLINICAL_MODEL,
+    raw = chat(
         messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
+        model=CLINICAL_MODEL,
         max_tokens=300,
         temperature=0.0,
-    ))
-    raw = resp.choices[0].message.content.strip()
+    ).strip()
     try:
         parsed = json.loads(raw)
         missing = parsed.get("missing", [])

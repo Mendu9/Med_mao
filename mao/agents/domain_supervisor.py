@@ -1,7 +1,6 @@
 import json
 import logging
 from mao.core.config import CLINICAL_MODEL
-from mao.core.retry import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +9,7 @@ you must reconcile them and check source grounding.
 Output JSON with keys: "grounded_summary" (str), "ungrounded_claims" (list[str]), "sources_used" (list[str])"""
 
 def domain_supervisor_node(state: dict) -> dict:
-    from mao.core.llm import get_client
+    from mao.core.llm import chat
     rag_chunks = state.get("retrieved_docs", [])
     web_results = state.get("web_results", [])
     answer = state.get("response", state.get("answer", ""))
@@ -21,17 +20,15 @@ def domain_supervisor_node(state: dict) -> dict:
         "DRAFT ANSWER:", answer,
     ])
 
-    client = get_client()
-    resp = with_groq_retry(lambda: client.chat.completions.create(
-        model=CLINICAL_MODEL,
+    raw = chat(
         messages=[
             {"role": "system", "content": _SYSTEM},
             {"role": "user", "content": context},
         ],
+        model=CLINICAL_MODEL,
         max_tokens=500,
         temperature=0.0,
-    ))
-    raw = resp.choices[0].message.content
+    )
 
     try:
         parsed = json.loads(raw)

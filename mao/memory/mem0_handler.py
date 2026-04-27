@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _build_mem0_config() -> dict[str, Any]:
-    """Mem0 backed by Pinecone (vectors) + Groq (LLM) + sentence-transformers (embed)."""
+    """Mem0 backed by Pinecone (vectors) + Ollama (LLM) + sentence-transformers (embed)."""
     return {
         "vector_store": {
             "provider": "pinecone",
@@ -57,10 +57,10 @@ def _build_mem0_config() -> dict[str, Any]:
             },
         },
         "llm": {
-            "provider": "groq",
+            "provider": "ollama",
             "config": {
-                "api_key": cfg.groq_api_key,
                 "model": cfg.groq_model,
+                "ollama_base_url": "http://localhost:11434",
             },
         },
     }
@@ -100,7 +100,7 @@ def search_memories(query: str, user_id: str, limit: int = 5) -> str:
         client = get_mem0_client()
         results: list[dict[str, Any]] = client.search(
             query=query,
-            user_id=user_id,
+            filters={"user_id": user_id},
             limit=limit,
         )
         # mem0 may return a dict with a "results" key in newer versions

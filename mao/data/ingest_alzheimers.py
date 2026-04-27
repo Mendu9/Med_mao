@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 _CHUNK_SIZE    = 800   # ~2-3 paragraphs with complete sentences
 _CHUNK_OVERLAP = 100   # preserves cross-boundary context
 
-# Default path to the AD research PDFs (relative to project root)
-_DEFAULT_PDF_DIR = Path(__file__).resolve().parents[3] / "ad" / "rag" / "data"
+# Default path to the AD research PDFs
+_DEFAULT_PDF_DIR = Path(__file__).resolve().parents[2] / "rag" / "data"
 
 
 # ---------------------------------------------------------------------------

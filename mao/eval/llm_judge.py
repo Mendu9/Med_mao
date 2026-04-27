@@ -11,7 +11,6 @@ import json
 import logging
 
 from mao.core.config import CLINICAL_MODEL
-from mao.core.retry import with_groq_retry
 
 logger = logging.getLogger(__name__)
 
@@ -24,33 +23,19 @@ Output JSON only: {"accuracy": N, "completeness": N, "safety": N, "clarity": N, 
 
 
 def judge_response(question: str, response: str, context: str = "") -> dict:
-    """Score a clinical AI response using an LLM judge.
+    """Score a clinical AI response using an LLM judge."""
+    from mao.core.llm import chat
 
-    Args:
-        question: The original clinical question posed by the user.
-        response: The AI-generated response to evaluate.
-        context: Optional retrieved context used to generate the response.
-
-    Returns:
-        A dict with keys: accuracy, completeness, safety, clarity (int 0-10),
-        and notes (str). Returns safe defaults on parse failure.
-    """
-    from mao.core.llm import get_client
-
-    client = get_client()
     prompt = f"QUESTION: {question}\n\nCONTEXT: {context[:500]}\n\nRESPONSE: {response}"
-    resp = with_groq_retry(
-        lambda: client.chat.completions.create(
-            model=CLINICAL_MODEL,
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=200,
-            temperature=0.0,
-        )
-    )
-    raw = resp.choices[0].message.content.strip()
+    raw = chat(
+        messages=[
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        model=CLINICAL_MODEL,
+        max_tokens=200,
+        temperature=0.0,
+    ).strip()
     try:
         return json.loads(raw)
     except json.JSONDecodeError:

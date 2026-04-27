@@ -13,9 +13,9 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 @dataclass(frozen=True)
 class MAOConfig:
-    # Groq LLM
+    # LLM (Ollama local — groq_model reused as the Ollama model name)
     groq_api_key: str   = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
-    groq_model: str     = field(default_factory=lambda: os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"))
+    groq_model: str     = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", os.getenv("GROQ_MODEL", "gemma2:2b")))
 
     # Pinecone
     pinecone_api_key: str    = field(default_factory=lambda: os.getenv("PINECONE_API_KEY", ""))
@@ -31,6 +31,11 @@ class MAOConfig:
     reranker_model: str = field(default_factory=lambda: os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"))
     reranker_top_n: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "20")))
     reranker_top_k: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_K", "5")))
+
+    # ChromaDB
+    chroma_host: str       = field(default_factory=lambda: os.getenv("CHROMA_HOST", "localhost"))
+    chroma_port: int       = field(default_factory=lambda: int(os.getenv("CHROMA_PORT", "8000")))
+    chroma_collection: str = field(default_factory=lambda: os.getenv("CHROMA_COLLECTION", "mao_knowledge"))
 
     # Postgres (optional — for metrics only)
     postgres_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "postgresql://mao:mao@localhost:5432/mao"))
@@ -55,9 +60,9 @@ TOKEN_BUDGET: int = 7050
 # Query cache TTL (seconds)
 CACHE_TTL: int = 300
 
-# LLM tiers
-FAST_MODEL: str = "llama-3.1-8b-instant"
-CLINICAL_MODEL: str = "llama-3.3-70b-versatile"
+# LLM tiers (Ollama local models)
+FAST_MODEL: str = os.getenv("FAST_MODEL", "gemma2:2b")
+CLINICAL_MODEL: str = os.getenv("CLINICAL_MODEL", "gemma2:2b")
 
 # Pinecone domain indexes
 PINECONE_INDEX_ALZHEIMER: str = "mao-knowledge-alzheimer"

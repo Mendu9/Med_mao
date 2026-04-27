@@ -29,48 +29,28 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pinecone import Pinecone
+import chromadb
 
-from mao.core.config import cfg, PINECONE_INDEX_ALZHEIMER, PINECONE_INDEX_STROKE, CACHE_TTL
+from mao.core.config import cfg, CACHE_TTL
 from mao.core.query_cache import QueryCache
 from mao.rag.embedder import embed_query
 from mao.rag.graph_builder import extract_entities, expand_via_graph, load_graph
 from mao.rag.reranker import RankedChunk, rerank
 
 _cache = QueryCache(ttl=CACHE_TTL)
-_DOMAIN_INDEX: dict[str, str] = {
-    "alzheimer": PINECONE_INDEX_ALZHEIMER,
-    "stroke": PINECONE_INDEX_STROKE,
-}
+_chroma_client: chromadb.HttpClient | None = None
+_chroma_collection = None
+
+
+def _get_collection():
+    global _chroma_client, _chroma_collection
+    if _chroma_collection is None:
+        _chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
+        _chroma_collection = _chroma_client.get_or_create_collection(cfg.chroma_collection)
+        logger.info("ChromaDB collection '%s' ready (%d docs)", cfg.chroma_collection, _chroma_collection.count())
+    return _chroma_collection
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# ChromaDB client — lazy singleton
-# ---------------------------------------------------------------------------
-
-_pinecone_indexes: dict[str, Any] = {}
-
-
-def _get_index(index_name: str | None = None):
-    name = index_name or cfg.pinecone_index
-    if name not in _pinecone_indexes:
-        pc = Pinecone(api_key=cfg.pinecone_api_key)
-        existing = [i.name for i in pc.list_indexes()]
-        if name not in existing:
-            from pinecone import ServerlessSpec
-            pc.create_index(
-                name=name,
-                dimension=cfg.embed_dim,
-                metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region=cfg.pinecone_region),
-            )
-            logger.info("Created Pinecone index: %s", name)
-        _pinecone_indexes[name] = pc.Index(name)
-        stats = _pinecone_indexes[name].describe_index_stats()
-        logger.info("Pinecone index '%s' ready (%d vectors)", name, stats.total_vector_count)
-    return _pinecone_indexes[name]
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +77,6 @@ def retrieve(
     """
     n = top_n or cfg.reranker_top_n   # 20
     k = top_k or cfg.reranker_top_k   # 5
-    index_name = _DOMAIN_INDEX.get(domain, PINECONE_INDEX_ALZHEIMER)
 
     # Check cache first
     try:
@@ -112,9 +91,9 @@ def retrieve(
         cache_key = None
 
     # ------------------------------------------------------------------
-    # Step 1: Vector search → top-N from Pinecone
+    # Step 1: Vector search → top-N from ChromaDB
     # ------------------------------------------------------------------
-    vector_chunks = _vector_search(query, n, index_name=index_name)
+    vector_chunks = _vector_search(query, n)
     logger.debug("Step 1 vector search: %d results", len(vector_chunks))
 
     # ------------------------------------------------------------------
@@ -138,7 +117,7 @@ def retrieve(
     # ------------------------------------------------------------------
     graph_chunks: list[dict[str, Any]] = []
     if expanded_entities:
-        graph_chunks = _entity_search(expanded_entities, limit=n, index_name=index_name)
+        graph_chunks = _entity_search(expanded_entities, limit=n)
     logger.debug("Step 4 graph-derived chunks: %d", len(graph_chunks))
 
     # ------------------------------------------------------------------
@@ -172,49 +151,52 @@ def retrieve(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _vector_search(query: str, n: int, index_name: str | None = None) -> list[dict[str, Any]]:
-    """Embed query and fetch top-n chunks from Pinecone."""
+def _vector_search(query: str, n: int) -> list[dict[str, Any]]:
+    """Embed query and fetch top-n chunks from ChromaDB."""
     try:
-        index = _get_index(index_name)
+        col = _get_collection()
         query_embedding = embed_query(query)
-        results = index.query(vector=query_embedding, top_k=n, include_metadata=True)
+        results = col.query(query_embeddings=[query_embedding], n_results=min(n, col.count()))
         chunks = []
-        for match in results.matches:
-            meta = match.metadata or {}
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        ids = results.get("ids", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        for doc, meta, cid, dist in zip(docs, metas, ids, distances):
+            meta = meta or {}
             chunks.append({
-                "text": meta.get("text", ""),
+                "text": doc,
                 "source": meta.get("source", ""),
-                "chunk_id": meta.get("chunk_id", match.id),
-                "score": match.score,
+                "chunk_id": meta.get("chunk_id", cid),
+                "score": 1.0 - dist,
                 "retrieval_method": "vector",
                 **meta,
             })
         return chunks
     except Exception as exc:
-        logger.error("Pinecone vector search failed: %s", exc)
+        logger.error("ChromaDB vector search failed: %s", exc)
         return []
 
 
-def _entity_search(entities: list[str], limit: int, index_name: str | None = None) -> list[dict[str, Any]]:
-    """
-    Full-text style search: query ChromaDB with entity names as the query.
-
-    This is a pragmatic approximation — production systems might use a
-    dedicated inverted index.  For our corpus size it's sufficient.
-    """
+def _entity_search(entities: list[str], limit: int) -> list[dict[str, Any]]:
+    """Query ChromaDB with entity names to find related chunks."""
     try:
-        index = _get_index(index_name)
+        col = _get_collection()
         entity_query = " ".join(entities[:10])
         query_embedding = embed_query(entity_query)
-        results = index.query(vector=query_embedding, top_k=limit, include_metadata=True)
+        results = col.query(query_embeddings=[query_embedding], n_results=min(limit, col.count()))
         chunks = []
-        for match in results.matches:
-            meta = match.metadata or {}
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        ids = results.get("ids", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        for doc, meta, cid, dist in zip(docs, metas, ids, distances):
+            meta = meta or {}
             chunks.append({
-                "text": meta.get("text", ""),
+                "text": doc,
                 "source": meta.get("source", ""),
-                "chunk_id": meta.get("chunk_id", match.id),
-                "score": match.score,
+                "chunk_id": meta.get("chunk_id", cid),
+                "score": 1.0 - dist,
                 "retrieval_method": "graph",
                 **meta,
             })
