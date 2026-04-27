@@ -181,36 +181,23 @@ def _store_metrics(
     scores: dict[str, float],
     latency_ms: float,
 ) -> None:
-    """Write metrics to Postgres response_metrics table."""
+    """Write metrics to Postgres response_metrics table via ORM session."""
     try:
-        from sqlalchemy import create_engine, text
-        from mao.core.config import cfg
+        from mao.db import get_db_session
+        from mao.db.models import ResponseMetrics
 
-        engine = create_engine(cfg.postgres_url, pool_pre_ping=True)
-        with engine.connect() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO response_metrics
-                        (request_id, user_id, agent_used,
-                         faithfulness, answer_relevancy,
-                         context_precision, context_recall, latency_ms)
-                    VALUES
-                        (:request_id, :user_id, :agent_used,
-                         :faithfulness, :answer_relevancy,
-                         :context_precision, :context_recall, :latency_ms)
-                """),
-                {
-                    "request_id":        request_id,
-                    "user_id":           user_id,
-                    "agent_used":        agent_used,
-                    "faithfulness":      scores.get("faithfulness"),
-                    "answer_relevancy":  scores.get("answer_relevancy"),
-                    "context_precision": scores.get("context_precision"),
-                    "context_recall":    scores.get("context_recall"),
-                    "latency_ms":        latency_ms,
-                },
-            )
-            conn.commit()
+        row = ResponseMetrics(
+            request_id=request_id,
+            user_id=user_id,
+            agent_used=agent_used,
+            faithfulness=scores.get("faithfulness"),
+            answer_relevancy=scores.get("answer_relevancy"),
+            context_precision=scores.get("context_precision"),
+            context_recall=scores.get("context_recall"),
+            latency_ms=latency_ms,
+        )
+        with get_db_session() as session:
+            session.add(row)
         logger.debug("Response metrics stored for request_id=%s", request_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to store response metrics: %s", exc)

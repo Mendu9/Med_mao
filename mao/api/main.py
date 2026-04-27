@@ -36,7 +36,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from mao.core.config import cfg
+from mao.core.rate_limiter import check_rate_limit
+from mao.core.redis_client import get_redis, safe_set
 from mao.core.state import make_initial_state
+from mao.db import get_db_session, init_db
+from mao.db.models import ChatSession
 from mao.graph import get_graph
 from mao.monitoring.metrics import (
     active_requests_gauge,
@@ -132,14 +136,20 @@ async def startup_event() -> None:
     loop = asyncio.get_event_loop()
 
     def _warm_all():
-        # MRI model first (may download 127MB on first run)
+        # Initialise DB first (idempotent, raises on failure)
+        try:
+            init_db()
+            logger.info("Database ready.")
+        except Exception as exc:
+            logger.warning("Database init failed (non-fatal at startup): %s", exc)
+        # MRI model (may download 127MB on first run)
         try:
             from mao.models.mri_predictor import get_predictor
-            get_predictor()._load()  # force download + load now
+            get_predictor()._load()
             logger.info("MRI predictor ready.")
         except Exception as exc:
             logger.warning("MRI predictor warm-up failed (non-fatal): %s", exc)
-        # Then build the LangGraph (fast)
+        # Build the LangGraph (fast)
         get_graph()
 
     # AWAIT so uvicorn holds off accepting requests until done
@@ -165,6 +175,9 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     Constructs a MAOState, invokes the LangGraph graph in a thread pool
     (because LangGraph .invoke() is synchronous), and returns the result.
     """
+    if not check_rate_limit(request.user_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again in 60 seconds.")
+
     request_id = uuid.uuid4().hex
     start_time = time.perf_counter()
 
@@ -208,6 +221,43 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     top_scores = metadata.get("top_scores", [])
     if top_scores:
         record_reranker_score(agent=agent_used, top_score=top_scores[0])
+
+    # Persist chat session (fire-and-forget, never blocks response)
+    def _save_session() -> None:
+        try:
+            with get_db_session() as db:
+                db.add(ChatSession(
+                    user_id=request.user_id,
+                    user_query=request.query,
+                    response=result.get("response", ""),
+                    agent_used=agent_used,
+                    domain=metadata.get("domain"),
+                    uncertainty_flag=bool(metadata.get("uncertainty_flag", False)),
+                ))
+        except Exception as exc:
+            logger.warning("ChatSession persist failed request_id=%s: %s", request_id, exc)
+
+    asyncio.create_task(asyncio.get_event_loop().run_in_executor(_executor, _save_session))
+
+    # Cache session response in Redis for fast repeated lookups (TTL 1h)
+    def _cache_session() -> None:
+        try:
+            import json as _json
+            redis_client = get_redis()
+            safe_set(
+                redis_client,
+                f"session:{request_id}",
+                _json.dumps({
+                    "response": result.get("response", ""),
+                    "agent_used": agent_used,
+                    "intent": intent,
+                }),
+                ex=3600,
+            )
+        except Exception as exc:
+            logger.debug("Session cache write failed: %s", exc)
+
+    asyncio.create_task(asyncio.get_event_loop().run_in_executor(_executor, _cache_session))
 
     # Fire RAGAS hallucination scoring as a background task (non-blocking)
     contexts = [s.get("snippet", "") for s in metadata.get("sources", []) if s.get("snippet")]
