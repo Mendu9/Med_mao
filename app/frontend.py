@@ -35,15 +35,13 @@ def _send_query(query: str, history: list, file_obj) -> tuple:
         report_card = data.get("report_card")
 
         history = list(history or [])
-        history.append({"role": "user", "content": query})
-        history.append({"role": "assistant", "content": answer})
+        history.append((query, answer))
 
         report_html = _render_report_card_html(report_card) if report_card else ""
         return history, report_html, session_id
     except Exception as e:
         history = list(history or [])
-        history.append({"role": "user", "content": query})
-        history.append({"role": "assistant", "content": f"Error: {e}"})
+        history.append((query, f"Error: {e}"))
         return history, "", ""
 
 
@@ -136,7 +134,7 @@ def _load_dashboard():
         return None, f"Dashboard error: {e}"
 
 
-with gr.Blocks(title="MAO Clinical AI", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="MAO Clinical AI") as demo:
     session_id_state = gr.State("")
 
     with gr.Tabs():
@@ -145,7 +143,7 @@ with gr.Blocks(title="MAO Clinical AI", theme=gr.themes.Soft()) as demo:
             with gr.Row():
                 with gr.Column(scale=3):
                     chatbot = gr.Chatbot(
-                        label="MAO Clinical Chat", height=500, type="messages"
+                        label="MAO Clinical Chat", height=500
                     )
                     with gr.Row():
                         query_input = gr.Textbox(
@@ -221,4 +219,4 @@ with gr.Blocks(title="MAO Clinical AI", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, theme=gr.themes.Soft())
