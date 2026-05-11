@@ -43,18 +43,14 @@ def mock_retrieve():
 
 @pytest.fixture
 def mock_llm():
-    def _fake_invoke(messages, **kwargs):
-        class _Msg:
-            content = "VERDICT: PASS. Deterministic mock response for testing."
+    """Patch mao.core.llm.chat (Ollama backend) to return deterministic text.
+    Also patches domain_classifier._llm_classify so routing tests don't need Ollama.
+    """
+    _golden = {e["query"]: e.get("domain", "general") for e in load_golden()}
 
-        class _Choice:
-            message = _Msg()
+    def _fake_classify(query: str) -> str:
+        return _golden.get(query, "general")
 
-        class _Resp:
-            choices = [_Choice()]
-
-        return _Resp()
-
-    with patch("mao.core.llm.get_client") as mock_client:
-        mock_client.return_value.chat.completions.create.side_effect = _fake_invoke
-        yield mock_client
+    with patch("mao.core.llm.chat", return_value="VERDICT: PASS. Deterministic mock response for testing.") as m, \
+         patch("mao.agents.domain_classifier._llm_classify", side_effect=_fake_classify):
+        yield m

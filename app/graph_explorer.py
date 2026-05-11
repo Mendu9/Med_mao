@@ -166,7 +166,7 @@ def build_graph_explorer_tab() -> gr.Tab:
                     scale=2,
                 )
                 refresh_btn = gr.Button("Refresh Graph", variant="primary", scale=1)
-                graph_stats = gr.Markdown("_Select a domain filter and click Refresh Graph._", scale=3)
+            graph_stats = gr.Markdown("_Select a domain filter and click Refresh Graph._")
             graph_html = gr.HTML(value="<p>Click 'Refresh Graph' to load.</p>")
 
         with gr.Column(visible=False) as chunk_section:
