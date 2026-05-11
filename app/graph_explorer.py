@@ -7,15 +7,48 @@ import gradio as gr
 
 logger = logging.getLogger(__name__)
 
-# Domain keyword sets used to colour-classify graph nodes
+# Domain keyword sets — matched case-insensitively against actual graph node labels.
+# Keywords derived from inspecting the real 222-node graph (spaCy NER on ingested docs).
 _DOMAIN_NODE_KEYWORDS: dict[str, list[str]] = {
     "alzheimer": [
-        "alzheimer", "amyloid", "tau", "apoe", "dementia", "donepezil",
-        "memantine", "cholinesterase", "plaques", "neurodegeneration",
+        # Genes / proteins
+        "apoe", "app", "psen", "trem2", "abca7", "mapt",
+        # Pathology
+        "amyloid", "tau", "lewy", "necroptosis", "microglia", "microgl",
+        "cholinergic", "nmda", "presenilin", "secretase",
+        # Diseases / conditions
+        "alzheim", "alzhe", "dementia", "mci", "anosognosia",
+        # Drugs / treatments
+        "memantine", "donepezil", "donanemab", "lecanemab", "cerebrolysin",
+        "nsaid", "hormonal",
+        # Diagnostics
+        "c-pib-pet", "fdg", "18f-fdg", "csf", "pet",
+        # People / history
+        "alois", "kraepelin", "braak", "fischer", "utermohlen",
+        # Misc clinical
+        "hippocratic", "misdiagn", "cognitive reserve",
     ],
     "stroke": [
-        "stroke", "ischemic", "hemorrhagic", "tpa", "thrombus", "infarct",
-        "aneurysm", "clot", "cerebrovascular", "alteplase",
+        # Types
+        "stroke", "ischemi", "hemorrhag", "subarachnoid", "lacunar",
+        "emboli", "embolic", "tia", "apoplexia", "infarct",
+        # Anatomy / pathology
+        "cerebrovascular", "cerebral", "wernicke", "broca", "willis",
+        "von willebrand", "libman",
+        # Symptoms
+        "aphasia", "phasia", "apraxia", "dysphagia", "dysphag",
+        "nihss", "bamford", "barthel",
+        # Treatments / drugs
+        "alteplase", "clopidogrel", "dipyridamole", "aspirin", "tpa",
+        "intra-arterial", "thrombus",
+        # Classification systems
+        "taci", "paci", "ocsp", "esus", "oxfordshire",
+        # Organisations
+        "american stroke", "national stroke", "stroke association",
+        "heart association", "emergency medicine", "emergency physician",
+        "prehospital stroke",
+        # Diagnostics
+        "doppler", "holter", "ecg", "pfo", "ct", "mri",
     ],
     "general": [],
 }
