@@ -2,6 +2,7 @@ import gradio as gr
 import httpx
 import json
 import os
+from app.graph_explorer import build_graph_explorer_tab
 
 API_BASE = os.getenv("MAO_API_BASE", "http://localhost:8080")
 
@@ -208,6 +209,9 @@ with gr.Blocks(title="MAO Clinical AI", theme=gr.themes.Soft()) as demo:
                 _load_dashboard,
                 outputs=[metrics_df, feedback_summary],
             )
+
+        # ── Tab 4: Graph Explorer ────────────────────────────────────────
+        build_graph_explorer_tab()
 
 
 if __name__ == "__main__":

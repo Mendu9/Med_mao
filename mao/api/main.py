@@ -42,6 +42,7 @@ from mao.core.state import make_initial_state
 from mao.db import get_db_session, init_db
 from mao.db.models import ChatSession
 from mao.graph import get_graph
+from mao.guardrails import apply_input_guardrails, apply_output_guardrails
 from mao.monitoring.metrics import (
     active_requests_gauge,
     record_request,
@@ -195,6 +196,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         request.query[:80],
     )
 
+    await apply_input_guardrails(request.query, request_id)
+
     # Build initial state
     state = make_initial_state(
         user_query=request.query,
@@ -212,6 +215,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     except Exception as exc:
         logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
+
+    result = await apply_output_guardrails(result, request_id)
 
     latency_ms = (time.perf_counter() - start_time) * 1000
     agent_used = result.get("agent_used", "unknown")
