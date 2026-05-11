@@ -11,12 +11,15 @@ logger = logging.getLogger(__name__)
 _REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 _sync_client: redis.Redis | None = None
+_redis_unavailable: bool = False  # True after first failed connect; suppresses repeat warnings
 
 
 def get_redis() -> redis.Redis | None:
-    global _sync_client
+    global _sync_client, _redis_unavailable
     if _sync_client is not None:
         return _sync_client
+    if _redis_unavailable:
+        return None
     try:
         client = redis.Redis.from_url(_REDIS_URL, decode_responses=True)
         client.ping()
@@ -24,6 +27,7 @@ def get_redis() -> redis.Redis | None:
         return _sync_client
     except Exception as exc:
         logger.warning("Redis unavailable — caching disabled: %s", exc)
+        _redis_unavailable = True
         return None
 
 
