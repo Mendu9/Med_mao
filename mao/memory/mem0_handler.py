@@ -100,7 +100,7 @@ def search_memories(query: str, user_id: str, limit: int = 5) -> str:
         client = get_mem0_client()
         results: list[dict[str, Any]] = client.search(
             query=query,
-            filters={"user_id": user_id},
+            user_id=user_id,
             limit=limit,
         )
         # mem0 may return a dict with a "results" key in newer versions

@@ -12,6 +12,18 @@ _SYSTEM = (
     '[\"What is amyloid?\", \"How does tau cause neurodegeneration?\"]'
 )
 
+def _strip_fences(text: str) -> str:
+    """Remove markdown code fences that LLMs sometimes wrap JSON in."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        inner = lines[1:] if lines[0].startswith("```") else lines
+        if inner and inner[-1].strip() == "```":
+            inner = inner[:-1]
+        stripped = "\n".join(inner).strip()
+    return stripped
+
+
 def _llm_decompose(query: str) -> list[str]:
     from mao.core.llm import chat
     raw = chat(
@@ -20,8 +32,9 @@ def _llm_decompose(query: str) -> list[str]:
         max_tokens=300,
         temperature=0.0,
     ).strip()
+    cleaned = _strip_fences(raw)
     try:
-        parts = json.loads(raw)
+        parts = json.loads(cleaned)
         if isinstance(parts, list) and all(isinstance(p, str) for p in parts):
             return [p.strip() for p in parts if p.strip()]
     except json.JSONDecodeError:

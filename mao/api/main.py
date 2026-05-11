@@ -149,6 +149,13 @@ async def startup_event() -> None:
             logger.info("MRI predictor ready.")
         except Exception as exc:
             logger.warning("MRI predictor warm-up failed (non-fatal): %s", exc)
+        # Reranker (~568 MB on first run) — pre-warm so first request doesn't timeout
+        try:
+            from mao.rag.reranker import _get_reranker
+            _get_reranker()
+            logger.info("Reranker ready.")
+        except Exception as exc:
+            logger.warning("Reranker warm-up failed (non-fatal): %s", exc)
         # Build the LangGraph (fast)
         get_graph()
 

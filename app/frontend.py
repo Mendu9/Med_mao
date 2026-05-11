@@ -20,7 +20,7 @@ def _send_query(query: str, history: list, file_obj) -> tuple:
             except Exception:
                 pass
         payload = {"query": query, "metadata": metadata}
-        resp = httpx.post(f"{API_BASE}/chat", json=payload, timeout=120)
+        resp = httpx.post(f"{API_BASE}/chat", json=payload, timeout=300)
         resp.raise_for_status()
         data = resp.json()
         answer = data.get("answer", data.get("response", ""))
