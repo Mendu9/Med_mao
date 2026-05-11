@@ -44,7 +44,8 @@ import numexpr
 import requests
 from mao.core import llm as groq_llm
 import wikipediaapi
-from duckduckgo_search import DDGS
+
+from mao.core.web_search import web_search as _web_search_provider
 
 from mao.core.config import cfg
 from mao.core.state import MAOState
@@ -147,22 +148,17 @@ def tool_node(state: MAOState) -> MAOState:
 # ---------------------------------------------------------------------------
 
 def _web_search(query: str) -> str:
-    """DuckDuckGo search — returns top 5 results as formatted text."""
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
-        if not results:
-            return "No web results found."
-        lines = []
-        for r in results:
-            title = r.get("title", "")
-            body  = r.get("body", "")[:300]
-            href  = r.get("href", "")
-            lines.append(f"- {title}\n  {body}\n  URL: {href}")
-        return "\n\n".join(lines)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("DuckDuckGo search failed: %s", exc)
-        return f"Web search error: {exc}"
+    """Web search — returns top 5 results as formatted text via multi-provider fallback."""
+    results = _web_search_provider(query, num_results=5)
+    if not results:
+        return "No web results found."
+    lines = []
+    for r in results:
+        title = r.get("title", "")
+        body  = r.get("body", "")[:300]
+        href  = r.get("href", "")
+        lines.append(f"- {title}\n  {body}\n  URL: {href}")
+    return "\n\n".join(lines)
 
 
 def _wikipedia_lookup(topic: str) -> str:

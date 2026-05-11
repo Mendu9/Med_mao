@@ -481,22 +481,18 @@ def _format_sources(ranked_chunks) -> str:
 
 
 def _web_search_clinical(query: str) -> str:
-    """DuckDuckGo search for clinical evidence."""
-    try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=4))
-        if not results:
-            return "No web results found."
-        lines = []
-        for r in results:
-            title = r.get("title", "")
-            body  = r.get("body", "")[:300]
-            lines.append(f"- **{title}**\n  {body}")
-        return "\n\n".join(lines)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Clinical web search failed: %s", exc)
-        return f"Web search unavailable: {exc}"
+    """Web search for clinical evidence — uses multi-provider fallback chain."""
+    from mao.core.web_search import web_search
+
+    results = web_search(query, num_results=4)
+    if not results:
+        return "No web results found."
+    lines = []
+    for r in results:
+        title = r.get("title", "")
+        body  = r.get("body", "")[:300]
+        lines.append(f"- **{title}**\n  {body}")
+    return "\n\n".join(lines)
 
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
