@@ -2,7 +2,13 @@ import gradio as gr
 import httpx
 import json
 import os
-from app.graph_explorer import build_graph_explorer_tab
+try:
+    from app.graph_explorer import build_graph_explorer_tab
+except ModuleNotFoundError:
+    # Running as `python app/frontend.py` — project root not in sys.path yet
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from app.graph_explorer import build_graph_explorer_tab
 
 API_BASE = os.getenv("MAO_API_BASE", "http://localhost:8080")
 
