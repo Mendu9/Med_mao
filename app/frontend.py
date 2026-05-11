@@ -35,13 +35,15 @@ def _send_query(query: str, history: list, file_obj) -> tuple:
         report_card = data.get("report_card")
 
         history = list(history or [])
-        history.append((query, answer))
+        history.append({"role": "user", "content": query})
+        history.append({"role": "assistant", "content": answer})
 
         report_html = _render_report_card_html(report_card) if report_card else ""
         return history, report_html, session_id
     except Exception as e:
         history = list(history or [])
-        history.append((query, f"Error: {e}"))
+        history.append({"role": "user", "content": query})
+        history.append({"role": "assistant", "content": f"Error: {e}"})
         return history, "", ""
 
 
@@ -219,4 +221,4 @@ with gr.Blocks(title="MAO Clinical AI") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, theme=gr.themes.Soft())
+    demo.launch(server_name="0.0.0.0", server_port=7860)
