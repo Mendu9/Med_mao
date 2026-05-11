@@ -1,0 +1,46 @@
+import logging
+import re
+
+from fastapi import HTTPException
+
+from mao.guardrails.db_helper import log_guardrail_event
+
+logger = logging.getLogger(__name__)
+
+_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
+    re.compile(r"you\s+are\s+now\s+", re.IGNORECASE),
+    re.compile(r"disregard\s+(your|the)\s+(system|previous)", re.IGNORECASE),
+    re.compile(r"\bjailbreak\b", re.IGNORECASE),
+    re.compile(r"\bDAN\s+mode\b", re.IGNORECASE),
+]
+
+_MAX_TOKENS = 500
+
+
+def _count_tokens(text: str) -> int:
+    return len(text.split())
+
+
+def _scrub_pii(text: str) -> str:
+    from mao.core.pii_scrubber import scrub_pii
+    return scrub_pii(text)
+
+
+async def apply_input_guardrails(query: str, session_id: str) -> None:
+    """Raises HTTPException(400) if query fails any input check."""
+    for pattern in _INJECTION_PATTERNS:
+        if pattern.search(query):
+            log_guardrail_event(session_id, "prompt_injection", triggered=True, detail="regex")
+            raise HTTPException(status_code=400, detail="Invalid request")
+
+    if _count_tokens(query) > _MAX_TOKENS:
+        log_guardrail_event(session_id, "token_limit", triggered=True)
+        raise HTTPException(status_code=400, detail="Query exceeds maximum length")
+
+    try:
+        scrubbed = _scrub_pii(query)
+        if scrubbed != query:
+            log_guardrail_event(session_id, "pii_detected", triggered=True, detail="scrubbed")
+    except Exception as exc:
+        logger.warning("PII scrubber failed (non-fatal): %s", exc)

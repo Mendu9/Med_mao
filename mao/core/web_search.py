@@ -108,13 +108,6 @@ def _ddg_search(query: str, num_results: int) -> list[dict[str, str]]:
 # Public API
 # ---------------------------------------------------------------------------
 
-_PROVIDERS: list[tuple[str, Any]] = [
-    ("brave",      _brave_search),
-    ("serpapi",    _serpapi_search),
-    ("duckduckgo", _ddg_search),
-]
-
-
 def web_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
     """
     Search the web using the best available provider.
@@ -131,7 +124,13 @@ def web_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
         List of dicts with keys ``title``, ``href``, ``body``.
         Returns ``[]`` if all providers fail -- never raises.
     """
-    for name, fn in _PROVIDERS:
+    import mao.core.web_search as _self
+    _providers = [
+        ("brave",      _self._brave_search),
+        ("serpapi",    _self._serpapi_search),
+        ("duckduckgo", _self._ddg_search),
+    ]
+    for name, fn in _providers:
         try:
             results = fn(query, num_results)
             if results:
