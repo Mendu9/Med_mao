@@ -7,6 +7,33 @@ import gradio as gr
 
 logger = logging.getLogger(__name__)
 
+# Domain keyword sets used to colour-classify graph nodes
+_DOMAIN_NODE_KEYWORDS: dict[str, list[str]] = {
+    "alzheimer": [
+        "alzheimer", "amyloid", "tau", "apoe", "dementia", "donepezil",
+        "memantine", "cholinesterase", "plaques", "neurodegeneration",
+    ],
+    "stroke": [
+        "stroke", "ischemic", "hemorrhagic", "tpa", "thrombus", "infarct",
+        "aneurysm", "clot", "cerebrovascular", "alteplase",
+    ],
+    "general": [],
+}
+
+_DOMAIN_PALETTE: dict[str, str] = {
+    "alzheimer": "#e07b54",
+    "stroke": "#5b9bd5",
+    "general": "#7ec8a4",
+}
+
+
+def _classify_node(label: str) -> str:
+    lower = label.lower()
+    for domain, keywords in _DOMAIN_NODE_KEYWORDS.items():
+        if any(kw in lower for kw in keywords):
+            return domain
+    return "general"
+
 
 def load_graph():
     from mao.rag.graph_builder import load_graph as _load
@@ -18,8 +45,12 @@ def _vector_search(query: str, n: int) -> list[dict[str, Any]]:
     return _vs(query=query, n=n)
 
 
-def render_entity_graph() -> str:
-    """Load NetworkX graph and return self-contained pyvis HTML string."""
+def render_entity_graph(domain_filter: str = "all") -> str:
+    """Load NetworkX graph and return self-contained pyvis HTML string.
+
+    Args:
+        domain_filter: "all" | "alzheimer" | "stroke" | "general"
+    """
     try:
         from pyvis.network import Network
     except ImportError:
@@ -38,6 +69,17 @@ def render_entity_graph() -> str:
     top_node_set = {n for n, _ in top_nodes}
     subgraph = g.subgraph(top_node_set)
 
+    # Apply domain filter — keep matching nodes plus one-hop neighbours
+    if domain_filter != "all":
+        filtered = {n for n in subgraph.nodes() if _classify_node(str(n)) == domain_filter}
+        neighbors: set = set()
+        for n in filtered:
+            neighbors.update(subgraph.neighbors(n))
+        subgraph = subgraph.subgraph(filtered | neighbors)
+
+    if subgraph.number_of_nodes() == 0:
+        return f"<p>No nodes found for domain '{domain_filter}'. Try 'all' or another domain.</p>"
+
     net = Network(
         height="600px",
         width="100%",
@@ -48,12 +90,16 @@ def render_entity_graph() -> str:
     net.barnes_hut(gravity=-8000, central_gravity=0.3, spring_length=120)
 
     for node, degree in subgraph.degree():
+        label = str(node)
+        domain = _classify_node(label)
+        color = _DOMAIN_PALETTE.get(domain, _DOMAIN_PALETTE["general"])
         size = max(10, min(50, degree * 3))
         net.add_node(
-            str(node),
-            label=str(node),
+            label,
+            label=label,
             size=size,
-            title=f"{node} (degree: {degree})",
+            color=color,
+            title=f"{label} (domain: {domain}, degree: {degree})",
         )
 
     for u, v, data in subgraph.edges(data=True):
@@ -113,8 +159,14 @@ def build_graph_explorer_tab() -> gr.Tab:
         with gr.Column(visible=True) as graph_section:
             gr.Markdown("### Entity Graph")
             with gr.Row():
-                refresh_btn = gr.Button("Refresh Graph", variant="primary")
-                graph_stats = gr.Markdown("_Click Refresh Graph to load._")
+                domain_filter = gr.Dropdown(
+                    choices=["all", "alzheimer", "stroke", "general"],
+                    value="all",
+                    label="Domain Filter",
+                    scale=2,
+                )
+                refresh_btn = gr.Button("Refresh Graph", variant="primary", scale=1)
+                graph_stats = gr.Markdown("_Select a domain filter and click Refresh Graph._", scale=3)
             graph_html = gr.HTML(value="<p>Click 'Refresh Graph' to load.</p>")
 
         with gr.Column(visible=False) as chunk_section:
@@ -141,9 +193,12 @@ def build_graph_explorer_tab() -> gr.Tab:
                 wrap=True,
             )
 
-        def _refresh_graph():
-            html = render_entity_graph()
-            stats = "_No graph data_" if "No graph data" in html else "_Graph loaded._"
+        def _refresh_graph(df: str) -> tuple[str, str]:
+            html = render_entity_graph(domain_filter=df)
+            if "No graph data" in html or "No nodes found" in html:
+                stats = f"_No nodes for domain '{df}'._"
+            else:
+                stats = f"_Graph loaded (domain: {df})._"
             return html, stats
 
         def _search(domain: str, query: str) -> list[list]:
@@ -159,7 +214,7 @@ def build_graph_explorer_tab() -> gr.Tab:
         )
         refresh_btn.click(
             fn=_refresh_graph,
-            inputs=[],
+            inputs=[domain_filter],
             outputs=[graph_html, graph_stats],
         )
         search_btn.click(
