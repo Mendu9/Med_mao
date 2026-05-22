@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -7,6 +8,26 @@ import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _to_json(value: Any) -> Any:
+    """Recursively convert dataclasses (e.g. RankedChunk) to JSON-safe dicts."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if isinstance(value, list):
+        return [_to_json(v) for v in value]
+    return value
+
+
+def _from_json_ranked(data: Any) -> Any:
+    """Reconstruct list[RankedChunk] from cached JSON dicts."""
+    if not isinstance(data, list):
+        return data
+    try:
+        from mao.rag.reranker import RankedChunk
+        return [RankedChunk(**item) for item in data]
+    except Exception:
+        return data
 
 
 class QueryCache:
@@ -34,7 +55,7 @@ class QueryCache:
             try:
                 raw = self._redis.get(f"qcache:{key}")
                 if raw is not None:
-                    return json.loads(raw)
+                    return _from_json_ranked(json.loads(raw))
             except Exception as exc:
                 logger.debug("Redis cache GET failed: %s", exc)
 
@@ -50,7 +71,7 @@ class QueryCache:
     def set(self, key: str, value: Any) -> None:
         if self._redis is not None:
             try:
-                self._redis.set(f"qcache:{key}", json.dumps(value), ex=self._ttl)
+                self._redis.set(f"qcache:{key}", json.dumps(_to_json(value)), ex=self._ttl)
                 return
             except Exception as exc:
                 logger.debug("Redis cache SET failed, using in-memory: %s", exc)

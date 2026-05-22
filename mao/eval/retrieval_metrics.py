@@ -495,6 +495,12 @@ def run_retrieval_eval(
         if gc_every > 0 and _i % gc_every == 0:
             gc.collect()
 
+        # Per-query RAM floor: force full generational GC if headroom drops below 1.5GB
+        _cur_ram = _available_ram_mb()
+        if _cur_ram < 1500:
+            logger.warning("RAM low (%dMB free) after query %d — forcing full GC", _cur_ram, _i)
+            gc.collect(0); gc.collect(1); gc.collect(2)  # all three generations
+
         # Running progress + partial MRR every 5 queries
         if _i % 5 == 0 or _i == n_total:
             elapsed = _time.monotonic() - _t_start
@@ -531,9 +537,10 @@ def run_retrieval_eval(
 def _store_retrieval_eval(aggregated: dict[str, float], k: int, n_samples: int) -> None:
     """Persist aggregated eval results to Postgres."""
     try:
-        from mao.db import get_db_session
+        from mao.db import init_db, get_db_session
         from mao.db.models import RetrievalEvalResult
 
+        init_db()
         row = RetrievalEvalResult(
             k=k,
             n_samples=n_samples,

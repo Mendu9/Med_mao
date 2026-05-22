@@ -73,19 +73,24 @@ _BM25_PICKLE_PATH = cfg.data_dir / "bm25_index.pkl"
 logger = logging.getLogger(__name__)
 
 
-def _load_bm25_from_disk() -> None:
-    """Load a previously saved BM25 index from disk on module import.
+_bm25_loaded: bool = False
 
-    Called once at module load time so the retriever has a working sparse
-    index even on fresh server restarts without re-running ingestion.
-    Falls back silently when the pickle file doesn't exist yet.
-    Set MAO_DISABLE_BM25=1 to skip loading (saves ~1.5GB RAM in eval/low-mem mode).
+
+def _load_bm25_from_disk() -> None:
+    """Load BM25 index from disk, called lazily on first _bm25_search() call.
+
+    Deferred from module import so BM25 (~1.5GB) and the reranker (~2.2GB)
+    don't both load simultaneously during startup on memory-constrained hosts.
+    Set MAO_DISABLE_BM25=1 to skip entirely (saves ~1.5GB; degrades MRR).
     """
+    global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_loaded
+    if _bm25_loaded:
+        return
+    _bm25_loaded = True  # mark before load so concurrent callers don't double-load
     import os
     if os.getenv("MAO_DISABLE_BM25", "0") == "1":
         logger.info("BM25 index loading skipped (MAO_DISABLE_BM25=1)")
         return
-    global _bm25_index, _bm25_corpus, _bm25_chunk_ids
     try:
         import pickle
         from rank_bm25 import BM25Okapi  # noqa: F401 — ensure importable
@@ -101,9 +106,6 @@ def _load_bm25_from_disk() -> None:
             )
     except Exception as exc:
         logger.debug("BM25 disk load skipped (%s)", exc)
-
-
-_load_bm25_from_disk()
 
 
 def _get_collection():
@@ -489,8 +491,9 @@ def _bm25_search(query: str, n: int = 20) -> list[dict[str, Any]]:
         chunk_id, text, score, source, metadata, retrieval_method.
     """
     global _bm25_index
+    _load_bm25_from_disk()  # no-op after first call
     if _bm25_index is None:
-        logger.warning("BM25 index not loaded — sparse retrieval disabled (run ingestion to rebuild)")
+        logger.debug("BM25 index not loaded — sparse retrieval disabled")
         return []
 
     try:

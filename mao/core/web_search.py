@@ -92,12 +92,20 @@ def _serpapi_search(query: str, num_results: int) -> list[dict[str, str]]:
 
 
 def _ddg_search(query: str, num_results: int) -> list[dict[str, str]]:
-    """DuckDuckGo via duckduckgo-search — free but rate-limited."""
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
+    """DuckDuckGo — tries the new 'ddgs' package first, falls back to 'duckduckgo_search'."""
+    DDGS = None
+    for module_name in ("ddgs", "duckduckgo_search"):
+        try:
+            import importlib
+            mod = importlib.import_module(module_name)
+            DDGS = mod.DDGS
+            break
+        except (ImportError, AttributeError):
+            continue
+    if DDGS is None:
         raise ImportError(
-            "duckduckgo-search not installed. Run: pip install duckduckgo-search"
+            "Neither 'ddgs' nor 'duckduckgo-search' is installed. "
+            "Run: pip install ddgs"
         )
     with DDGS() as ddgs:
         results = list(ddgs.text(query, max_results=num_results))

@@ -1,6 +1,6 @@
 """
 mao/rag/embedder.py — sentence-transformers embeddings (local, no API key).
-Model: all-MiniLM-L6-v2  ->  384-dim, fast, works on HuggingFace Spaces.
+Model: configured via EMBED_MODEL env var (default: NeuML/pubmedbert-base-embeddings, 768-dim).
 """
 from __future__ import annotations
 import logging

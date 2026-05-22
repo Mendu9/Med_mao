@@ -20,13 +20,19 @@ Integration points:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
-from FlagEmbedding import FlagReranker  # pip install FlagEmbedding
+# FlagEmbedding import is deferred to _get_reranker() — importing it at module
+# level triggers TF+PyTorch init which causes a 3-minute hang on Windows.
+FlagReranker = None  # type: ignore[assignment,misc]
+_FLAG_AVAILABLE: bool | None = None  # None = not yet checked
 
 from mao.core.config import cfg
 
 logger = logging.getLogger(__name__)
+
+_MAX_BATCH = 64  # prevent OOM on large inputs
 
 
 @dataclass
@@ -37,16 +43,29 @@ class RankedChunk:
     metadata: dict
 
 
-# Lazy-load: the model is ~600 MB, load once at first use
-_reranker: FlagReranker | None = None
+# Lazy-load: the model is ~2GB, loaded on first call to _get_reranker()
+_reranker: "object | None" = None
 
 
 _reranker_failed: bool = False
 
 
-def _get_reranker() -> FlagReranker | None:
-    global _reranker, _reranker_failed
+def _get_reranker():  # type: ignore[return]
+    global _reranker, _reranker_failed, FlagReranker, _FLAG_AVAILABLE
+    import os
+    if os.getenv("MAO_DISABLE_RERANKER", "0") == "1":
+        return None
     if _reranker_failed:
+        return None
+    # Lazy import — avoids TF+PyTorch init at module load time
+    if _FLAG_AVAILABLE is None:
+        try:
+            from FlagEmbedding import FlagReranker as _FR
+            FlagReranker = _FR
+            _FLAG_AVAILABLE = True
+        except ImportError:
+            _FLAG_AVAILABLE = False
+    if not _FLAG_AVAILABLE:
         return None
     if _reranker is None:
         try:
@@ -88,9 +107,11 @@ def rerank(
     reranker = _get_reranker()
 
     if reranker is None:
+        # Sort by existing cosine score so best results come first
+        sorted_chunks = sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
         return [
             RankedChunk(text=c.get("text", ""), score=c.get("score", 0.0), metadata=c)
-            for c in chunks[:k]
+            for c in sorted_chunks[:k]
         ]
 
     texts = [c.get("text", "") for c in chunks]
@@ -99,13 +120,23 @@ def rerank(
     pairs = [[query, t] for t in texts]
 
     try:
-        scores: list[float] = reranker.compute_score(pairs, normalize=True)
+        _t0 = time.monotonic()
+        all_scores: list[float] = []
+        for i in range(0, len(pairs), _MAX_BATCH):
+            batch = pairs[i : i + _MAX_BATCH]
+            all_scores.extend(reranker.compute_score(batch, normalize=True))
+        scores: list[float] = all_scores
+        elapsed_ms = (time.monotonic() - _t0) * 1000
+        logger.debug("Reranker scored %d pairs in %.0fms", len(pairs), elapsed_ms)
+        # Release CPU tensor allocations after each inference pass
+        import gc as _gc
+        _gc.collect()
     except Exception as exc:  # noqa: BLE001
         logger.error("Reranker inference failed: %s", exc)
-        # Fallback: return top-k chunks in original order
+        sorted_chunks = sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
         return [
-            RankedChunk(text=c.get("text", ""), score=0.0, metadata=c)
-            for c in chunks[:k]
+            RankedChunk(text=c.get("text", ""), score=c.get("score", 0.0), metadata=c)
+            for c in sorted_chunks[:k]
         ]
 
     ranked = sorted(

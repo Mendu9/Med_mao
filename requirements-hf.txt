@@ -1,4 +1,13 @@
-# MAO — Multi-Agent Orchestrator
+# MAO — HuggingFace Spaces requirements
+# Generated from requirements.txt — packages not needed or problematic on HF free tier are commented out.
+#
+# Key differences from requirements.txt:
+#   - tensorflow / tf-keras commented out (USE_TF=0 is set in app.py; avoids 2GB+ install + import hang)
+#   - gradio commented out (UI is Streamlit-only; app/frontend.py is abandoned)
+#   - prometheus-fastapi-instrumentator commented out (FastAPI server not running on HF Spaces)
+#   - openai-whisper commented out (requires ffmpeg system package; MRI tab can be gated)
+#   - opencv-python → opencv-python-headless (no GUI deps needed in headless container)
+#   - All other packages are Linux-compatible and included as-is
 
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
@@ -13,12 +22,11 @@ langchain-huggingface>=0.1.0
 mem0ai>=0.1.0
 
 # --- Vector store ---
-# pinecone>=5.0.0  # optional, replaced by ChromaDB
 qdrant-client>=1.9.0  # cloud mirror for HF Spaces deployment
 
 # --- Embeddings (local sentence-transformers, works on HF Spaces) ---
 sentence-transformers>=3.0.0
-# FlagEmbedding 1.3.x imports is_torch_fx_available removed in transformers>=4.47
+# FlagEmbedding 1.3.x: transformers<4.47 required
 transformers>=4.40.0,<4.47.0
 
 # --- Graph ---
@@ -27,9 +35,6 @@ networkx>=3.3,<4.0
 # --- NLP / NER ---
 spacy>=3.7,<4.0
 # After install: python -m spacy download en_core_web_sm
-# Biomedical NER (scispaCy — install models separately):
-#   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_ner_bc5cdr_md-0.5.4.tar.gz
-#   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_lg-0.5.4.tar.gz
 scispacy>=0.5.4
 pronto>=2.5.0
 nxontology>=0.5.0
@@ -55,18 +60,18 @@ wikipedia-api>=0.6.0
 numexpr>=2.10.0
 
 # --- Multimodal ---
-openai-whisper>=20231117
+# openai-whisper>=20231117  # requires ffmpeg system package; omit unless Dockerfile installs ffmpeg
 Pillow>=10.3.0
+
+# --- MRI prediction ---
+# tensorflow>=2.16.0        # USE_TF=0 set in app.py — skip 2GB+ install to avoid import hang
+# tf-keras>=2.16.0          # depends on tensorflow above
+opencv-python-headless>=4.9.0  # headless: no Qt/GUI deps needed in container
+numpy>=1.26.0
 
 # --- Config / HTTP ---
 requests>=2.32.0
 python-dotenv>=1.0.0
-
-# --- MRI prediction ---
-tensorflow>=2.16.0
-tf-keras>=2.16.0
-opencv-python>=4.9.0
-numpy>=1.26.0
 
 # --- PDF parsing ---
 pypdf>=4.0.0
@@ -75,8 +80,8 @@ pypdf>=4.0.0
 datasets>=2.20.0
 tqdm>=4.66
 
-# --- Gradio UI ---
-gradio>=5.29.0
+# --- Gradio UI (DISABLED — UI is Streamlit-only on HF Spaces) ---
+# gradio>=5.29.0
 
 # --- Streamlit UI ---
 streamlit>=1.35.0
@@ -88,7 +93,7 @@ ragas>=0.3.0,<0.4.0
 
 # --- Observability ---
 prometheus-client>=0.20.0
-prometheus-fastapi-instrumentator>=6.0.0
+# prometheus-fastapi-instrumentator>=6.0.0  # FastAPI not running standalone on HF Spaces
 
 # --- Dev / testing ---
 pytest>=8.0

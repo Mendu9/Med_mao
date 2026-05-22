@@ -13,29 +13,41 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 @dataclass(frozen=True)
 class MAOConfig:
-    # LLM (Ollama local — groq_model reused as the Ollama model name)
+    # LLM backend — model name used by both Groq and Ollama
     groq_api_key: str   = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
-    groq_model: str     = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", os.getenv("GROQ_MODEL", "gemma2:2b")))
+    # GROQ_MODEL takes priority; OLLAMA_MODEL is the local Ollama fallback
+    groq_model: str     = field(default_factory=lambda: os.getenv("GROQ_MODEL", os.getenv("OLLAMA_MODEL", "llama-3.1-8b-instant")))
+    groq_judge_model: str = field(default_factory=lambda: os.getenv("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile"))
+    ollama_base_url: str  = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
 
-    # Pinecone
-    pinecone_api_key: str    = field(default_factory=lambda: os.getenv("PINECONE_API_KEY", ""))
-    pinecone_index: str      = field(default_factory=lambda: os.getenv("PINECONE_INDEX", "mao-knowledge-base"))
-    pinecone_mem0_index: str = field(default_factory=lambda: os.getenv("PINECONE_MEM0_INDEX", "mao-mem0"))
-    pinecone_region: str     = field(default_factory=lambda: os.getenv("PINECONE_REGION", "us-east-1"))
+    # Pinecone (optional — replaced by ChromaDB; kept for backwards compatibility)
+    pinecone_api_key: str | None    = field(default_factory=lambda: os.getenv("PINECONE_API_KEY") or None)
+    pinecone_index: str | None      = field(default_factory=lambda: os.getenv("PINECONE_INDEX") or None)
+    pinecone_mem0_index: str | None = field(default_factory=lambda: os.getenv("PINECONE_MEM0_INDEX") or None)
+    pinecone_region: str            = field(default_factory=lambda: os.getenv("PINECONE_REGION", "us-east-1"))
 
     # Embeddings (sentence-transformers, local, no API key)
-    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"))
-    embed_dim: int   = field(default_factory=lambda: int(os.getenv("EMBED_DIM", "384")))
+    # NeuML/pubmedbert-base-embeddings: 768-dim, trained on PubMed, far better biomedical recall
+    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "NeuML/pubmedbert-base-embeddings"))
+    embed_dim: int   = field(default_factory=lambda: int(os.getenv("EMBED_DIM", "768")))
 
     # Reranker
     reranker_model: str = field(default_factory=lambda: os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"))
-    reranker_top_n: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "20")))
-    reranker_top_k: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_K", "5")))
+    reranker_top_n: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "80")))
+    reranker_top_k: int = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_K", "10")))
 
     # ChromaDB
     chroma_host: str       = field(default_factory=lambda: os.getenv("CHROMA_HOST", "localhost"))
     chroma_port: int       = field(default_factory=lambda: int(os.getenv("CHROMA_PORT", "8000")))
     chroma_collection: str = field(default_factory=lambda: os.getenv("CHROMA_COLLECTION", "mao_knowledge"))
+
+    # Qdrant (cloud mirror for deployment)
+    qdrant_url: str | None      = field(default_factory=lambda: os.getenv("QDRANT_CLUSTER_ENDPOINT") or None)
+    qdrant_api_key: str | None  = field(default_factory=lambda: os.getenv("QDRANT_API_KEY") or None)
+    qdrant_collection: str      = field(default_factory=lambda: os.getenv("QDRANT_COLLECTION", "mao_knowledge"))
+
+    # Vector backend: "chromadb" (local dev) | "qdrant" (cloud/HF Spaces)
+    vector_backend: str = field(default_factory=lambda: os.getenv("VECTOR_BACKEND", "chromadb"))
 
     # Postgres (optional — for metrics only)
     postgres_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "postgresql://mao:mao@localhost:5432/mao"))
@@ -55,18 +67,14 @@ class MAOConfig:
 cfg = MAOConfig()
 
 # Token budget (per clinical call)
-TOKEN_BUDGET: int = 7050
+TOKEN_BUDGET: int = 32000
 
 # Query cache TTL (seconds)
 CACHE_TTL: int = 300
 
-# LLM tiers (Ollama local models)
-FAST_MODEL: str = os.getenv("FAST_MODEL", "gemma2:2b")
-CLINICAL_MODEL: str = os.getenv("CLINICAL_MODEL", "gemma2:2b")
-
-# Pinecone domain indexes
-PINECONE_INDEX_ALZHEIMER: str = "mao-knowledge-alzheimer"
-PINECONE_INDEX_STROKE: str = "mao-knowledge-stroke"
+# LLM tiers — default to Groq fast model; set FAST_MODEL/CLINICAL_MODEL in .env to override
+FAST_MODEL: str = os.getenv("FAST_MODEL", os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"))
+CLINICAL_MODEL: str = os.getenv("CLINICAL_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
 
 # Council
 COUNCIL_MAX_TOKENS: int = 200
@@ -74,7 +82,7 @@ COUNCIL_TIMEOUT_SECONDS: float = 30.0
 
 # NLI
 NLI_MODEL: str = "cross-encoder/nli-deberta-v3-small"
-NLI_ENTAILMENT_THRESHOLD: float = 0.5
+NLI_ENTAILMENT_THRESHOLD: float = 0.75
 
 # EfficientNetB3 confidence gate
 MRI_CONFIDENCE_GATE: float = 0.60

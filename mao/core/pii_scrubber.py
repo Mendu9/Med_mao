@@ -9,6 +9,7 @@ _PATTERNS = [
     (r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", "[EMAIL]"),
     (r"\b[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}\b", "[POSTCODE]"),
     (r"(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}", "[PHONE]"),
+    (r"\+44\s?\d{4}\s?\d{6}", "[PHONE]"),
 ]
 
 def scrub_pii(text: str) -> str:

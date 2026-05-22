@@ -225,13 +225,21 @@ def _call_llm(messages: list[dict[str, str]]) -> str:
 
 def _parse_tool_call(text: str) -> dict[str, str] | None:
     """Extract JSON tool call from LLM response, or return None if plain text."""
-    match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
-    if not match:
+    start = text.find("{")
+    if start == -1:
         return None
-    try:
-        return json.loads(match.group())
-    except json.JSONDecodeError:
-        return None
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 
 if __name__ == "__main__":

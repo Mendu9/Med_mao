@@ -32,6 +32,8 @@ import logging
 
 from langgraph.graph import END, START, StateGraph
 
+from mao.agents.chitchat_agent import chitchat_node
+from mao.agents.router import _is_chitchat as _router_is_chitchat
 from mao.agents.clinical_agent import clinical_node
 from mao.agents.code_agent import code_node
 from mao.agents.critic_agent import critic_node
@@ -63,6 +65,7 @@ NODE_MULTIMODAL = "multimodal_node"
 NODE_CODE       = "code_node"
 NODE_CRITIC     = "critic_node"
 NODE_CLINICAL   = "clinical_node"
+NODE_CHITCHAT   = "chitchat_node"
 
 _ALL_AGENT_NODES = [
     NODE_SUMMARIZER,
@@ -73,7 +76,20 @@ _ALL_AGENT_NODES = [
     NODE_CODE,
     NODE_CRITIC,
     NODE_CLINICAL,
+    NODE_CHITCHAT,
 ]
+
+
+def chitchat_gate_node(state: dict) -> dict:
+    """Zero-cost entry gate — marks chitchat intent before the pipeline runs."""
+    if _router_is_chitchat(state.get("user_query", "")):
+        return {**state, "intent": "chitchat"}
+    return state
+
+
+def _route_from_gate(state: dict) -> str:
+    """Skip decomposer/classifier/router for chitchat; use full pipeline otherwise."""
+    return "chitchat_node" if state.get("intent") == "chitchat" else "decomposer"
 
 
 def blocked_response_node(state: dict) -> dict:
@@ -112,6 +128,7 @@ def build_graph() -> StateGraph:
     builder.add_node(NODE_CODE,       code_node)
     builder.add_node(NODE_CRITIC,     critic_node)
     builder.add_node(NODE_CLINICAL,   clinical_node)
+    builder.add_node(NODE_CHITCHAT,   chitchat_node)
 
     # --- Register new pipeline nodes ---
     builder.add_node("decomposer",        decomposer_node)
@@ -121,8 +138,14 @@ def build_graph() -> StateGraph:
     builder.add_node("senior_supervisor", senior_supervisor_node)
     builder.add_node("blocked",           blocked_response_node)
 
-    # --- Entry point: START → decomposer → classifier → router ---
-    builder.add_edge(START, "decomposer")
+    # --- Entry point: chitchat_gate → (chitchat shortcut | full pipeline) ---
+    builder.add_node("chitchat_gate", chitchat_gate_node)
+    builder.add_edge(START, "chitchat_gate")
+    builder.add_conditional_edges(
+        "chitchat_gate",
+        _route_from_gate,
+        {"chitchat_node": NODE_CHITCHAT, "decomposer": "decomposer"},
+    )
     builder.add_edge("decomposer", "classifier")
     builder.add_edge("classifier", NODE_ROUTER)
 
@@ -139,6 +162,7 @@ def build_graph() -> StateGraph:
             NODE_CODE:       NODE_CODE,
             NODE_CRITIC:     NODE_CRITIC,
             NODE_CLINICAL:   NODE_CLINICAL,
+            NODE_CHITCHAT:   NODE_CHITCHAT,
         },
     )
 
@@ -160,10 +184,7 @@ def build_graph() -> StateGraph:
     builder.add_edge("blocked", END)
 
     compiled = builder.compile()
-    logger.info(
-        "MAO graph compiled with %d nodes",
-        len(_ALL_AGENT_NODES) + 1 + 6,  # agents + router + 6 new nodes
-    )
+    logger.info("MAO graph compiled with %d nodes", len(compiled.nodes))
     return compiled
 
 

@@ -1,0 +1,24 @@
+"""HuggingFace Spaces entrypoint — delegates to app/streamlit_app.py."""
+import runpy, sys, os
+
+# Ensure the project root is on the path
+sys.path.insert(0, os.path.dirname(__file__))
+
+# Disable heavy components that aren't available on HF free tier by default.
+# Users can override these via HF Space secrets.
+os.environ.setdefault("MAO_DISABLE_MEM0", "1")    # Mem0 needs Redis — not on HF free tier
+os.environ.setdefault("MAO_DISABLE_GRAPH", "0")   # Graph enabled
+os.environ.setdefault("MAO_DISABLE_BM25", "0")    # BM25 enabled (lazy-loaded on first query)
+os.environ.setdefault("MAO_DISABLE_RERANKER", "0")  # Reranker enabled
+
+# Prevent TensorFlow import hang (FlagEmbedding / reranker)
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
+
+# Point HF model cache to a writable location on HF Spaces
+os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
+os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/hf_cache")
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/hf_cache/sentence_transformers")
+os.environ.setdefault("TORCH_HOME", "/tmp/hf_cache/torch")
+
+runpy.run_module("app.streamlit_app", run_name="__main__", alter_sys=True)
