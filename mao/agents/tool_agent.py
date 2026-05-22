@@ -1,37 +1,4 @@
-"""
-mao/agents/tool_agent.py
--------------------------
-Tool agent — web search, calculator, Wikipedia API.
-
-Route trigger: intent == "tool"
-
-When to route here:
-  - "Search the web for the latest news on X"
-  - "What is 15% of 847?"
-  - "Look up the Wikipedia page for quantum computing"
-  - "What's the current population of Brazil?"
-  - Any query that requires live/real-time data (not in the KB)
-
-Tools available:
-  1. DuckDuckGoSearch  — live web search via duckduckgo-search library
-  2. WikipediaAPI      — Wikipedia summary + full sections via wikipedia-api
-  3. Calculator        — safe Python eval via numexpr (no arbitrary code exec)
-
-Design:
-  - LLM (mistral) decides which tool(s) to call via a ReAct-style loop
-  - Max 3 tool calls per turn to prevent infinite loops
-  - Tool results injected back into prompt for final synthesis
-  - Uses mistral for speed (tool selection is simple classification)
-
-Libraries:
-  - duckduckgo_search  (pip install duckduckgo-search)
-  - wikipedia-api      (pip install wikipedia-api)
-  - numexpr            (pip install numexpr)
-
-Integration points:
-  - memory/mem0_handler search before / save after
-  - core/state.py       MAOState contract
-"""
+"""Tool agent: ReAct-style loop over DuckDuckGo search, Wikipedia API, and safe calculator (numexpr)."""
 
 from __future__ import annotations
 

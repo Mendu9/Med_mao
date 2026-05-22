@@ -1,21 +1,4 @@
-"""
-mao/rag/reranker.py
--------------------
-Cross-encoder reranker using BAAI/bge-reranker-v2-m3 via FlagEmbedding.
-
-Why bge-reranker-v2-m3:
-  - State-of-the-art on MTEB reranking benchmark (as of mid-2024)
-  - Runs on CPU with use_fp16=True — no GPU required
-  - Used in production RAG pipelines at scale
-  - FlagEmbedding library is actively maintained by BAAI
-
-Pipeline position:
-  Step 4 of 5 in GraphRAG retrieval:
-  [vector search (20)] → [graph expand] → [merge/dedup] → [RERANK (top 5)] → [LLM]
-
-Integration points:
-  - rag/retriever.py calls rerank() after merge+dedup step
-"""
+"""Cross-encoder reranker using BAAI/bge-reranker-v2-m3 via FlagEmbedding; called at step 9 of the retrieval pipeline."""
 
 from __future__ import annotations
 

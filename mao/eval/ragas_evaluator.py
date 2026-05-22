@@ -1,29 +1,4 @@
-"""
-mao/eval/ragas_evaluator.py
------------------------------
-Async RAGAS hallucination + quality scorer.
-
-Runs as a background task after every /chat response for graphrag and clinical agents.
-Does NOT block the user-facing response — fires via asyncio.create_task().
-
-Metrics scored:
-  faithfulness        — is the answer grounded in the retrieved chunks?
-  answer_relevancy    — does the answer address the question?
-  context_precision   — are retrieved chunks actually relevant?
-  context_recall      — did retrieval miss important information?
-
-Scores are stored to Postgres table `response_metrics`.
-
-Hallucination threshold: faithfulness < 0.7 is flagged as a potential hallucination.
-Prometheus gauge is updated after each scoring run.
-
-Libraries:
-  ragas      (pip install ragas)
-  sqlalchemy (already a MAO dependency)
-
-If ragas or the LLM is unavailable, the function logs a warning and returns {}
-without crashing the application.
-"""
+"""Async RAGAS scorer (faithfulness, relevancy, precision, recall) running as a background task after /chat."""
 
 from __future__ import annotations
 

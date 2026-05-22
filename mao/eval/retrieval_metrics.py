@@ -1,38 +1,4 @@
-"""
-mao/eval/retrieval_metrics.py
-------------------------------
-Offline retrieval evaluation — MRR, Precision@K, Recall@K, F1@K.
-
-How it works
-------------
-These metrics require a golden dataset: (query, relevant_chunk_ids) pairs
-that say "for this question, these ChromaDB chunks are the correct answers."
-
-Since we have no human-labelled set, we generate one synthetically:
-  1. Sample N chunks from ChromaDB
-  2. Ask Groq to generate a question that the chunk answers
-  3. Store {question, relevant_chunk_id} → golden_dataset.json
-
-Then we evaluate:
-  For each (question, relevant_ids) in the golden dataset:
-    1. Run the retriever with top_k=K
-    2. Compare returned chunk_ids against relevant_ids
-    3. Compute Precision@K, Recall@K, F1@K, Reciprocal Rank
-  Average across all questions → MRR, mean P@K, mean R@K, mean F1@K
-
-Results are stored in Postgres table `retrieval_eval_results`.
-
-Usage
------
-  # Generate golden dataset (one-time, ~2 min for 50 samples)
-  python -m mao.eval.retrieval_metrics --generate --samples 50
-
-  # Run evaluation against existing golden dataset
-  python -m mao.eval.retrieval_metrics --eval --k 5
-
-  # Both in one shot
-  python -m mao.eval.retrieval_metrics --generate --eval --samples 50 --k 5
-"""
+"""Offline retrieval evaluation: synthetic golden dataset generation and MRR/P@K/R@K/F1@K scoring."""
 
 from __future__ import annotations
 

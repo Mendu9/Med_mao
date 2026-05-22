@@ -1,30 +1,4 @@
-"""
-mao/rag/graph_builder.py
-------------------------
-Builds a NetworkX entity graph from ingested documents.
-
-Why NetworkX over Neo4j:
-  - Zero infrastructure overhead — pure Python in-process
-  - Sufficient for corpus sizes up to ~500K entities
-  - Serializable to JSON (no running graph DB to manage)
-  - Trivially mockable in tests
-
-Entity extraction strategy:
-  - scispaCy NER (en_ner_bc5cdr_md or en_core_sci_lg) for biomedical entities
-    (DISEASE, CHEMICAL, etc.) with fallback to en_core_web_sm
-  - Co-occurrence within a *sentence* = edge (weighted by frequency)
-  - Graph persisted to disk as JSON; reloaded on startup
-
-Graph type: nx.MultiDiGraph
-  - Directed so future relation types (e.g. "treats", "causes") can be
-    represented as distinct edge keys in the same direction
-  - Multi so the same node pair can have multiple relation types
-
-Integration points:
-  - data/ingest_wikipedia.py calls build_graph_from_documents()
-  - data/ingest_alzheimers.py calls build_graph_from_documents()
-  - rag/retriever.py calls expand_via_graph() for graph traversal step
-"""
+"""Builds and persists a NetworkX MultiDiGraph of biomedical entities extracted via scispaCy NER co-occurrence."""
 
 from __future__ import annotations
 

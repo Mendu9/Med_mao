@@ -1,26 +1,4 @@
-"""
-mao/api/main.py
----------------
-FastAPI entrypoint for the MAO system.
-
-Endpoints:
-  POST /chat        — Main conversational endpoint
-  POST /chat/stream — SSE streaming chat endpoint
-  POST /ingest      — Trigger Wikipedia ingestion into ChromaDB
-  GET  /health      — Liveness check (Groq + ChromaDB + Postgres)
-  GET  /graph       — Return graph topology as Mermaid string
-
-Design:
-  - Async endpoints throughout
-  - Pydantic models for all request/response schemas
-  - Structured logging on every request
-  - The LangGraph graph is a module-level singleton (built once at startup)
-  - Heavy LangGraph/LLM calls run in a thread executor to avoid blocking
-    the event loop (LangGraph's .invoke() is synchronous)
-
-Usage:
-  uvicorn mao.api.main:app --host 0.0.0.0 --port 8080
-"""
+"""FastAPI entrypoint for MAO: /chat, /chat/stream (SSE), /ingest, /health, /graph endpoints."""
 
 from __future__ import annotations
 

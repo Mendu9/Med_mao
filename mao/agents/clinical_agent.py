@@ -1,48 +1,4 @@
-"""
-mao/agents/clinical_agent.py
-------------------------------
-Clinical AI assistant — MRI prediction + report analysis + research retrieval.
-
-Route trigger: intent == "clinical"
-
-When to route here:
-  - User uploads a 2D MRI image (PNG/JPG) for Alzheimer's stage prediction
-  - User uploads a PDF medical report for analysis
-  - Patient/doctor asks: "What does this scan show?", "What stage is this?"
-  - "Analyse this report", "My patient has LMCI — what treatment options exist?"
-  - Any clinical decision-support question about Alzheimer's / neuroimaging
-
-Three sub-modes (auto-detected from state["metadata"]):
-  1. MRI image  — metadata["image_b64"] or metadata["image_url"] present
-  2. PDF report — metadata["report_b64"] or metadata["report_path"] present
-  3. Text only  — no file; knowledge question with clinical context
-
-All three modes:
-  - Search Mem0 memories before LLM
-  - Retrieve from GraphRAG (AD research PDFs)
-  - ALWAYS append medical disclaimer
-
-Mode 1 (MRI) also:
-  - Runs EfficientNetB3 prediction (CN/EMCI/LMCI/AD + confidence)
-  - Web search for latest clinical evidence
-
-Mode 2 (Report) also:
-  - Extracts text from PDF (pypdf)
-  - Structured extraction: diagnosis, biomarkers, medications, tests
-  - Map-reduce summarization for long reports
-  - Web search for clinical guidelines
-
-Models:
-  - EfficientNetB3 (Saiarun/b3 on HuggingFace)  — prediction
-  - llama3.1:8b                                  — reasoning + synthesis
-  - mistral                                      — structured extraction (faster)
-
-Integration points:
-  - mao/models/mri_predictor.py  EfficientNetB3 wrapper
-  - mao/rag/retriever.py         GraphRAG 5-step pipeline
-  - mao/memory/mem0_handler.py   Mem0 search/save
-  - core/state.py                MAOState contract
-"""
+"""Clinical AI agent: MRI stage prediction (EfficientNetB3), PDF report analysis, and AD research retrieval."""
 
 from __future__ import annotations
 

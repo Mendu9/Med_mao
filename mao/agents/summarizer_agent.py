@@ -1,29 +1,4 @@
-"""
-mao/agents/summarizer_agent.py
---------------------------------
-Summarizer agent — condenses documents, passages, or chat history.
-
-Route trigger: intent == "summarize"
-
-When to route here:
-  - "Summarise this article: [paste]"
-  - "Give me a TL;DR of the above"
-  - "What are the key points from [document]?"
-  - "Condense this meeting transcript"
-
-Design choices:
-  - Uses mistral (fast, good compression) not llama3.1:8b (overkill for summarisation)
-  - Supports two modes:
-      a. Inline text: user provides text in the query
-      b. Knowledge-base: no text provided → retrieve from GraphRAG then summarise
-  - Map-reduce for long texts (>4000 chars): chunk → summarise each → combine
-  - Extractive hint: instruct model to use bullet points for structured output
-
-Integration points:
-  - rag/retriever.py    (mode b: when no inline text provided)
-  - memory/mem0_handler search before / save after
-  - core/state.py       MAOState contract
-"""
+"""Summarizer agent: condenses inline text or KB-retrieved content using map-reduce for long inputs."""
 
 from __future__ import annotations
 

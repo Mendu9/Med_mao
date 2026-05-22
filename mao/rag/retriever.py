@@ -1,43 +1,4 @@
-"""
-mao/rag/retriever.py
---------------------
-GraphRAG retrieval pipeline — the core intellectual asset of MAO.
-
-9-step pipeline (Sprint 3 upgrade):
-  1. Query expansion    → ontology synonyms via build_synonym_map()
-  2. Vector search      → top-N candidates from ChromaDB (dense)
-  3. BM25 sparse search → keyword retrieval via rank-bm25 (if available)
-  4. RRF merge          → Reciprocal Rank Fusion of dense + sparse lists
-  5. Entity extraction  → NER on merged top-N results
-  6. Graph traversal    → expand via typed NetworkX edges
-  7. Entity search      → metadata filter (preferred) or vector fallback
-  8. Final merge+dedup  → combine all sources
-  9. Reranker           → bge-reranker-v2-m3, return top-K
-
-Sprint 3 changes:
-  - _entity_search()          uses ChromaDB metadata $contains filter with
-                              vector-embed fallback (was: embed entity names)
-  - _bm25_search()            new: BM25 sparse retrieval for rare clinical terms
-  - _reciprocal_rank_fusion() new: standard RRF merge (Cormack et al. 2009)
-  - _expand_query()           new: synonym expansion from ontology graph
-  - _build_bm25_index()       new: lazy BM25 index builder (call explicitly)
-  - retrieve()                wired to use all new components; degrades
-                              gracefully when rank-bm25 / pronto are absent
-
-Why hybrid vector+graph over pure vector:
-  - Vector search misses multi-hop reasoning ("who advised X's advisor?")
-  - BM25 catches rare gene/drug names that embeddings dilute
-  - Graph traversal surfaces entity neighbours that share no lexical overlap
-  - Reranker then filters noise, giving precision on top of graph recall
-
-Integration points:
-  - agents/graphrag_agent.py  calls retrieve() as its primary operation
-  - data/ingest_wikipedia.py  populates the ChromaDB collection this queries
-  - rag/graph_builder.py      provides expand_via_graph(), load_graph()
-  - rag/ontology_loader.py    provides build_synonym_map()
-  - rag/reranker.py           provides rerank()
-  - rag/embedder.py           provides embed_query()
-"""
+"""9-step GraphRAG retrieval pipeline: query expansion, BM25, vector search, RRF, graph traversal, reranker."""
 
 from __future__ import annotations
 
