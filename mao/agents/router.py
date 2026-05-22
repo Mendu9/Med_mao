@@ -1,4 +1,29 @@
-"""LangGraph router node: classifies user intent via Mistral and dispatches to the appropriate agent."""
+"""
+mao/agents/router.py
+--------------------
+LangGraph router node — classifies user intent and dispatches to an agent.
+
+Design:
+  - Calls mistral (small, fast) with a structured classification prompt
+  - Returns one of the ALL_INTENTS labels (see core/state.py)
+  - Mem0 context is injected BEFORE calling the LLM (always)
+  - The LangGraph conditional edge reads state["intent"] to route
+
+Intent → Agent mapping:
+  summarize   → summarizer_node
+  graphrag    → graphrag_node
+  tool        → tool_node
+  sql         → sql_node
+  multimodal  → multimodal_node
+  critic      → critic_node
+  clinical    → clinical_node
+  fallback    → graphrag_node  (safe default)
+
+Integration points:
+  - graph.py adds this as the entry node
+  - All agent nodes imported and registered there
+  - memory/mem0_handler.py called here for pre-classification memory injection
+"""
 
 from __future__ import annotations
 
@@ -37,9 +62,6 @@ Classify the user query into EXACTLY ONE of these intent labels:
   tool        - User needs live web search, a calculator, or a Wikipedia lookup
   sql         - User asks about structured/tabular data, statistics, or database queries
   multimodal  - User provides or asks about an image, audio, or non-text media
-  code        - User wants code written, debugged, explained, reviewed, or executed;
-                any request involving a programming language, function, script, algorithm,
-                or software implementation (Python, JavaScript, SQL, etc.)
   critic      - User wants feedback, review, or evaluation of text/code/plan
   clinical    - User provides an MRI scan, brain image, or medical report FOR ANALYSIS;
                 asks about a SPECIFIC PATIENT'S scan results, Alzheimer's stage prediction
@@ -62,7 +84,6 @@ Rules:
     "summarise this medical report", "does this scan show Alzheimer's?"
   - When unsure between graphrag and summarize, check if the user provides
     a passage to summarize (summarize) or just asks a question (graphrag).
-  - When a query mentions writing/implementing/creating code, functions, or scripts → code.
 """
 
 _ROUTER_USER_TEMPLATE = """\
@@ -152,7 +173,6 @@ def route_to_agent(state: MAOState) -> str:
         "tool":       "tool_node",
         "sql":        "sql_node",
         "multimodal": "multimodal_node",
-        "code":       "code_node",
         "critic":     "critic_node",
         "clinical":   "clinical_node",
         "chitchat":   "chitchat_node",
