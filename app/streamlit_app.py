@@ -105,12 +105,12 @@ def _stream_response(
             stream=True,
             timeout=(10, 300),  # (connect_timeout_s, read_timeout_s)
         ) as resp:
-            if resp.status_code == 400:
+            if resp.status_code in (400, 503):
                 try:
                     detail = resp.json().get("detail", "This query is outside my clinical scope.")
                 except Exception:
-                    detail = "This query is outside my clinical scope."
-                yield detail
+                    detail = "Service temporarily unavailable. Please try again."
+                yield f"_{detail}_"
                 return
             resp.raise_for_status()
             for line in resp.iter_lines():
@@ -213,177 +213,124 @@ def _fetch_graph_topology() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _render_chat_tab() -> None:
-    """Render the Chat tab with streaming responses and metadata sidebar."""
-    col_main, col_meta = st.columns([3, 1])
+    """Render the Chat tab with streaming responses and inline metadata under each answer."""
+    st.markdown("### Chat with MAO")
+    st.markdown(
+        "_Ask about Alzheimer's disease, stroke, brain health, or request clinical summaries._"
+    )
 
-    with col_main:
-        st.markdown("### Chat with MAO")
-        st.markdown(
-            "_Ask about Alzheimer's disease, stroke, brain health, or request clinical summaries._"
+    # Render conversation history
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat input
+    user_input = st.chat_input(
+        "Ask about Alzheimer's, stroke, or brain health..."
+    )
+
+    if user_input:
+        st.session_state["request_count"] += 1
+
+        st.session_state["messages"].append(
+            {"role": "user", "content": user_input}
         )
+        with st.chat_message("user"):
+            st.markdown(user_input)
 
-        # Render conversation history
-        for msg in st.session_state["messages"]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state["messages"][:-1]
+        ]
 
-        # Chat input
-        user_input = st.chat_input(
-            "Ask about Alzheimer's, stroke, or brain health..."
-        )
+        full_response = ""
+        resp_data: dict[str, Any] = {}
 
-        if user_input:
-            st.session_state["request_count"] += 1
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
 
-            # Append user message
-            st.session_state["messages"].append(
-                {"role": "user", "content": user_input}
-            )
-            with st.chat_message("user"):
-                st.markdown(user_input)
+            for token in _stream_response(
+                user_input, st.session_state["user_id"], history
+            ):
+                if token.startswith("__meta__:"):
+                    try:
+                        import json as _json
+                        meta_parsed = _json.loads(token[9:].strip())
+                        resp_data = meta_parsed
+                    except Exception:
+                        pass
+                    continue
+                full_response += token
+                placeholder.markdown(full_response + " ▌")
+            placeholder.markdown(full_response)
 
-            # Build history for API (exclude the message just appended)
-            history = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state["messages"][:-1]
-            ]
-
-            full_response = ""
-            resp_data: dict[str, Any] = {}
-
-            with st.chat_message("assistant"):
-                placeholder = st.empty()
-
-                # Stream response word-by-word; capture trailing __meta__: event for metadata.
-                for token in _stream_response(
-                    user_input, st.session_state["user_id"], history
-                ):
-                    if token.startswith("__meta__:"):
-                        try:
-                            import json as _json
-                            meta_parsed = _json.loads(token[9:].strip())
-                            resp_data = meta_parsed
-                        except Exception:
-                            pass
-                        continue
-                    full_response += token
-                    placeholder.markdown(full_response + " ▌")
-                placeholder.markdown(full_response)
-
-            st.session_state["messages"].append(
-                {"role": "assistant", "content": full_response}
-            )
+            # Inline metadata shown directly under the response
             if resp_data:
-                st.session_state["last_metadata"] = resp_data
+                _render_inline_meta(resp_data)
+
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": full_response}
+        )
+        if resp_data:
+            st.session_state["last_metadata"] = resp_data
+        st.rerun()
+
+    col_clear, _ = st.columns([1, 4])
+    with col_clear:
+        if st.button("Clear conversation"):
+            st.session_state["messages"] = []
+            st.session_state["last_metadata"] = {}
             st.rerun()
 
-    with col_meta:
-        st.markdown("### Response Info")
-        meta = st.session_state.get("last_metadata", {})
 
-        # Uncertainty warning banner
-        uncertainty = meta.get("uncertainty_flag", False)
-        nli_val = None
-        nested_meta_warn = meta.get("metadata") or {}
-        try:
-            nli_val = float(nested_meta_warn.get("nli_score", 1.0))
-        except (TypeError, ValueError):
-            nli_val = None
+def _render_inline_meta(meta: dict[str, Any]) -> None:
+    """Render compact agent/intent/sources info inline under a response."""
+    agent   = meta.get("agent_used", "")
+    intent  = meta.get("intent", "")
+    latency = meta.get("latency_ms")
 
-        if uncertainty or (nli_val is not None and nli_val < 0.7):
-            st.warning(
-                "⚠️ **Low confidence** — This response may contain unverified claims. "
-                "Always verify with a qualified clinician.",
-                icon="⚠️",
-            )
+    parts: list[str] = []
+    if agent:
+        parts.append(f"agent: `{agent}`")
+    if intent:
+        color = _INTENT_COLORS.get(intent, "gray")
+        parts.append(f"intent: :{color}[{intent}]")
+    if latency is not None:
+        parts.append(f"{latency:.0f} ms")
+    if parts:
+        st.caption(" · ".join(parts))
 
-        # Intent badge
-        intent = meta.get("intent", "")
-        if intent:
-            color = _INTENT_COLORS.get(intent, "gray")
-            st.markdown(f"**Intent:** :{color}[{intent}]")
-        else:
-            st.markdown("**Intent:** _waiting..._")
+    # Uncertainty warning
+    nested_meta = meta.get("metadata") or {}
+    uncertainty = meta.get("uncertainty_flag", False)
+    try:
+        nli_val = float(nested_meta.get("nli_score", 1.0))
+    except (TypeError, ValueError):
+        nli_val = 1.0
+    if uncertainty or nli_val < 0.7:
+        st.warning(
+            "Low confidence — verify with a qualified clinician.",
+            icon="⚠️",
+        )
 
-        agent = meta.get("agent_used", "")
-        if agent:
-            st.markdown(f"**Agent:** `{agent}`")
-
-        latency = meta.get("latency_ms")
-        if latency is not None:
-            st.markdown(f"**Latency:** {latency:.0f} ms")
-
-        st.divider()
-
-        # Sources
-        sources = meta.get("sources", [])
-        if not sources:
-            sources = (meta.get("metadata") or {}).get("sources", [])
-        web_sources = meta.get("web_sources", [])
-        if not web_sources:
-            web_sources = (meta.get("metadata") or {}).get("web_sources", [])
-
-        if sources:
-            st.markdown("**Sources:**")
+    # Sources
+    sources = meta.get("sources", []) or nested_meta.get("sources", [])
+    if sources:
+        with st.expander("Sources", expanded=False):
             for src in sources[:5]:
                 title = src.get("title") or src.get("source", "Unknown")
                 score = src.get("score")
                 score_str = f" `{score:.3f}`" if score else ""
                 st.markdown(f"- {title}{score_str}")
 
-        if web_sources:
-            st.markdown("**Web:**")
+    web_sources = meta.get("web_sources", []) or nested_meta.get("web_sources", [])
+    if web_sources:
+        with st.expander("Web sources", expanded=False):
             for ws in web_sources[:3]:
                 url = ws.get("url", "")
                 title = ws.get("title", url)
                 if url:
                     st.markdown(f"- [{title}]({url})")
-
-        st.divider()
-
-        # Eval scores
-        nested_meta = meta.get("metadata") or {}
-        faithfulness      = nested_meta.get("faithfulness")
-        nli_score         = nested_meta.get("nli_score")
-        answer_relevancy  = nested_meta.get("answer_relevancy")
-
-        if faithfulness is not None:
-            try:
-                val = float(faithfulness)
-                st.markdown(f"**Faithfulness:** {int(val * 100)}%")
-                st.progress(min(1.0, val))
-            except (TypeError, ValueError):
-                pass
-
-        if answer_relevancy is not None:
-            try:
-                val = float(answer_relevancy)
-                st.markdown(f"**Answer relevancy:** {int(val * 100)}%")
-                st.progress(min(1.0, val))
-            except (TypeError, ValueError):
-                pass
-
-        if nli_score is not None:
-            try:
-                val = float(nli_score)
-                st.markdown(f"**NLI score:** {int(val * 100)}%")
-                st.progress(min(1.0, val))
-            except (TypeError, ValueError):
-                pass
-
-        # Memory context
-        memory_ctx = nested_meta.get("memory_context", [])
-        if memory_ctx:
-            st.divider()
-            st.markdown("**Memory context:**")
-            for item in memory_ctx[:3]:
-                st.markdown(f"- _{str(item)[:80]}_")
-
-        st.divider()
-        if st.button("Clear conversation", use_container_width=True):
-            st.session_state["messages"] = []
-            st.session_state["last_metadata"] = {}
-            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -503,50 +450,123 @@ def _render_report_tab() -> None:
     )
 
     # --- Demo mode: let user try without uploading a real PDF ---
-    use_demo = st.checkbox(
-        "Use sample clinical report (demo — no PDF required)",
-        value=False,
-        key="report_use_demo",
+    demo_choice = st.selectbox(
+        "Sample report (demo — no PDF required)",
+        ["None (upload your own)", "Alzheimer's Disease — Discharge Summary", "Ischaemic Stroke — Admission & Discharge Note"],
+        index=0,
+        key="report_demo_choice",
     )
-    _DEMO_REPORT = """NEUROLOGY OUTPATIENT CLINIC — DISCHARGE SUMMARY
-Patient: [REDACTED]  |  Age: 72  |  Sex: M  |  Date: 2025-11-14
+    use_demo = demo_choice != "None (upload your own)"
+
+    _DEMO_REPORTS: dict[str, str] = {
+        "Alzheimer's Disease — Discharge Summary": """NEUROLOGY OUTPATIENT CLINIC — DISCHARGE SUMMARY
+Patient: [REDACTED]  |  DOB: [REDACTED]  |  Age: 72  |  Sex: M
+NHS No: [REDACTED]  |  Consultant: Dr A. Patel  |  Date: 14/11/2025
 
 PRESENTING COMPLAINT
-Progressive memory loss over 18 months. Difficulty with word-finding, getting lost in familiar areas, and managing finances.
+Progressive memory loss over 18 months. Difficulty with word-finding, getting lost in familiar surroundings, and inability to manage finances independently.
 
-HISTORY
-MMSE score: 18/30. Mild-to-moderate cognitive impairment. Family history of Alzheimer's disease (mother). Non-smoker.
+HISTORY OF PRESENTING COMPLAINT
+The patient was referred by his GP following concerns raised by his wife. MMSE score on assessment: 18/30 (orientation 6/10, registration 3/3, attention 3/5, recall 1/3, language 5/8). MoCA: 17/30. Significant impairment in episodic memory and visuospatial domains.
+
+PAST MEDICAL HISTORY
+Hypertension (diagnosed 2018), Type 2 Diabetes (HbA1c 52 mmol/mol), Hypercholesterolaemia
+
+FAMILY HISTORY
+Mother: Alzheimer's disease (onset age 74, deceased)
 
 INVESTIGATIONS
-MRI Brain: Hippocampal atrophy bilaterally, more prominent on the left. White matter changes (Fazekas grade 1).
-CSF Biomarkers: Abeta42 reduced (450 pg/mL), total-tau elevated (640 pg/mL), phospho-tau elevated (88 pg/mL). Consistent with AD pathology.
-ApoE Genotype: APOE ε4/ε3 heterozygous.
-FDG-PET: Hypometabolism in bilateral parietal and temporal regions.
+MRI Brain (3T): Bilateral hippocampal atrophy (left > right), Medial Temporal Lobe Atrophy scale 3/4. Fazekas grade 1 white matter changes. No evidence of vascular lesion, tumour, or haemorrhage.
+CSF Biomarkers: Aβ42 = 450 pg/mL (↓), Total-tau = 640 pg/mL (↑), Phospho-tau = 88 pg/mL (↑). ATN profile: A+T+N+. Consistent with Alzheimer's disease pathology.
+ApoE Genotyping: APOE ε4/ε3 heterozygous (increased lifetime AD risk ~3×).
+FDG-PET: Hypometabolism in bilateral parietal and posterior temporal regions, consistent with AD pattern.
+Blood Panel: TSH normal, B12 normal, FBC normal, renal function normal.
 
 DIAGNOSIS
-Mild-to-moderate Alzheimer's disease (ICD-10: G30.9). APOE ε4 carrier.
+1. Mild-to-moderate Alzheimer's disease (ICD-10: G30.9). APOE ε4 carrier.
+2. Hypertension (I10)
+3. Type 2 Diabetes Mellitus (E11)
 
-MEDICATIONS
-- Donepezil 10 mg once daily (escalated from 5 mg after 4 weeks)
+CURRENT MEDICATIONS
+- Donepezil 10 mg once daily (titrated from 5 mg after 4 weeks — tolerating well)
 - Memantine 20 mg once daily
-- Atorvastatin 20 mg once daily (cardiovascular risk management)
+- Atorvastatin 20 mg once daily
+- Ramipril 5 mg once daily
+- Metformin 1 g twice daily
 - Vitamin D3 1000 IU once daily
 
-PLAN
-1. Reassess in 6 months with repeat MMSE and ADL questionnaire.
-2. Refer to occupational therapy for home-safety assessment.
-3. Memory clinic support group referral.
-4. Family counselling regarding prognosis and advance care planning.
-5. Review driving capacity — refer to DVLA if MMSE falls below 16.
+MANAGEMENT PLAN
+1. Review in Memory Clinic in 6 months: repeat MMSE, MoCA, ADL questionnaire (Barthel Index).
+2. Referral to Occupational Therapy for home-safety assessment and driving capacity review.
+3. Referral to Memory Clinic support group and carer education programme.
+4. Family counselling regarding prognosis, advance care planning, and legal matters (Power of Attorney).
+5. If MMSE falls below 16 at next review: notify DVLA and assess fitness to drive.
+6. Consider lecanemab or donanemab eligibility if amyloid-confirmed, once licensed in NHS.
 
-CLINICIAN: Dr. A. Patel, Consultant Neurologist
-"""
+CLINICIAN: Dr A. Patel, MBChB MRCP(UK) MD — Consultant Neurologist
+""",
+        "Ischaemic Stroke — Admission & Discharge Note": """ACUTE STROKE UNIT — ADMISSION AND DISCHARGE SUMMARY
+Patient: [REDACTED]  |  DOB: [REDACTED]  |  Age: 67  |  Sex: F
+NHS No: [REDACTED]  |  Admitting Consultant: Dr R. Bhatt  |  Ward: ASU-7
+Admission Date: 08/05/2025  |  Discharge Date: 14/05/2025
+
+PRESENTING COMPLAINT
+Sudden onset left-sided weakness and slurred speech, duration approximately 4 hours prior to arrival in ED.
+
+HISTORY OF PRESENTING COMPLAINT
+The patient was found by her husband at 08:15 with left arm and leg weakness (MRC grade 3/5 proximally and 2/5 distally), left facial droop, dysarthria, and left visual field inattention. Last known well: 07:30. NIHSS on admission: 14 (moderate-to-severe stroke). Glasgow Coma Scale: 14/15.
+
+PAST MEDICAL HISTORY
+Paroxysmal Atrial Fibrillation (not anticoagulated), Hypertension, Hyperlipidaemia, Ex-smoker (20 pack-years)
+
+MEDICATIONS ON ADMISSION
+Amlodipine 10 mg OD, Atorvastatin 40 mg ON, Aspirin 75 mg OD (initiated 3/12 ago for TIA)
+
+INVESTIGATIONS
+CT Brain (non-contrast, on admission): No haemorrhage. Subtle early ischaemic change in right MCA territory (ASPECTS 8/10).
+CT Perfusion: Mismatch ratio 2.8. Ischaemic core ~18 mL, penumbra ~50 mL. Salvageable tissue present.
+MRI Brain (DWI, Day 2): Acute right MCA territory infarct involving posterior frontal and anterior parietal lobes. No haemorrhagic transformation.
+CT Angiography: Right internal carotid artery occlusion at bifurcation. Right MCA M1 partial recanalisation post-thrombectomy.
+ECG: Irregularly irregular rhythm. Confirmed atrial fibrillation.
+Echo (TTE): Mild left ventricular hypertrophy. No thrombus. EF 60%.
+Bloods: HbA1c 43 mmol/mol, LDL 3.2 mmol/L, INR 1.1, APTT normal.
+
+ACUTE TREATMENT
+IV Alteplase (0.9 mg/kg, max 90 mg) administered at 09:05 (onset-to-needle: 95 min). Mechanical thrombectomy (right ICA/MCA): TICI 2b reperfusion achieved. Post-procedure NIHSS: 8.
+
+DIAGNOSIS
+1. Acute right MCA territory ischaemic stroke (ICD-10: I63.3) — cardioembolic aetiology (AF-related).
+2. Paroxysmal Atrial Fibrillation (I48.0) — newly anticoagulated.
+3. Hypertension (I10).
+4. Hyperlipidaemia (E78.5).
+
+DISCHARGE MEDICATIONS
+- Apixaban 5 mg twice daily (initiated Day 5 post-stroke — CHA₂DS₂-VASc = 5)
+- Atorvastatin 80 mg once daily (↑ from 40 mg)
+- Amlodipine 10 mg once daily
+- Aspirin 75 mg once daily (to continue for 30 days post-event, then discontinue)
+
+DISCHARGE NIHSS: 6. mRS at discharge: 3 (moderate disability — requires assistance with some ADLs).
+
+FOLLOW-UP AND REHABILITATION PLAN
+1. Outpatient stroke follow-up in 4 weeks: repeat MRI brain, anticoagulation review.
+2. Inpatient neurorehabilitation transfer for physiotherapy, occupational therapy, and speech and language therapy.
+3. Cardiology review: rhythm monitoring (7-day Holter), rate control optimisation.
+4. Secondary prevention: BP target <130/80 mmHg, LDL target <1.8 mmol/L.
+5. Driving: DVLA notification — must not drive for 1 month (TIA/stroke regulations).
+6. Anticoagulation clinic enrolment for INR monitoring if warfarin indicated in future.
+
+CLINICIAN: Dr R. Bhatt, MBChB FRCP — Consultant Stroke Neurologist
+""",
+    }
+    _DEMO_REPORT = _DEMO_REPORTS.get(demo_choice, "")
 
     uploaded_file = st.file_uploader(
         "Upload patient report (PDF)",
         type=["pdf"],
         help="Discharge summaries, neuropsychological assessments, radiology reports, neurology letters.",
         disabled=use_demo,
+        key="report_pdf_uploader",
     )
 
     clinical_notes = st.text_area(
@@ -634,10 +654,8 @@ CLINICIAN: Dr. A. Patel, Consultant Neurologist
         "**Accepted report types:** discharge summaries, neuropsychological assessments, "
         "radiology reports, neurology letters, neuropsychiatric evaluations\n\n"
         "**Output includes:** Diagnosis summary, key findings, medication list, next steps\n\n"
-        "**Sample reports online:**\n"
-        "- [NIH NIA Alzheimer's case vignettes](https://www.nia.nih.gov/health/alzheimers-and-dementia/alzheimers-disease-fact-sheet)\n"
-        "- [ClinicalCases.org neurology cases](https://www.clinicalcases.org)\n"
-        "- Tick **'Use sample clinical report'** above to run the demo without uploading."
+        "Use the **Sample report** dropdown above to run a demo without uploading a PDF — "
+        "both an Alzheimer's discharge summary and an ischaemic stroke admission note are included."
     )
 
 
@@ -798,35 +816,6 @@ def _render_health_tab() -> None:
 def _render_eval_tab() -> None:
     """Render the Eval & Observability dashboard tab."""
     st.markdown("### Evaluation & Observability")
-
-    langsmith_project = os.getenv("LANGSMITH_PROJECT", "MED")
-    ls_enabled = bool(os.getenv("LANGSMITH_API_KEY"))
-
-    # Observability links panel
-    with st.expander("📍 Where to view each system", expanded=True):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**RAGAS scores**")
-            st.caption("This tab (table below) or `GET /eval/dashboard`")
-            st.markdown("**Prometheus metrics**")
-            st.caption("`http://localhost:8080/metrics` — scrape with Grafana for charts")
-            st.markdown("**NLI checker**")
-            st.caption("Inline in API logs (`unentailed_ratio=X`). ⚠️ appended to responses when >30%")
-        with col_b:
-            st.markdown("**LangSmith traces**")
-            if ls_enabled:
-                st.caption(f"Enabled ✅ — project: `{langsmith_project}`")
-                st.markdown("[Open smith.langchain.com →](https://smith.langchain.com)")
-            else:
-                st.caption("Not enabled — add `LANGSMITH_API_KEY` to .env")
-            st.markdown("**pgAdmin tables**")
-            st.caption(
-                "Host: `localhost:5432` | DB: `mao` | User: `mao` | PW: `mao`\n\n"
-                "Tables: `response_metrics` (RAGAS), `chat_sessions` (history), "
-                "`guardrail_events` (blocks), `response_feedback` (thumbs)"
-            )
-
-    st.divider()
 
     if st.button("🔄 Refresh RAGAS scores", type="secondary"):
         data = _fetch_eval_dashboard()
@@ -1004,12 +993,6 @@ def main() -> None:
     with tab_eval:
         _render_eval_tab()
 
-    # Subtle footer
-    ls_key = os.getenv("LANGSMITH_API_KEY", "")
-    ls_icon = "✅" if ls_key else "❌"
-    st.caption(
-        f"MAO Clinical AI — powered by LangGraph + GraphRAG + Groq | LangSmith: {ls_icon}"
-    )
 
 
 if __name__ == "__main__":

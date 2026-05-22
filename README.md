@@ -1,15 +1,3 @@
----
-title: MAO Clinical AI Assistant
-emoji: 🧠
-colorFrom: blue
-colorTo: purple
-sdk: streamlit
-sdk_version: "1.35.0"
-app_file: app.py
-pinned: false
-license: mit
----
-
 # MAO — Medical Multi-Agent Orchestrator
 
 A locally-running clinical AI system that routes biomedical queries to specialized agents. Zero external API costs — everything runs locally via Ollama.
@@ -18,35 +6,75 @@ A locally-running clinical AI system that routes biomedical queries to specializ
 
 ## Architecture
 
+### LangGraph workflow (`get_graph()`)
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+    __start__([START]):::first
+    chitchat_gate(chitchat_gate)
+    decomposer(decomposer)
+    classifier(classifier)
+    router_node(router_node)
+    summarizer_node(summarizer_node)
+    graphrag_node(graphrag_node)
+    tool_node(tool_node)
+    sql_node(sql_node)
+    multimodal_node(multimodal_node)
+    critic_node(critic_node)
+    clinical_node(clinical_node)
+    chitchat_node(chitchat_node)
+    domain_supervisor(domain_supervisor)
+    council(council)
+    senior_supervisor(senior_supervisor)
+    blocked(blocked)
+    __end__([END]):::last
+
+    __start__ --> chitchat_gate
+    chitchat_gate -.->|chitchat| chitchat_node
+    chitchat_gate -.->|other| decomposer
+    decomposer --> classifier
+    classifier --> router_node
+    router_node -.-> summarizer_node
+    router_node -.-> graphrag_node
+    router_node -.-> tool_node
+    router_node -.-> sql_node
+    router_node -.-> multimodal_node
+    router_node -.-> critic_node
+    router_node -.-> clinical_node
+    router_node -.-> chitchat_node
+    summarizer_node --> domain_supervisor
+    graphrag_node --> domain_supervisor
+    tool_node --> domain_supervisor
+    sql_node --> domain_supervisor
+    multimodal_node --> domain_supervisor
+    critic_node --> domain_supervisor
+    clinical_node --> domain_supervisor
+    chitchat_node --> domain_supervisor
+    domain_supervisor --> council
+    council -.->|passed| senior_supervisor
+    council -.->|blocked| blocked
+    senior_supervisor --> __end__
+    blocked --> __end__
+
+    classDef default fill:#f2f0ff,line-height:1.2
+    classDef first fill-opacity:0
+    classDef last fill:#bfb6fc
 ```
-User
-  │
-  ▼
-POST /chat  (FastAPI :8080)
-  │
-  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  LangGraph StateGraph                                                        │
-│                                                                              │
-│   START                                                                      │
-│     │                                                                        │
-│     ▼                                                                        │
-│  router_node  ──── 1. search_memories (Mem0)                                 │
-│   (mistral)   ──── 2. classify intent (8 labels)                             │
-│     │                                                                        │
-│     └──[state["intent"]]──────────────────────────────────────────────┐     │
-│                                                                        │     │
-│   graphrag  summarize   tool    sql   critic  multimodal  clinical    │     │
-│      │          │        │       │       │         │          │       │     │
-│      ▼          ▼        ▼       ▼       ▼         ▼          ▼       │     │
-│  [all agents: search_memories → process → save_memory]                │     │
-│      │                                                                 │     │
-│      └──────────────────────────────────────────────────────────► END │     │
-└─────────────────────────────────────────────────────────────────────────────┘
-  │
-  ▼
-ChatResponse  { response, agent_used, intent, metadata, latency_ms }
-```
+
+**Request flow:**
+1. `chitchat_gate` — fast-path: trivial greetings skip the full pipeline
+2. `decomposer` — expands multi-part questions into sub-queries
+3. `classifier` — domain classification (Alzheimer's / Stroke / General)
+4. `router_node` — Groq LLM intent classification (8 labels)
+5. Agent node — executes the query (see agents table below)
+6. `domain_supervisor` — checks response is within clinical scope
+7. `council` — LLM safety council (patient safety review)
+8. `senior_supervisor` — final quality gate before returning to user
 
 ### GraphRAG retrieval pipeline (inside graphrag_node)
 

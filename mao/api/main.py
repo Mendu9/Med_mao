@@ -239,7 +239,16 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         graph = get_graph()
         result = await loop.run_in_executor(_executor, graph.invoke, state)
     except Exception as exc:
+        exc_str = str(exc)
         logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
+        if "Connection error" in exc_str or "connect" in exc_str.lower():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The AI service (Groq) is temporarily unreachable. "
+                    "Check your internet connection or GROQ_API_KEY and try again."
+                ),
+            ) from exc
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
 
     result = await apply_output_guardrails(result, request_id)
@@ -362,7 +371,16 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         graph = get_graph()
         result = await loop.run_in_executor(_executor, graph.invoke, state)
     except Exception as exc:
+        exc_str = str(exc)
         logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
+        if "Connection error" in exc_str or "connect" in exc_str.lower():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The AI service (Groq) is temporarily unreachable. "
+                    "Check your internet connection or GROQ_API_KEY and try again."
+                ),
+            ) from exc
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
 
     result = await apply_output_guardrails(result, request_id)

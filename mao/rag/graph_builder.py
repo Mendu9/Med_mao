@@ -62,6 +62,46 @@ def _get_nlp():
 # Entity extraction
 # ---------------------------------------------------------------------------
 
+_MIN_ENTITY_LEN = 3
+_MAX_ENTITY_LEN = 120
+
+# Labels from en_core_web_sm that carry no biomedical signal — skip them
+# so the graph stays clinically relevant when the fallback model is active.
+_SKIP_LABELS_WEB_SM = frozenset({
+    "DATE", "TIME", "PERCENT", "MONEY", "QUANTITY", "ORDINAL", "CARDINAL",
+    "FAC", "NORP", "LANGUAGE", "EVENT", "WORK_OF_ART", "LAW", "LOC",
+})
+
+
+def _is_valid_entity(text: str, label: str) -> bool:
+    """Return True if the entity string is a plausible biomedical entity."""
+    t = text.strip()
+    if len(t) < _MIN_ENTITY_LEN or len(t) > _MAX_ENTITY_LEN:
+        return False
+    # Must start with a letter or digit (rules out punctuation fragments)
+    if not (t[0].isalpha() or t[0].isdigit()):
+        return False
+    # Short all-lowercase tokens ≤6 chars are almost always PDF extraction artifacts
+    if len(t) <= 6 and t.islower():
+        return False
+    # Starts with a lowercase letter AND is short — very likely a fragment
+    if len(t) <= 8 and t[0].islower() and not t[0].isdigit():
+        # Allow known short biomedical abbreviations (all-caps or mixed)
+        if not any(c.isupper() for c in t):
+            return False
+    # Strings with no vowels are likely consonant-only fragments
+    stripped_alpha = "".join(c for c in t.lower() if c.isalpha())
+    if len(stripped_alpha) >= 4 and not any(c in "aeiou" for c in stripped_alpha):
+        return False
+    # Contains ? or other non-printable/special chars — likely garbled unicode from PDF
+    if "?" in t or "\x00" in t:
+        return False
+    # Drop web_sm non-biomedical label types
+    if label in _SKIP_LABELS_WEB_SM:
+        return False
+    return True
+
+
 def extract_entities(text: str) -> list[tuple[str, str]]:
     """
     Run spaCy NER on *text*.
@@ -79,7 +119,7 @@ def extract_entities(text: str) -> list[tuple[str, str]]:
     for ent in doc.ents:
         label = ent.label_ if ent.label_ else "ENTITY"
         entity_text = ent.text.strip()
-        if len(entity_text) > 1:
+        if _is_valid_entity(entity_text, label):
             results.append((entity_text, label))
     return results
 
@@ -301,6 +341,22 @@ def expand_via_graph(
         len(seed_entities), len(expanded), actual_hops,
     )
     return expanded
+
+
+def clean_graph(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
+    """
+    Remove clearly invalid nodes from a loaded graph (e.g. PDF extraction fragments).
+
+    Applies the same _is_valid_entity filter used during ingestion.
+    Returns the same graph instance with bad nodes removed in-place.
+    """
+    bad_nodes = [
+        n for n in list(G.nodes())
+        if not _is_valid_entity(str(n), G.nodes[n].get("node_type", "ENTITY"))
+    ]
+    G.remove_nodes_from(bad_nodes)
+    logger.info("clean_graph: removed %d invalid nodes, %d remain", len(bad_nodes), G.number_of_nodes())
+    return G
 
 
 if __name__ == "__main__":
