@@ -31,8 +31,12 @@ chroma_data/
 
 # MAO generated data artifacts (large, machine-generated — rebuild via ingestion)
 mao/data/bm25_index.pkl
-mao/data/entity_graph.json
 mao/data/golden_dataset.json
+
+# Research PDFs — source data, not for public repos (large, redistributed separately)
+mao/rag/data/*.pdf
+ad/rag/data/*.pdf
+*.pdf
 
 # HuggingFace model cache
 hf_cache/
