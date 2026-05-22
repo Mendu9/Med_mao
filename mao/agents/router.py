@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from mao.core.config import cfg
 from mao.core import llm as groq_llm
 from mao.core.state import (
     ALL_INTENTS,
+    INTENT_CHITCHAT,
     INTENT_CLINICAL,
     INTENT_FALLBACK,
     INTENT_GRAPHRAG,
@@ -53,26 +55,40 @@ _ROUTER_SYSTEM = """\
 You are an intent classification router for a multi-agent AI system.
 Classify the user query into EXACTLY ONE of these intent labels:
 
-  summarize   - User wants a summary of a document or topic
-  graphrag    - User asks a factual/knowledge question (who, what, where, when, why)
+  summarize   - User wants a summary of a document or topic they provide
+  graphrag    - User asks a factual/knowledge/science question (who, what, where, when, why,
+                how does X work, explain X, what is X, what causes X, what are the symptoms of X)
+                — including biomedical science questions about proteins, genes, mechanisms,
+                pathways, disease biology, neuropathology, stroke, cardiovascular, dementia
   tool        - User needs live web search, a calculator, or a Wikipedia lookup
   sql         - User asks about structured/tabular data, statistics, or database queries
   multimodal  - User provides or asks about an image, audio, or non-text media
-  code        - User wants code written, debugged, explained, or executed
+  code        - User wants code written, debugged, explained, reviewed, or executed;
+                any request involving a programming language, function, script, algorithm,
+                or software implementation (Python, JavaScript, SQL, etc.)
   critic      - User wants feedback, review, or evaluation of text/code/plan
-  clinical    - User provides an MRI scan, brain image, or medical report for analysis;
-                asks about Alzheimer's stage prediction, patient scan results, what a
-                scan shows, report summarization, or clinical decision support for
-                brain imaging and neurology
+  clinical    - User provides an MRI scan, brain image, or medical report FOR ANALYSIS;
+                asks about a SPECIFIC PATIENT'S scan results, Alzheimer's stage prediction
+                for a patient, clinical decision support for brain imaging, or wants a
+                structured medical report card generated from patient data
+  chitchat    - Greetings, pleasantries, acknowledgements, off-topic conversation
+                (hi, hello, thanks, yes, no, ok)
   fallback    - Query does not fit any above category
 
 Rules:
   - Respond with ONLY the label word, nothing else.
   - When unsure between graphrag and tool, prefer graphrag.
-  - When unsure between graphrag and clinical, prefer clinical for any medical imaging
-    or patient-context questions.
+  - Use clinical ONLY when the user is asking about a specific patient case, medical image,
+    or report — NOT for general biomedical science questions (those are graphrag).
+  - Examples of graphrag (NOT clinical): "what are tau tangles?", "explain amyloid cascade",
+    "what does APOE4 do?", "how does neuroinflammation work?",
+    "what causes brain stroke?", "what is ischemic stroke?", "what are stroke risk factors?",
+    "how does dementia progress?", "what is the blood-brain barrier?"
+  - Examples of clinical (NOT graphrag): "analyse this MRI", "what stage is this patient?",
+    "summarise this medical report", "does this scan show Alzheimer's?"
   - When unsure between graphrag and summarize, check if the user provides
     a passage to summarize (summarize) or just asks a question (graphrag).
+  - When a query mentions writing/implementing/creating code, functions, or scripts → code.
 """
 
 _ROUTER_USER_TEMPLATE = """\
@@ -84,6 +100,20 @@ Chat history (last 3 turns):
 User query: {query}
 
 Intent label:"""
+
+# ---------------------------------------------------------------------------
+# Fast-path chitchat detection (avoids LLM call for trivial queries)
+# ---------------------------------------------------------------------------
+
+_CHITCHAT_PATTERN = re.compile(
+    r"^(hi|hello|hey|thanks|thank you|ok|okay|bye|good|great|sure|yes|no|got it|understood)[!?.]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_chitchat(query: str) -> bool:
+    """Return True only if the query exactly matches a greeting/chitchat pattern."""
+    return bool(_CHITCHAT_PATTERN.match(query.strip()))
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +133,13 @@ def router_node(state: MAOState) -> MAOState:
     if metadata.get("image_b64") or metadata.get("report_path"):
         logger.info("Router: image/report detected → clinical (no LLM needed)")
         state["intent"] = INTENT_CLINICAL
+        state["memory_context"] = ""
+        return state
+
+    # --- Fast-path: trivial chitchat → skip LLM entirely ---
+    if _is_chitchat(user_query):
+        logger.info("Router: chitchat fast-path '%s' → chitchat (no LLM needed)", user_query[:40])
+        state["intent"] = INTENT_CHITCHAT
         state["memory_context"] = ""
         return state
 
@@ -144,6 +181,7 @@ def route_to_agent(state: MAOState) -> str:
         "code":       "code_node",
         "critic":     "critic_node",
         "clinical":   "clinical_node",
+        "chitchat":   "chitchat_node",
         "fallback":   "graphrag_node",
     }
     target = mapping.get(intent, "graphrag_node")

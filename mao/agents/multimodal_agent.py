@@ -13,15 +13,15 @@ When to route here:
   - "What text is visible in this image?" (OCR)
 
 Design:
-  - Image understanding: llava via Ollama (multimodal LLM, runs locally)
+  - Image understanding: llama-3.2-11b-vision-preview via Groq
   - Audio transcription: OpenAI Whisper (local, via openai-whisper library)
   - Detects modality from state["metadata"]["modality"] or content type sniff
   - Falls back to llama3.1:8b for text-only questions about previously described media
 
-Why llava:
-  - Runs entirely locally via Ollama — no OpenAI Vision API cost
+Why llama-3.2-11b-vision-preview:
+  - Uses Groq Vision API — no local GPU required
   - Sufficient for image description, OCR, and chart understanding
-  - Can be swapped for llava:13b for higher accuracy at cost of speed
+  - Can be swapped for llama-3.2-90b-vision-preview for higher accuracy
 
 Why Whisper:
   - Open-source, runs locally, multilingual
@@ -57,8 +57,8 @@ from mao.memory.mem0_handler import build_system_prompt, save_memory, search_mem
 
 logger = logging.getLogger(__name__)
 
-# Ollama model for vision — must be pulled: `ollama pull llava`
-_VISION_MODEL = "llava"
+# Groq vision model (passed directly in _handle_image)
+_VISION_MODEL = "llama-3.2-11b-vision-preview"
 
 _VISION_SYSTEM = """\
 You are a precise visual analyst. Describe images accurately and in detail.
@@ -127,7 +127,7 @@ def _handle_image(
     memory_context: str,
 ) -> tuple[str, dict]:
     """
-    Call llava via Ollama to answer a question about an image.
+    Call Groq vision to answer a question about an image.
 
     Accepts:
       - metadata["image_b64"]: base64-encoded image string

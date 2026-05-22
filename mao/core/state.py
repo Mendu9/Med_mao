@@ -108,6 +108,7 @@ INTENT_CODE        = "code"
 INTENT_CRITIC      = "critic"
 INTENT_CLINICAL    = "clinical"
 INTENT_FALLBACK    = "fallback"
+INTENT_CHITCHAT    = "chitchat"
 
 ALL_INTENTS: list[str] = [
     INTENT_SUMMARIZE,
@@ -119,6 +120,7 @@ ALL_INTENTS: list[str] = [
     INTENT_CRITIC,
     INTENT_CLINICAL,
     INTENT_FALLBACK,
+    INTENT_CHITCHAT,
 ]
 
 

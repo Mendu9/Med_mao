@@ -23,7 +23,7 @@ def check_claim(premise: str, claim: str) -> dict:
     entailment_score = float(scores[2])
     return {
         "claim": claim,
-        "entailed": entailment_score >= NLI_ENTAILMENT_THRESHOLD,
+        "entailed": entailment_score >= NLI_ENTAILMENT_THRESHOLD and entailment_score > float(scores[0]),
         "score": entailment_score,
         "contradiction_score": float(scores[0]),
     }
@@ -42,7 +42,7 @@ def check_all_claims(claims: list[str], premise: str) -> list[dict]:
         entailment_score = float(scores[2])
         results.append({
             "claim": claim,
-            "entailed": entailment_score >= NLI_ENTAILMENT_THRESHOLD,
+            "entailed": entailment_score >= NLI_ENTAILMENT_THRESHOLD and entailment_score > float(scores[0]),
             "score": entailment_score,
             "contradiction_score": float(scores[0]),
         })

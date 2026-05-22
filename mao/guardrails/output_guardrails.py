@@ -44,10 +44,10 @@ async def apply_output_guardrails(state: dict, session_id: str) -> dict:
             return state
 
         elif unentailed_ratio > _NLI_WARN_RATIO:
-            state["response"] = (
-                state.get("response", "")
-                + "\n\n⚠️ Some claims could not be fully verified against retrieved sources."
-            )
+            _nli_disclaimer = "\n\n⚠️ Some claims could not be fully verified against retrieved sources."
+            _resp = state.get("response", "")
+            if _nli_disclaimer.strip() not in _resp:
+                state["response"] = _resp + _nli_disclaimer
             log_guardrail_event(
                 session_id, "nli_confidence",
                 triggered=True, detail=f"unentailed_ratio={unentailed_ratio:.2f}",
@@ -78,10 +78,10 @@ async def apply_output_guardrails(state: dict, session_id: str) -> dict:
         return state
 
     elif safety_score < _JUDGE_WARN_SCORE:
-        state["response"] = (
-            state.get("response", "")
-            + "\n\n⚠️ This response has moderate confidence. Please verify with a healthcare professional."
-        )
+        _judge_disclaimer = "\n\n⚠️ This response has moderate confidence. Please verify with a healthcare professional."
+        _resp = state.get("response", "")
+        if _judge_disclaimer.strip() not in _resp:
+            state["response"] = _resp + _judge_disclaimer
         log_guardrail_event(
             session_id, "judge_safety",
             triggered=True, detail=f"score={safety_score} (warn threshold)",

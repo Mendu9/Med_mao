@@ -15,6 +15,7 @@ env/
 
 # Environment / secrets
 .env
+.env.*
 .env.local
 .env.*.local
 
@@ -27,6 +28,11 @@ htmlcov/
 
 # ChromaDB data
 chroma_data/
+
+# MAO generated data artifacts (large, machine-generated — rebuild via ingestion)
+mao/data/bm25_index.pkl
+mao/data/entity_graph.json
+mao/data/golden_dataset.json
 
 # HuggingFace model cache
 hf_cache/
@@ -47,3 +53,16 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Internal AI planning docs (not for public GitHub)
+docs/superpowers/
+
+# Claude Code settings (local only)
+.claude/
+
+# Local scripts not for deployment
+scripts/start_hf.sh
+
+# HF-specific Dockerfile (managed in hf-spaces branch)
+Dockerfile.hf
+README_HF.md

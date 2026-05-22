@@ -35,21 +35,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _build_mem0_config() -> dict[str, Any]:
-    """Mem0 backed by Pinecone (vectors) + Ollama (LLM) + sentence-transformers (embed)."""
+    """Mem0 backed by ChromaDB (vectors) + Groq (LLM) + sentence-transformers (embed)."""
     return {
         "vector_store": {
-            "provider": "pinecone",
+            "provider": "chroma",
             "config": {
-                "api_key": cfg.pinecone_api_key,
-                "collection_name": cfg.pinecone_mem0_index,
-                "embedding_model_dims": cfg.embed_dim,
-                "metric": "cosine",
-                "serverless_config": {
-                    "cloud": "aws",
-                    "region": cfg.pinecone_region,
-                },
+                "host": cfg.chroma_host,
+                "port": cfg.chroma_port,
+                "collection_name": "mao_memory",
             },
         },
+        # PINECONE: "vector_store": {
+        # PINECONE:     "provider": "pinecone",
+        # PINECONE:     "config": {
+        # PINECONE:         "api_key": cfg.pinecone_api_key,
+        # PINECONE:         "collection_name": cfg.pinecone_mem0_index,
+        # PINECONE:         "embedding_model_dims": cfg.embed_dim,
+        # PINECONE:         "metric": "cosine",
+        # PINECONE:         "serverless_config": {
+        # PINECONE:             "cloud": "aws",
+        # PINECONE:             "region": cfg.pinecone_region,
+        # PINECONE:         },
+        # PINECONE:     },
+        # PINECONE: },
         "embedder": {
             "provider": "huggingface",
             "config": {
@@ -57,12 +65,19 @@ def _build_mem0_config() -> dict[str, Any]:
             },
         },
         "llm": {
-            "provider": "ollama",
+            "provider": "groq",
             "config": {
+                "api_key": cfg.groq_api_key,
                 "model": cfg.groq_model,
-                "ollama_base_url": "http://localhost:11434",
             },
         },
+        # OLLAMA: "llm": {
+        # OLLAMA:     "provider": "ollama",
+        # OLLAMA:     "config": {
+        # OLLAMA:         "model": cfg.groq_model,
+        # OLLAMA:         "ollama_base_url": "http://localhost:11434",
+        # OLLAMA:     },
+        # OLLAMA: },
     }
 
 
@@ -72,9 +87,12 @@ _mem0_client: Memory | None = None
 
 def get_mem0_client() -> Memory:
     """Return the shared Mem0 Memory instance, initialising on first call."""
+    import os
     global _mem0_client
+    if os.getenv("MAO_DISABLE_MEM0", "").lower() in ("1", "true", "yes"):
+        raise RuntimeError("Mem0 disabled via MAO_DISABLE_MEM0 env var")
     if _mem0_client is None:
-        logger.info("Initialising Mem0 client (index=%s)", cfg.pinecone_mem0_index)
+        logger.info("Initialising Mem0 client (chroma collection=mao_memory)")
         _mem0_client = Memory.from_config(_build_mem0_config())
     return _mem0_client
 

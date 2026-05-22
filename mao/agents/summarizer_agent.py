@@ -192,6 +192,10 @@ def _split_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
     try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         return groq_llm.chat(
             messages=messages,
             temperature=0.2,

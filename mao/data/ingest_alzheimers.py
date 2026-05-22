@@ -35,20 +35,40 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import chromadb
+from chromadb.config import Settings
 from tqdm import tqdm
-from pinecone import Pinecone, ServerlessSpec
 
 from mao.core.config import cfg
 from mao.rag.embedder import embed_texts
-from mao.rag.graph_builder import build_graph_from_documents, load_graph, save_graph
+from mao.rag.graph_builder import build_graph_from_documents, extract_entities, load_graph, save_graph
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional Sprint 2B imports — degrade gracefully if not yet installed
+# ---------------------------------------------------------------------------
+
+try:
+    from mao.rag.chunker import chunk_document as _chunk_document_fn
+    _ADAPTIVE_CHUNKING_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _ADAPTIVE_CHUNKING_AVAILABLE = False
+    logger.warning("mao.rag.chunker unavailable — falling back to fixed-size chunking")
+
+try:
+    from mao.rag.triple_extractor import add_triples_to_graph, extract_triples
+    _TRIPLE_EXTRACTION_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _TRIPLE_EXTRACTION_AVAILABLE = False
+    logger.warning("mao.rag.triple_extractor unavailable — semantic triple edges skipped")
 
 _CHUNK_SIZE    = 800   # ~2-3 paragraphs with complete sentences
 _CHUNK_OVERLAP = 100   # preserves cross-boundary context
 
-# Default path to the AD research PDFs
-_DEFAULT_PDF_DIR = Path(__file__).resolve().parents[2] / "rag" / "data"
+# Default path to the AD research PDFs — mao/rag/data/ (primary), AD/rag/data/ (legacy fallback)
+_DEFAULT_PDF_DIR = Path(__file__).resolve().parents[1] / "rag" / "data"
+_LEGACY_PDF_DIR  = Path(__file__).resolve().parents[2] / "AD" / "rag" / "data"
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +79,7 @@ def ingest_alzheimers_pdfs(
     data_dir: str | Path | None = None,
     chunk_size: int = _CHUNK_SIZE,
     chunk_overlap: int = _CHUNK_OVERLAP,
+    skip_triples: bool = False,
 ) -> int:
     """
     Ingest all PDFs in *data_dir* into ChromaDB and extend the entity graph.
@@ -67,11 +88,20 @@ def ingest_alzheimers_pdfs(
         data_dir:     Directory containing .pdf files. Defaults to ad/rag/data/.
         chunk_size:   Characters per chunk (default 512).
         chunk_overlap: Overlap between consecutive chunks (default 50).
+        skip_triples: If True, skip Groq triple extraction (avoids 429 on large runs).
 
     Returns:
         Total number of PDF files successfully ingested.
     """
-    pdf_dir = Path(data_dir) if data_dir else _DEFAULT_PDF_DIR
+    if data_dir:
+        pdf_dir = Path(data_dir)
+    elif _DEFAULT_PDF_DIR.exists():
+        pdf_dir = _DEFAULT_PDF_DIR
+    elif _LEGACY_PDF_DIR.exists():
+        logger.info("Using legacy PDF dir: %s", _LEGACY_PDF_DIR)
+        pdf_dir = _LEGACY_PDF_DIR
+    else:
+        pdf_dir = _DEFAULT_PDF_DIR  # will trigger error below
 
     if not pdf_dir.exists():
         logger.error("PDF directory not found: %s", pdf_dir)
@@ -90,7 +120,7 @@ def ingest_alzheimers_pdfs(
         logger.error("pypdf not installed. Run: pip install pypdf")
         return 0
 
-    index = _get_pinecone_index()
+    collection = _get_chroma_collection()
     graph = load_graph()  # Extend the existing entity graph
 
     ingested = 0
@@ -106,34 +136,110 @@ def ingest_alzheimers_pdfs(
         if not text.strip():
             logger.warning("No extractable text in %s — skipping", pdf_path.name)
             continue
-        print("pdf_path", pdf_path)
-        chunks = _chunk_text(
-            text,
-            source=pdf_path.name,
-            title=pdf_path.stem,
-            domain="alzheimers",
-            chunk_size=chunk_size,
-            overlap=chunk_overlap,
-        )
+
+        source_name = pdf_path.name
+
+        # ------------------------------------------------------------------
+        # Chunking — adaptive (Sprint 2B) with fallback to fixed-size
+        # ------------------------------------------------------------------
+        if _ADAPTIVE_CHUNKING_AVAILABLE:
+            chunks = _chunk_document_fn(
+                text=text,
+                doc_id=source_name,
+                metadata={
+                    "source": source_name,
+                    "domain": "alzheimer",
+                    "title": pdf_path.stem,
+                    "doc_type": "research_paper",
+                },
+                use_sections=True,
+            )
+        else:
+            chunks = _chunk_text(
+                text,
+                source=source_name,
+                title=pdf_path.stem,
+                domain="alzheimers",
+                chunk_size=chunk_size,
+                overlap=chunk_overlap,
+            )
 
         if not chunks:
             continue
 
-        _upsert_chunks(index, chunks)
+        # ------------------------------------------------------------------
+        # Enrich each chunk with comma-separated NER entities
+        # ChromaDB requires metadata values to be str/int/float/bool — never list
+        # ------------------------------------------------------------------
+        for chunk in chunks:
+            try:
+                ents = [e[0] for e in extract_entities(chunk["text"])]
+                chunk["entities"] = ",".join(ents[:20])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Entity extraction failed for chunk %s: %s", chunk.get("chunk_id"), exc)
+                chunk["entities"] = ""
+
+        _upsert_chunks(collection, chunks)
         all_docs.extend(chunks)
         ingested += 1
-        logger.info("Ingested: %s (%d chunks)", pdf_path.name, len(chunks))
+        logger.info("Ingested: %s (%d chunks)", source_name, len(chunks))
 
     # Update entity graph with all AD documents
     if all_docs:
         new_graph = build_graph_from_documents(all_docs)
-        merged = _merge_graphs(graph, new_graph)
+        import networkx as nx
+        # Ensure both graphs are the same type before composing.
+        # The saved graph may be a plain Graph/DiGraph from an older run.
+        if type(graph) is not type(new_graph):
+            compat = nx.MultiDiGraph()
+            compat.add_nodes_from(graph.nodes(data=True))
+            compat.add_edges_from((u, v, d) for u, v, d in graph.edges(data=True))
+            graph = compat
+        merged = nx.compose(graph, new_graph)
+
+        # ------------------------------------------------------------------
+        # Triple extraction (Sprint 2B) — adds typed semantic edges
+        # (treats/causes/etc.) alongside co-occurrence edges from graph_builder.
+        # Only first 5 chunks per PDF to limit Ollama call volume.
+        # ------------------------------------------------------------------
+        if _TRIPLE_EXTRACTION_AVAILABLE and not skip_triples:
+            # Reconstruct per-PDF chunk groups from all_docs
+            from itertools import groupby
+            key_fn = lambda c: c.get("source", "")  # noqa: E731
+            docs_by_source = {
+                src: list(grp)
+                for src, grp in groupby(
+                    sorted(all_docs, key=key_fn), key=key_fn
+                )
+            }
+            triple_count = 0
+            for src, doc_chunks in docs_by_source.items():
+                for chunk in doc_chunks[:5]:  # first 5 chunks per PDF
+                    try:
+                        triples = extract_triples(chunk["text"])
+                        if triples:
+                            added = add_triples_to_graph(merged, triples, doc_id=chunk.get("source", src))
+                            triple_count += added
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Triple extraction failed for %s: %s", src, exc)
+            logger.info("Semantic triples added to graph: %d edges", triple_count)
+
         save_graph(merged)
         logger.info(
             "Entity graph updated: %d nodes, %d edges",
             merged.number_of_nodes(),
             merged.number_of_edges(),
         )
+
+    # Build BM25 sparse index from all ingested chunks so the retriever's
+    # step 3 (_bm25_search) works immediately after ingestion.
+    if all_docs:
+        try:
+            from mao.rag.retriever import _build_bm25_index
+            _build_bm25_index(all_docs)
+            logger.info("BM25 index built: %d chunks", len(all_docs))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("BM25 index build failed (non-fatal): %s", exc)
 
     logger.info("Alzheimer's ingestion complete: %d/%d PDFs ingested", ingested, len(pdf_files))
     return ingested
@@ -224,58 +330,36 @@ def _chunk_text(
     return result
 
 
-def _upsert_chunks(index, chunks: list[dict]) -> None:
-    """Embed and upsert chunks into Pinecone in batches of 64."""
-    BATCH = 64
-    for i in range(0, len(chunks), BATCH):
-        batch = chunks[i : i + BATCH]
-        texts = [c["text"] for c in batch]
+def _upsert_chunks(collection: chromadb.Collection, chunks: list[dict]) -> None:
+    """Embed and upsert chunks into ChromaDB one at a time to avoid OOM on large batches."""
+    for i, chunk in enumerate(chunks):
         try:
-            embeddings = embed_texts(texts)
-            vectors = [
-                {
-                    "id": c["chunk_id"],
-                    "values": emb,
-                    "metadata": {
-                        "text":        c.get("text", ""),
-                        "source":      c.get("source", ""),
-                        "title":       c.get("title", ""),
-                        "chunk_index": c.get("chunk_index", 0),
-                        "chunk_id":    c.get("chunk_id", ""),
-                        "domain":      c.get("domain", "alzheimers"),
-                    },
-                }
-                for c, emb in zip(batch, embeddings)
-            ]
-            index.upsert(vectors=vectors)
-        except Exception as exc:
-            logger.error("Pinecone upsert failed for batch %d: %s", i, exc)
-
-
-def _get_pinecone_index():
-    pc = Pinecone(api_key=cfg.pinecone_api_key)
-    existing = [idx.name for idx in pc.list_indexes()]
-    if cfg.pinecone_index not in existing:
-        pc.create_index(
-            name=cfg.pinecone_index,
-            dimension=cfg.embed_dim,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region=cfg.pinecone_region),
-        )
-        logger.info("Created Pinecone index: %s", cfg.pinecone_index)
-    return pc.Index(cfg.pinecone_index)
-
-
-def _merge_graphs(g1, g2):
-    """Merge two NetworkX graphs, summing co-occurrence weights on shared edges."""
-    import networkx as nx
-    merged = nx.compose(g1, g2)
-    for u, v in g1.edges():
-        if g2.has_edge(u, v):
-            merged.edges[u, v]["weight"] = (
-                g1.edges[u, v].get("weight", 1) + g2.edges[u, v].get("weight", 1)
+            embedding = embed_texts([chunk["text"]])[0]
+            metadata = {k: v for k, v in chunk.items() if k != "text"}
+            # ChromaDB metadata values must be str/int/float/bool
+            metadata = {k: (str(v) if not isinstance(v, (str, int, float, bool)) else v)
+                        for k, v in metadata.items()}
+            collection.upsert(
+                ids=[chunk["chunk_id"]],
+                documents=[chunk["text"]],
+                metadatas=[metadata],
+                embeddings=[embedding],
             )
-    return merged
+        except Exception as exc:
+            logger.error("ChromaDB upsert failed for chunk %d (%s): %s", i, chunk.get("chunk_id"), exc)
+
+
+def _get_chroma_collection() -> chromadb.Collection:
+    """Return the shared MAO ChromaDB collection, creating it if needed."""
+    client = chromadb.HttpClient(
+        host=cfg.chroma_host,
+        port=cfg.chroma_port,
+        settings=Settings(anonymized_telemetry=False),
+    )
+    return client.get_or_create_collection(
+        name=cfg.chroma_collection,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 # ---------------------------------------------------------------------------

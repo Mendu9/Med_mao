@@ -52,6 +52,17 @@ logger = logging.getLogger(__name__)
 _CHUNK_SIZE    = 512
 _CHUNK_OVERLAP = 50
 
+# ---------------------------------------------------------------------------
+# Optional adaptive chunker — degrade gracefully if unavailable
+# ---------------------------------------------------------------------------
+
+try:
+    from mao.rag.chunker import adaptive_biomedical_chunk as _adaptive_chunk
+    _ADAPTIVE_CHUNKING_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _ADAPTIVE_CHUNKING_AVAILABLE = False
+    logger.warning("mao.rag.chunker unavailable — falling back to fixed-size chunking")
+
 _WIKI = wikipediaapi.Wikipedia(
     language="en",
     user_agent="MAO-Ingest/1.0",
@@ -88,7 +99,20 @@ def ingest_wikipedia_topics(
             logger.warning("Wikipedia page not found: '%s'", topic)
             continue
 
-        chunks = _chunk_text(page.text, source=topic, title=page.title)
+        if _ADAPTIVE_CHUNKING_AVAILABLE:
+            raw_chunks = _adaptive_chunk(page.text)
+            chunks = []
+            for idx, chunk_text in enumerate(raw_chunks):
+                chunk_id = hashlib.md5(f"{topic}_{idx}".encode()).hexdigest()[:12]
+                chunks.append({
+                    "text": chunk_text,
+                    "source": topic,
+                    "title": page.title,
+                    "chunk_id": chunk_id,
+                    "chunk_index": idx,
+                })
+        else:
+            chunks = _chunk_text(page.text, source=topic, title=page.title)
         if not chunks:
             continue
 

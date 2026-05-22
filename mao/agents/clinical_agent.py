@@ -246,8 +246,10 @@ def _handle_mri_image(
     )
     response = _call_llm(system_prompt, user_prompt)
 
+    top_score = ranked_chunks[0].score if ranked_chunks else 0.0
     sources = [
         {"source": c.metadata.get("source", ""), "chunk_id": c.metadata.get("chunk_id", ""),
+         "doc_id": c.metadata.get("title", c.metadata.get("source", "")),
          "score": round(c.score, 4), "snippet": c.text[:300]}
         for c in ranked_chunks
     ]
@@ -256,6 +258,8 @@ def _handle_mri_image(
         "prediction": prediction,
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
+        "top_rag_score": round(top_score, 4),
+        "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
         "_ranked_chunks": ranked_chunks,
     }
 
@@ -349,8 +353,10 @@ def _handle_pdf_report(
     )
     response = _call_llm(system_prompt, user_prompt)
 
+    top_score = ranked_chunks[0].score if ranked_chunks else 0.0
     sources = [
         {"source": c.metadata.get("source", ""), "chunk_id": c.metadata.get("chunk_id", ""),
+         "doc_id": c.metadata.get("title", c.metadata.get("source", "")),
          "score": round(c.score, 4), "snippet": c.text[:300]}
         for c in ranked_chunks
     ]
@@ -359,6 +365,8 @@ def _handle_pdf_report(
         "extracted": extracted,
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
+        "top_rag_score": round(top_score, 4),
+        "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
         "report_length": len(report_text),
         "_ranked_chunks": ranked_chunks,
     }
@@ -394,6 +402,27 @@ def _extract_pdf_text(metadata: dict) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.error("PDF extraction failed: %s", exc)
         return ""
+
+
+def _summarize_report(report_text: str, memory_context: str) -> str:
+    """Map-reduce summarization of a medical report."""
+    if not report_text.strip():
+        return ""
+    text = report_text[:3000]
+    prompt = (
+        "Summarise the following medical report in 3-5 sentences, "
+        "focusing on the primary diagnosis, key findings, and current treatment.\n\n"
+        f"Report:\n{text}"
+    )
+    try:
+        return groq_llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=300,
+        ).strip()
+    except Exception as exc:
+        logger.error("Report summarization failed: %s", exc)
+        return text[:500]
 
 
 def _extract_structured_fields(report_text: str) -> dict:
@@ -446,8 +475,10 @@ def _handle_text_question(
     )
     response = _call_llm(system_prompt, user_prompt)
 
+    top_score = ranked_chunks[0].score if ranked_chunks else 0.0
     sources = [
         {"source": c.metadata.get("source", ""), "chunk_id": c.metadata.get("chunk_id", ""),
+         "doc_id": c.metadata.get("title", c.metadata.get("source", "")),
          "score": round(c.score, 4), "snippet": c.text[:300]}
         for c in ranked_chunks
     ]
@@ -455,6 +486,8 @@ def _handle_text_question(
         "mode": "text_question",
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
+        "top_rag_score": round(top_score, 4),
+        "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
         "_ranked_chunks": ranked_chunks,
     }
 
