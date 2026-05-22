@@ -58,16 +58,12 @@ if TYPE_CHECKING:
 _cache = QueryCache(ttl=CACHE_TTL)
 _chroma_client: chromadb.HttpClient | None = None
 _chroma_collection = None
-_qdrant_client: Any | None = None  # lazy singleton for Qdrant backend
+_qdrant_client: Any | None = None
 
-# ---------------------------------------------------------------------------
-# BM25 module-level state (lazy initialised via _build_bm25_index)
-# ---------------------------------------------------------------------------
 _bm25_index: "BM25Okapi | None" = None
 _bm25_corpus: list[str] = []
 _bm25_chunk_ids: list[str] = []
 
-# Path where the BM25 index is persisted between restarts
 _BM25_PICKLE_PATH = cfg.data_dir / "bm25_index.pkl"
 
 logger = logging.getLogger(__name__)
@@ -77,12 +73,7 @@ _bm25_loaded: bool = False
 
 
 def _load_bm25_from_disk() -> None:
-    """Load BM25 index from disk, called lazily on first _bm25_search() call.
-
-    Deferred from module import so BM25 (~1.5GB) and the reranker (~2.2GB)
-    don't both load simultaneously during startup on memory-constrained hosts.
-    Set MAO_DISABLE_BM25=1 to skip entirely (saves ~1.5GB; degrades MRR).
-    """
+    """Load BM25 index from disk on first call; no-op if already loaded or MAO_DISABLE_BM25=1."""
     global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_loaded
     if _bm25_loaded:
         return
@@ -244,8 +235,6 @@ def retrieve(
     merged = _merge_deduplicate(merged_after_rrf, graph_chunks)
     logger.debug("Step 8 merged+deduped: %d chunks", len(merged))
 
-    # Boost score for chunks that appeared in both vector AND BM25 results
-    # (cross-modal agreement signal — these chunks are more likely to be relevant)
     _vector_ids = {c.get("chunk_id") or c.get("text", "")[:50] for c in vector_chunks}
     _bm25_ids = {c.get("chunk_id") or c.get("text", "")[:50] for c in bm25_results}
     _both = _vector_ids & _bm25_ids
@@ -255,16 +244,10 @@ def retrieve(
             chunk["score"] = chunk.get("score", 0.5) * 1.15  # 15% boost
     logger.debug("Score-boosted %d chunks that appeared in both vector and BM25 results", len(_both))
 
-    # ------------------------------------------------------------------
     # Step 9: Reranker → top-K
-    # ------------------------------------------------------------------
     ranked = rerank(query, merged, top_k=k)
 
-    # ------------------------------------------------------------------
-    # Step 9b: MMR deduplication — remove near-duplicate chunks that
-    # survived reranking (common when vector and BM25 return overlapping
-    # paragraphs from the same source article).
-    # ------------------------------------------------------------------
+    # Step 9b: MMR deduplication
     ranked_deduped = _mmr_dedup(ranked, threshold=0.90)
     logger.info(
         "GraphRAG pipeline complete: %d → %d → %d final chunks (top_k=%d, after MMR dedup)",
@@ -431,18 +414,7 @@ def _entity_search_qdrant(entities: list[str], limit: int) -> list[dict[str, Any
 
 
 def _build_bm25_index(chunks: list[dict[str, Any]]) -> None:
-    """Build/rebuild the module-level BM25 index from a list of chunk dicts.
-
-    Must be called explicitly — e.g. after ingestion — before _bm25_search()
-    returns any results. Safe to call multiple times; replaces the previous index.
-
-    Args:
-        chunks: List of dicts with at least 'text' and optionally 'chunk_id' keys.
-
-    Note:
-        rank-bm25 is an optional dependency. If not installed this function is a
-        no-op and _bm25_search() will continue to return [].
-    """
+    """Build BM25 index from chunk dicts; persists to disk. No-op if rank-bm25 absent."""
     global _bm25_index, _bm25_corpus, _bm25_chunk_ids
     try:
         from rank_bm25 import BM25Okapi
@@ -472,24 +444,7 @@ def _build_bm25_index(chunks: list[dict[str, Any]]) -> None:
 
 
 def _bm25_search(query: str, n: int = 20) -> list[dict[str, Any]]:
-    """BM25 sparse retrieval over the module-level index.
-
-    Excels at rare clinical terms (gene symbols, drug names, ICD codes) that
-    dense embeddings dilute by averaging across semantic space.
-
-    Returns [] gracefully when:
-      - rank-bm25 is not installed
-      - _build_bm25_index() has not been called yet
-      - All BM25 scores are zero (query has no token overlap with corpus)
-
-    Args:
-        query: Raw or expanded query string.
-        n:     Maximum results to return.
-
-    Returns:
-        List of chunk dicts sorted by BM25 score descending, with keys:
-        chunk_id, text, score, source, metadata, retrieval_method.
-    """
+    """BM25 sparse retrieval; returns [] if index not loaded or rank-bm25 absent."""
     global _bm25_index
     _load_bm25_from_disk()  # no-op after first call
     if _bm25_index is None:
