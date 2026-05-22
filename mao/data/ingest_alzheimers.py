@@ -1,32 +1,4 @@
-"""
-mao/data/ingest_alzheimers.py
-------------------------------
-Ingests Alzheimer's disease research PDFs into ChromaDB + entity graph.
-
-Replaces the naive RAG in ad/rag/ (FAISS + Groq + all-MiniLM-L6-v2) with
-MAO's GraphRAG pipeline:
-  - Embedder:   nomic-embed-text via Ollama (local, free)
-  - Vector DB:  ChromaDB (same instance as Wikipedia knowledge base)
-  - Graph:      NetworkX entity graph (same graph extended with AD entities)
-  - Retrieval:  rag/retriever.py — 5-step GraphRAG pipeline at query time
-
-Once ingested, any user question routed to graphrag_agent will automatically
-retrieve from both Wikipedia chunks AND Alzheimer's PDF chunks. No router
-changes needed.
-
-Default PDF source: d:/project/ad/rag/data/ (22 research PDFs)
-Each chunk stored with metadata: source=filename, domain=alzheimers
-
-Usage:
-    python -m mao.data.ingest_alzheimers
-    python -m mao.data.ingest_alzheimers --data-dir path/to/pdfs
-    python -m mao.data.ingest_alzheimers --data-dir path/to/pdfs --chunk-size 512
-
-Libraries:
-    pypdf   (pip install pypdf)
-    tqdm    (pip install tqdm)
-    chromadb (already a MAO dependency)
-"""
+"""Ingests Alzheimer's research PDFs into ChromaDB and the shared NetworkX entity graph."""
 
 from __future__ import annotations
 

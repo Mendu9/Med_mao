@@ -1,21 +1,4 @@
-"""
-app/graph_explorer.py
----------------------
-Streamlit-native Graph Explorer module for MAO.
-
-Exposes a single public entry point:
-
-    render_graph_explorer() -> None
-
-which renders a full interactive 3-D Plotly knowledge-graph UI into the
-current Streamlit context (i.e. inside a tab already opened by the caller).
-
-Design contract:
-- NO gradio imports.
-- NO st.set_page_config() calls (owned by streamlit_app.py).
-- NO ChromaDB / retrieval calls — graph topology only.
-- Safe when MAO_DISABLE_GRAPH=1 or when get_graph() returns an empty graph.
-"""
+"""Streamlit 3D Plotly knowledge graph explorer for MAO."""
 from __future__ import annotations
 
 import logging

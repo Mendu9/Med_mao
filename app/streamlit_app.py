@@ -1,21 +1,4 @@
-"""
-app/streamlit_app.py
---------------------
-Streamlit frontend for MAO — 6-tab interface.
-
-Tabs:
-  1. Chat           — streaming chat with intent/source/eval sidebar
-  2. Graph Explorer — interactive PyVis knowledge graph
-  3. MRI Scan       — MRI image upload + clinical assessment
-  4. Patient Report — PDF report upload + clinical summary
-  5. System Health  — service status dashboard
-  6. Eval Dashboard — RAGAS scores and feedback
-
-Run:
-    streamlit run app/streamlit_app.py
-
-Backend: FastAPI on http://localhost:8080 (configurable via MAO_API_URL env var)
-"""
+"""Streamlit frontend for MAO: 6-tab interface (Chat, Graph Explorer, MRI Scan, Report, Health, Eval)."""
 from __future__ import annotations
 
 import base64

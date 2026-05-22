@@ -1,36 +1,4 @@
-"""
-mao/data/ingest_wikipedia.py
------------------------------
-Wikipedia + SQuAD ingestion pipeline — populates ChromaDB and builds the entity graph.
-
-Two data sources:
-  1. Wikipedia articles via wikipedia-api
-  2. SQuAD 2.0 via Hugging Face datasets
-
-Ingestion pipeline per article:
-  1. Fetch full Wikipedia page text
-  2. Chunk into overlapping windows (512 chars, 50 char overlap)
-  3. Embed each chunk with nomic-embed-text
-  4. Store in ChromaDB with metadata (source, title, chunk_id)
-  5. Run NER → add to NetworkX entity graph
-  6. Save graph to disk
-
-Chunking strategy:
-  - Character-based sliding window (simple, reproducible)
-  - TODO(phase-2): switch to sentence-boundary chunking with nltk for
-    better semantic coherence
-
-Libraries:
-  - wikipedia-api      (pip install wikipedia-api)
-  - datasets           (pip install datasets)  — for SQuAD
-  - chromadb           (pip install chromadb)
-  - tqdm               (pip install tqdm)
-
-Integration points:
-  - rag/embedder.py       embed_texts()
-  - rag/graph_builder.py  build_graph_from_documents(), save_graph()
-  - core/config.py        chroma_collection, data_dir
-"""
+"""Wikipedia + SQuAD ingestion pipeline: chunks articles, embeds into ChromaDB, builds NetworkX entity graph."""
 
 from __future__ import annotations
 

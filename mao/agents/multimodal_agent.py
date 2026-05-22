@@ -1,44 +1,4 @@
-"""
-mao/agents/multimodal_agent.py
---------------------------------
-Multimodal agent — image understanding and audio transcription.
-
-Route trigger: intent == "multimodal"
-
-When to route here:
-  - User provides a base64-encoded image or image URL
-  - "What is in this image?"
-  - "Transcribe this audio file"
-  - "Describe the chart in this screenshot"
-  - "What text is visible in this image?" (OCR)
-
-Design:
-  - Image understanding: llama-3.2-11b-vision-preview via Groq
-  - Audio transcription: OpenAI Whisper (local, via openai-whisper library)
-  - Detects modality from state["metadata"]["modality"] or content type sniff
-  - Falls back to llama3.1:8b for text-only questions about previously described media
-
-Why llama-3.2-11b-vision-preview:
-  - Uses Groq Vision API — no local GPU required
-  - Sufficient for image description, OCR, and chart understanding
-  - Can be swapped for llama-3.2-90b-vision-preview for higher accuracy
-
-Why Whisper:
-  - Open-source, runs locally, multilingual
-  - openai-whisper package is the reference implementation
-  - Use whisper.load_model("base") for speed; "medium" for accuracy
-
-Libraries:
-  - openai-whisper   (pip install openai-whisper)
-  - Pillow           (pip install Pillow)
-  - httpx            (for async image download)
-
-Integration points:
-  - memory/mem0_handler search before / save after
-  - core/state.py       MAOState contract
-  - API layer passes image as base64 in state["metadata"]["image_b64"]
-    or audio path in state["metadata"]["audio_path"]
-"""
+"""Multimodal agent: image understanding via Groq Vision (llama-3.2-11b) and audio transcription via Whisper."""
 
 from __future__ import annotations
 

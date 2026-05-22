@@ -1,29 +1,4 @@
-"""
-mao/agents/graphrag_agent.py
------------------------------
-GraphRAG retrieval agent — answers factual/knowledge questions.
-
-Route trigger: intent == "graphrag" or intent == "fallback"
-
-Pipeline:
-  1. GraphRAG retrieval (9-step hybrid pipeline) — see rag/retriever.py
-  2. Confidence check — if top chunk score < RAG_CONFIDENCE_THRESHOLD, trigger
-     web-search fallback
-  3. Optional web search — DuckDuckGo/Brave/SerpAPI via web_search()
-  4. Merge RAG chunks + web results (RAG first = higher trust)
-  5. LLM synthesis with full provenance citations (chunk_id, source doc, web URL)
-
-Anti-hallucination grounding strategy:
-  - RAG chunks from ingested PDFs are primary ground truth (cite chunk_id + doc)
-  - Web results are supplementary — never override a RAG-grounded fact
-  - Domain supervisor (downstream) re-checks for ungrounded claims
-
-Integration points:
-  - rag/retriever.py    full 9-step pipeline
-  - core/web_search.py  web-search fallback
-  - memory/mem0_handler search before / save after
-  - core/state.py       MAOState contract
-"""
+"""GraphRAG retrieval agent: hybrid RAG + optional web-search fallback with provenance citations."""
 
 from __future__ import annotations
 
