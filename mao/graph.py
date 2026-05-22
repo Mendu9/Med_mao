@@ -8,7 +8,7 @@ Graph topology:
 
   The conditional edge reads state["intent"] and routes to one of:
     summarizer_node, graphrag_node, tool_node, sql_node,
-    multimodal_node, code_node, critic_node
+    multimodal_node, critic_node
 
   After any agent node the graph terminates (END).
   For multi-turn conversation, the API layer reinvokes the graph
@@ -35,7 +35,6 @@ from langgraph.graph import END, START, StateGraph
 from mao.agents.chitchat_agent import chitchat_node
 from mao.agents.router import _is_chitchat as _router_is_chitchat
 from mao.agents.clinical_agent import clinical_node
-from mao.agents.code_agent import code_node
 from mao.agents.critic_agent import critic_node
 from mao.agents.domain_classifier import classifier_node
 from mao.agents.domain_supervisor import domain_supervisor_node
@@ -62,7 +61,6 @@ NODE_GRAPHRAG   = "graphrag_node"
 NODE_TOOL       = "tool_node"
 NODE_SQL        = "sql_node"
 NODE_MULTIMODAL = "multimodal_node"
-NODE_CODE       = "code_node"
 NODE_CRITIC     = "critic_node"
 NODE_CLINICAL   = "clinical_node"
 NODE_CHITCHAT   = "chitchat_node"
@@ -73,7 +71,6 @@ _ALL_AGENT_NODES = [
     NODE_TOOL,
     NODE_SQL,
     NODE_MULTIMODAL,
-    NODE_CODE,
     NODE_CRITIC,
     NODE_CLINICAL,
     NODE_CHITCHAT,
@@ -125,7 +122,6 @@ def build_graph() -> StateGraph:
     builder.add_node(NODE_TOOL,       tool_node)
     builder.add_node(NODE_SQL,        sql_node)
     builder.add_node(NODE_MULTIMODAL, multimodal_node)
-    builder.add_node(NODE_CODE,       code_node)
     builder.add_node(NODE_CRITIC,     critic_node)
     builder.add_node(NODE_CLINICAL,   clinical_node)
     builder.add_node(NODE_CHITCHAT,   chitchat_node)
@@ -159,7 +155,6 @@ def build_graph() -> StateGraph:
             NODE_TOOL:       NODE_TOOL,
             NODE_SQL:        NODE_SQL,
             NODE_MULTIMODAL: NODE_MULTIMODAL,
-            NODE_CODE:       NODE_CODE,
             NODE_CRITIC:     NODE_CRITIC,
             NODE_CLINICAL:   NODE_CLINICAL,
             NODE_CHITCHAT:   NODE_CHITCHAT,
