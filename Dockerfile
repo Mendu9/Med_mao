@@ -22,16 +22,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 # spaCy model
 RUN python -m spacy download en_core_web_sm
 
-# Copy source
+# Model cache inside /app — always writable by appuser, no /data permission issues
+ENV HF_HOME=/app/cache
+ENV TRANSFORMERS_CACHE=/app/cache
+ENV SENTENCE_TRANSFORMERS_HOME=/app/cache
+ENV DATA_DIR=/app/mao/data
+
+# Create cache dir as root before switching user
+RUN mkdir -p /app/cache
+
+# Copy source and set ownership
 COPY --chown=appuser:appuser . .
 
 # Install project as editable package
 RUN pip install --no-cache-dir -e .
 
-# HF Spaces persistent storage for model cache
-ENV HF_HOME=/data/hf_cache
-ENV TRANSFORMERS_CACHE=/data/hf_cache
-ENV DATA_DIR=/app/mao/data
+# Ensure cache is owned by appuser (belt-and-suspenders after COPY)
+RUN chown -R appuser:appuser /app/cache
 
 # HF Spaces requires port 7860 for the public-facing app
 EXPOSE 7860 8080

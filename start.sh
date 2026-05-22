@@ -4,8 +4,12 @@
 
 set -e
 
-# Create model cache dir if using persistent storage
-mkdir -p "${HF_HOME:-/data/hf_cache}"
+echo "===== Application Startup at $(date -u '+%Y-%m-%d %H:%M:%S') ====="
+
+# Use /app/cache — always writable by appuser (no /data permission issues on HF Spaces)
+CACHE_DIR="${HF_HOME:-/app/cache}"
+mkdir -p "$CACHE_DIR"
+echo "Cache dir: $CACHE_DIR"
 
 # Start FastAPI backend in background
 uvicorn mao.api.main:app \

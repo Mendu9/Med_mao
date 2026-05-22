@@ -35,29 +35,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _build_mem0_config() -> dict[str, Any]:
-    """Mem0 backed by ChromaDB (vectors) + Groq (LLM) + sentence-transformers (embed)."""
-    return {
-        "vector_store": {
+    """Mem0 vector store: Qdrant when VECTOR_BACKEND=qdrant, ChromaDB otherwise."""
+    if cfg.vector_backend == "qdrant" and cfg.qdrant_url and cfg.qdrant_api_key:
+        vector_store: dict[str, Any] = {
+            "provider": "qdrant",
+            "config": {
+                "url": cfg.qdrant_url,
+                "api_key": cfg.qdrant_api_key,
+                "collection_name": "mao_memory",
+                "embedding_model_dims": cfg.embed_dim,
+            },
+        }
+    else:
+        vector_store = {
             "provider": "chroma",
             "config": {
                 "host": cfg.chroma_host,
                 "port": cfg.chroma_port,
                 "collection_name": "mao_memory",
             },
-        },
-        # PINECONE: "vector_store": {
-        # PINECONE:     "provider": "pinecone",
-        # PINECONE:     "config": {
-        # PINECONE:         "api_key": cfg.pinecone_api_key,
-        # PINECONE:         "collection_name": cfg.pinecone_mem0_index,
-        # PINECONE:         "embedding_model_dims": cfg.embed_dim,
-        # PINECONE:         "metric": "cosine",
-        # PINECONE:         "serverless_config": {
-        # PINECONE:             "cloud": "aws",
-        # PINECONE:             "region": cfg.pinecone_region,
-        # PINECONE:         },
-        # PINECONE:     },
-        # PINECONE: },
+        }
+    return {
+        "vector_store": vector_store,
         "embedder": {
             "provider": "huggingface",
             "config": {
