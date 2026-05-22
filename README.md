@@ -1,3 +1,14 @@
+---
+title: MAO Clinical AI Assistant
+emoji: 🧠
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # MAO — Medical Multi-Agent Orchestrator
 
 A locally-running clinical AI system that routes biomedical queries to specialized agents. Zero external API costs — everything runs locally via Ollama.
