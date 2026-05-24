@@ -6,10 +6,16 @@ set -e
 
 echo "===== Application Startup at $(date -u '+%Y-%m-%d %H:%M:%S') ====="
 
-# Use /app/cache — always writable by appuser (no /data permission issues on HF Spaces)
+# Model cache: use /app/cache (always owned by appuser — no /data permission issues)
 CACHE_DIR="${HF_HOME:-/app/cache}"
 mkdir -p "$CACHE_DIR"
 echo "Cache dir: $CACHE_DIR"
+
+# Data dir: must exist before Python imports config.py which resolves data_dir paths
+DATA_DIR_VAL="${DATA_DIR:-/app/mao/data}"
+mkdir -p "$DATA_DIR_VAL"
+echo "Data dir: $DATA_DIR_VAL"
+export DATA_DIR="$DATA_DIR_VAL"
 
 # Start FastAPI backend in background
 uvicorn mao.api.main:app \

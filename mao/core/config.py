@@ -56,8 +56,11 @@ class MAOConfig:
     api_host: str = field(default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
     api_port: int = field(default_factory=lambda: int(os.getenv("API_PORT", "8080")))
 
-    # Paths
-    data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "d:/project/mao/data")))
+    # Paths — default resolves relative to this file so it works on any OS / container
+    data_dir: Path = field(default_factory=lambda: Path(
+        os.getenv("DATA_DIR") or
+        Path(__file__).parent.parent / "data"
+    ))
 
     # Misc
     log_level: str          = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
