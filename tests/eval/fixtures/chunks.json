@@ -1,75 +1,343 @@
 {
   "alz_001": [
-    {"text": "Donepezil is a cholinesterase inhibitor approved for mild to severe Alzheimer's disease. It improves cognition by increasing acetylcholine availability.", "score": 0.91, "metadata": {"source": "ad_treatment.pdf", "chunk_id": "c001"}},
-    {"text": "Memantine (Namenda) is an NMDA receptor antagonist used for moderate to severe AD. It works differently from cholinesterase inhibitors.", "score": 0.88, "metadata": {"source": "ad_treatment.pdf", "chunk_id": "c002"}},
-    {"text": "Late-stage Alzheimer's care focuses on palliative comfort measures, pain management, and maintaining quality of life.", "score": 0.85, "metadata": {"source": "palliative_care.pdf", "chunk_id": "c003"}}
+    {
+      "text": "Donepezil is a cholinesterase inhibitor approved for mild to severe Alzheimer's disease. It improves cognition by increasing acetylcholine availability.",
+      "score": 0.91,
+      "metadata": {
+        "source": "ad_treatment.pdf",
+        "chunk_id": "c001"
+      }
+    },
+    {
+      "text": "Memantine (Namenda) is an NMDA receptor antagonist used for moderate to severe AD. It works differently from cholinesterase inhibitors.",
+      "score": 0.88,
+      "metadata": {
+        "source": "ad_treatment.pdf",
+        "chunk_id": "c002"
+      }
+    },
+    {
+      "text": "Late-stage Alzheimer's care focuses on palliative comfort measures, pain management, and maintaining quality of life.",
+      "score": 0.85,
+      "metadata": {
+        "source": "palliative_care.pdf",
+        "chunk_id": "c003"
+      }
+    },
+    {
+      "text": "Late-stage Alzheimer treatment focuses on symptomatic management using cholinesterase inhibitors like donepezil and NMDA receptor antagonists like memantine to slow cognitive decline.",
+      "score": 0.94,
+      "metadata": {
+        "source": "ad_treatment_review.pdf",
+        "chunk_id": "c013"
+      }
+    }
   ],
   "alz_002": [
-    {"text": "Amyloid beta peptides aggregate into insoluble plaques that accumulate extracellularly in the Alzheimer's brain.", "score": 0.92, "metadata": {"source": "amyloid_pathology.pdf", "chunk_id": "c010"}},
-    {"text": "Tau hyperphosphorylation causes neurofibrillary tangles, disrupting axonal transport in neurons.", "score": 0.89, "metadata": {"source": "tau_pathology.pdf", "chunk_id": "c011"}}
+    {
+      "text": "Amyloid beta peptides aggregate into insoluble plaques that accumulate extracellularly in the Alzheimer's brain.",
+      "score": 0.92,
+      "metadata": {
+        "source": "amyloid_pathology.pdf",
+        "chunk_id": "c010"
+      }
+    },
+    {
+      "text": "Tau hyperphosphorylation causes neurofibrillary tangles, disrupting axonal transport in neurons.",
+      "score": 0.89,
+      "metadata": {
+        "source": "tau_pathology.pdf",
+        "chunk_id": "c011"
+      }
+    },
+    {
+      "text": "Amyloid beta plaques disrupt synaptic function and neuronal communication; they also trigger downstream tau hyperphosphorylation, leading to neurofibrillary tangle formation.",
+      "score": 0.91,
+      "metadata": {
+        "source": "amyloid_cascade_hypothesis.pdf",
+        "chunk_id": "c012"
+      }
+    }
   ],
   "alz_003": [
-    {"text": "Regular aerobic exercise has been shown to reduce Alzheimer's disease risk by improving cerebrovascular health.", "score": 0.90, "metadata": {"source": "lifestyle_prevention.pdf", "chunk_id": "c020"}},
-    {"text": "The Mediterranean diet rich in omega-3 fatty acids and antioxidants is associated with reduced cognitive decline.", "score": 0.87, "metadata": {"source": "diet_cognition.pdf", "chunk_id": "c021"}},
-    {"text": "Cognitive engagement through education and mental stimulation builds cognitive reserve against AD pathology.", "score": 0.84, "metadata": {"source": "cognitive_reserve.pdf", "chunk_id": "c022"}}
+    {
+      "text": "Regular aerobic exercise has been shown to reduce Alzheimer's disease risk by improving cerebrovascular health.",
+      "score": 0.9,
+      "metadata": {
+        "source": "lifestyle_prevention.pdf",
+        "chunk_id": "c020"
+      }
+    },
+    {
+      "text": "The Mediterranean diet rich in omega-3 fatty acids and antioxidants is associated with reduced cognitive decline.",
+      "score": 0.87,
+      "metadata": {
+        "source": "diet_cognition.pdf",
+        "chunk_id": "c021"
+      }
+    },
+    {
+      "text": "Cognitive engagement through education and mental stimulation builds cognitive reserve against AD pathology.",
+      "score": 0.84,
+      "metadata": {
+        "source": "cognitive_reserve.pdf",
+        "chunk_id": "c022"
+      }
+    }
   ],
   "alz_004": [
-    {"text": "The APOE4 allele is the strongest known genetic risk factor for late-onset sporadic Alzheimer's disease.", "score": 0.93, "metadata": {"source": "genetics_ad.pdf", "chunk_id": "c030"}},
-    {"text": "APOE4 heterozygotes have 3-4x increased risk; homozygotes have 8-12x increased risk of developing AD.", "score": 0.90, "metadata": {"source": "apoe_risk.pdf", "chunk_id": "c031"}}
+    {
+      "text": "The APOE4 allele is the strongest known genetic risk factor for late-onset sporadic Alzheimer's disease.",
+      "score": 0.93,
+      "metadata": {
+        "source": "genetics_ad.pdf",
+        "chunk_id": "c030"
+      }
+    },
+    {
+      "text": "APOE4 heterozygotes have 3-4x increased risk; homozygotes have 8-12x increased risk of developing AD.",
+      "score": 0.9,
+      "metadata": {
+        "source": "apoe_risk.pdf",
+        "chunk_id": "c031"
+      }
+    }
   ],
   "alz_005": [
-    {"text": "The Mini-Mental State Examination (MMSE) is a widely used screening tool for cognitive impairment in Alzheimer's.", "score": 0.88, "metadata": {"source": "diagnosis_criteria.pdf", "chunk_id": "c040"}},
-    {"text": "MRI brain imaging reveals hippocampal atrophy characteristic of Alzheimer's disease progression.", "score": 0.85, "metadata": {"source": "neuroimaging.pdf", "chunk_id": "c041"}},
-    {"text": "CSF biomarkers including amyloid-42, total tau, and phospho-tau are used in AD diagnosis.", "score": 0.83, "metadata": {"source": "biomarkers.pdf", "chunk_id": "c042"}}
+    {
+      "text": "The Mini-Mental State Examination (MMSE) is a widely used screening tool for cognitive impairment in Alzheimer's.",
+      "score": 0.88,
+      "metadata": {
+        "source": "diagnosis_criteria.pdf",
+        "chunk_id": "c040"
+      }
+    },
+    {
+      "text": "MRI brain imaging reveals hippocampal atrophy characteristic of Alzheimer's disease progression.",
+      "score": 0.85,
+      "metadata": {
+        "source": "neuroimaging.pdf",
+        "chunk_id": "c041"
+      }
+    },
+    {
+      "text": "CSF biomarkers including amyloid-42, total tau, and phospho-tau are used in AD diagnosis.",
+      "score": 0.83,
+      "metadata": {
+        "source": "biomarkers.pdf",
+        "chunk_id": "c042"
+      }
+    }
   ],
   "alz_006": [
-    {"text": "Acetylcholine is a neurotransmitter critical for memory and learning, deficient in Alzheimer's disease.", "score": 0.91, "metadata": {"source": "cholinergic.pdf", "chunk_id": "c050"}},
-    {"text": "Donepezil inhibits acetylcholinesterase, preventing breakdown of acetylcholine and temporarily improving memory.", "score": 0.89, "metadata": {"source": "donepezil_moa.pdf", "chunk_id": "c051"}}
+    {
+      "text": "Acetylcholine is a neurotransmitter critical for memory and learning, deficient in Alzheimer's disease.",
+      "score": 0.91,
+      "metadata": {
+        "source": "cholinergic.pdf",
+        "chunk_id": "c050"
+      }
+    },
+    {
+      "text": "Donepezil inhibits acetylcholinesterase, preventing breakdown of acetylcholine and temporarily improving memory.",
+      "score": 0.89,
+      "metadata": {
+        "source": "donepezil_moa.pdf",
+        "chunk_id": "c051"
+      }
+    }
   ],
   "alz_007": [
-    {"text": "Early-onset Alzheimer's (before age 65) accounts for about 5% of cases and is often linked to APP, PSEN1, or PSEN2 mutations.", "score": 0.90, "metadata": {"source": "early_onset.pdf", "chunk_id": "c060"}},
-    {"text": "Late-onset Alzheimer's is primarily sporadic with genetic susceptibility from APOE4 and environmental factors.", "score": 0.87, "metadata": {"source": "late_onset.pdf", "chunk_id": "c061"}}
+    {
+      "text": "Early-onset Alzheimer's (before age 65) accounts for about 5% of cases and is often linked to APP, PSEN1, or PSEN2 mutations.",
+      "score": 0.9,
+      "metadata": {
+        "source": "early_onset.pdf",
+        "chunk_id": "c060"
+      }
+    },
+    {
+      "text": "Late-onset Alzheimer's is primarily sporadic with genetic susceptibility from APOE4 and environmental factors.",
+      "score": 0.87,
+      "metadata": {
+        "source": "late_onset.pdf",
+        "chunk_id": "c061"
+      }
+    }
   ],
   "alz_008": [
-    {"text": "Activated microglia surround amyloid plaques and release pro-inflammatory cytokines including TNF-alpha and IL-1beta.", "score": 0.89, "metadata": {"source": "neuroinflammation.pdf", "chunk_id": "c070"}},
-    {"text": "Chronic neuroinflammation in Alzheimer's disease contributes to progressive neuronal loss and cognitive decline.", "score": 0.86, "metadata": {"source": "inflammation_ad.pdf", "chunk_id": "c071"}}
+    {
+      "text": "Activated microglia surround amyloid plaques and release pro-inflammatory cytokines including TNF-alpha and IL-1beta.",
+      "score": 0.89,
+      "metadata": {
+        "source": "neuroinflammation.pdf",
+        "chunk_id": "c070"
+      }
+    },
+    {
+      "text": "Chronic neuroinflammation in Alzheimer's disease contributes to progressive neuronal loss and cognitive decline.",
+      "score": 0.86,
+      "metadata": {
+        "source": "inflammation_ad.pdf",
+        "chunk_id": "c071"
+      }
+    }
   ],
   "str_001": [
-    {"text": "The FAST acronym (Face drooping, Arm weakness, Speech difficulty, Time) is the primary public awareness tool for stroke recognition.", "score": 0.92, "metadata": {"source": "stroke_recognition.pdf", "chunk_id": "c080"}},
-    {"text": "Ischemic stroke presents with sudden onset of neurological deficits depending on the affected brain region.", "score": 0.88, "metadata": {"source": "stroke_symptoms.pdf", "chunk_id": "c081"}}
+    {
+      "text": "The FAST acronym (Face drooping, Arm weakness, Speech difficulty, Time) is the primary public awareness tool for stroke recognition.",
+      "score": 0.92,
+      "metadata": {
+        "source": "stroke_recognition.pdf",
+        "chunk_id": "c080"
+      }
+    },
+    {
+      "text": "Ischemic stroke presents with sudden onset of neurological deficits depending on the affected brain region.",
+      "score": 0.88,
+      "metadata": {
+        "source": "stroke_symptoms.pdf",
+        "chunk_id": "c081"
+      }
+    }
   ],
   "str_002": [
-    {"text": "Tissue plasminogen activator (tPA) is the only FDA-approved thrombolytic for ischemic stroke treatment.", "score": 0.93, "metadata": {"source": "tpa_treatment.pdf", "chunk_id": "c090"}},
-    {"text": "The treatment window for intravenous tPA is 4.5 hours from symptom onset in eligible patients.", "score": 0.91, "metadata": {"source": "thrombolysis_window.pdf", "chunk_id": "c091"}}
+    {
+      "text": "Tissue plasminogen activator (tPA) is the only FDA-approved thrombolytic for ischemic stroke treatment.",
+      "score": 0.93,
+      "metadata": {
+        "source": "tpa_treatment.pdf",
+        "chunk_id": "c090"
+      }
+    },
+    {
+      "text": "The treatment window for intravenous tPA is 4.5 hours from symptom onset in eligible patients.",
+      "score": 0.91,
+      "metadata": {
+        "source": "thrombolysis_window.pdf",
+        "chunk_id": "c091"
+      }
+    }
   ],
   "str_003": [
-    {"text": "Hypertension is the leading cause of hemorrhagic stroke through vessel wall weakening and rupture.", "score": 0.90, "metadata": {"source": "hemorrhagic_causes.pdf", "chunk_id": "c100"}},
-    {"text": "Intracranial aneurysm rupture causes subarachnoid hemorrhage with characteristic sudden severe headache.", "score": 0.87, "metadata": {"source": "aneurysm.pdf", "chunk_id": "c101"}}
+    {
+      "text": "Hypertension is the leading cause of hemorrhagic stroke through vessel wall weakening and rupture.",
+      "score": 0.9,
+      "metadata": {
+        "source": "hemorrhagic_causes.pdf",
+        "chunk_id": "c100"
+      }
+    },
+    {
+      "text": "Intracranial aneurysm rupture causes subarachnoid hemorrhage with characteristic sudden severe headache.",
+      "score": 0.87,
+      "metadata": {
+        "source": "aneurysm.pdf",
+        "chunk_id": "c101"
+      }
+    }
   ],
   "str_004": [
-    {"text": "Post-stroke physiotherapy focuses on regaining motor function through neuroplasticity-based exercises.", "score": 0.89, "metadata": {"source": "stroke_rehab.pdf", "chunk_id": "c110"}},
-    {"text": "Speech and language therapy addresses post-stroke aphasia and dysphagia for communication and swallowing recovery.", "score": 0.86, "metadata": {"source": "speech_therapy.pdf", "chunk_id": "c111"}}
+    {
+      "text": "Post-stroke physiotherapy focuses on regaining motor function through neuroplasticity-based exercises.",
+      "score": 0.89,
+      "metadata": {
+        "source": "stroke_rehab.pdf",
+        "chunk_id": "c110"
+      }
+    },
+    {
+      "text": "Speech and language therapy addresses post-stroke aphasia and dysphagia for communication and swallowing recovery.",
+      "score": 0.86,
+      "metadata": {
+        "source": "speech_therapy.pdf",
+        "chunk_id": "c111"
+      }
+    }
   ],
   "gen_001": [
-    {"text": "Machine learning algorithms learn patterns from training data to make predictions on new unseen data.", "score": 0.88, "metadata": {"source": "ml_basics.pdf", "chunk_id": "c120"}},
-    {"text": "Supervised learning uses labeled examples; unsupervised learning finds patterns in unlabeled data.", "score": 0.85, "metadata": {"source": "ml_types.pdf", "chunk_id": "c121"}}
+    {
+      "text": "Machine learning algorithms learn patterns from training data to make predictions on new unseen data.",
+      "score": 0.88,
+      "metadata": {
+        "source": "ml_basics.pdf",
+        "chunk_id": "c120"
+      }
+    },
+    {
+      "text": "Supervised learning uses labeled examples; unsupervised learning finds patterns in unlabeled data.",
+      "score": 0.85,
+      "metadata": {
+        "source": "ml_types.pdf",
+        "chunk_id": "c121"
+      }
+    }
   ],
   "gen_002": [
-    {"text": "Neural networks consist of input, hidden, and output layers with weighted connections between neurons.", "score": 0.90, "metadata": {"source": "neural_networks.pdf", "chunk_id": "c130"}},
-    {"text": "Backpropagation adjusts weights by computing gradients of the loss function with respect to each parameter.", "score": 0.87, "metadata": {"source": "backprop.pdf", "chunk_id": "c131"}}
+    {
+      "text": "Neural networks consist of input, hidden, and output layers with weighted connections between neurons.",
+      "score": 0.9,
+      "metadata": {
+        "source": "neural_networks.pdf",
+        "chunk_id": "c130"
+      }
+    },
+    {
+      "text": "Backpropagation adjusts weights by computing gradients of the loss function with respect to each parameter.",
+      "score": 0.87,
+      "metadata": {
+        "source": "backprop.pdf",
+        "chunk_id": "c131"
+      }
+    }
   ],
   "gen_003": [
-    {"text": "Knowledge graphs represent entities as nodes and edges forming a semantic network.", "score": 0.91, "metadata": {"source": "knowledge_graphs.pdf", "chunk_id": "c140"}},
-    {"text": "Graph databases like Neo4j store and query knowledge graph data using Cypher query language.", "score": 0.88, "metadata": {"source": "graph_databases.pdf", "chunk_id": "c141"}}
+    {
+      "text": "Knowledge graphs represent entities as nodes and edges forming a semantic network.",
+      "score": 0.91,
+      "metadata": {
+        "source": "knowledge_graphs.pdf",
+        "chunk_id": "c140"
+      }
+    },
+    {
+      "text": "Graph databases like Neo4j store and query knowledge graph data using Cypher query language.",
+      "score": 0.88,
+      "metadata": {
+        "source": "graph_databases.pdf",
+        "chunk_id": "c141"
+      }
+    }
   ],
   "gen_004": [
-    {"text": "Transformer models use self-attention mechanisms to capture long-range dependencies in text sequences.", "score": 0.92, "metadata": {"source": "transformers.pdf", "chunk_id": "c150"}},
-    {"text": "Word embeddings map tokens to dense vector spaces where semantic similarity corresponds to geometric proximity.", "score": 0.89, "metadata": {"source": "embeddings.pdf", "chunk_id": "c151"}}
+    {
+      "text": "Transformer models use self-attention mechanisms to capture long-range dependencies in text sequences.",
+      "score": 0.92,
+      "metadata": {
+        "source": "transformers.pdf",
+        "chunk_id": "c150"
+      }
+    },
+    {
+      "text": "Word embeddings map tokens to dense vector spaces where semantic similarity corresponds to geometric proximity.",
+      "score": 0.89,
+      "metadata": {
+        "source": "embeddings.pdf",
+        "chunk_id": "c151"
+      }
+    }
   ],
   "unsafe_001": [],
   "unsafe_002": [],
   "edge_001": [],
   "edge_002": [
-    {"text": "Pizza toppings are a matter of personal preference with no medical significance.", "score": 0.30, "metadata": {"source": "general.pdf", "chunk_id": "c160"}}
+    {
+      "text": "Pizza toppings are a matter of personal preference with no medical significance.",
+      "score": 0.3,
+      "metadata": {
+        "source": "general.pdf",
+        "chunk_id": "c160"
+      }
+    }
   ]
 }
