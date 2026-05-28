@@ -83,17 +83,29 @@ def _build_mem0_config() -> dict[str, Any]:
 
 # Lazy singleton — avoids network calls at import time
 _mem0_client: Memory | None = None
+_mem0_disabled: bool = False  # latched True after first failure to stop per-request timeouts
 
 
 def get_mem0_client() -> Memory:
-    """Return the shared Mem0 Memory instance, initialising on first call."""
+    """Return shared Mem0 Memory instance, initialising on first call.
+
+    After any connection failure the flag is latched so subsequent requests
+    skip the 8-second ChromaDB timeout and degrade to empty memory context.
+    """
     import os
-    global _mem0_client
-    if os.getenv("MAO_DISABLE_MEM0", "").lower() in ("1", "true", "yes"):
-        raise RuntimeError("Mem0 disabled via MAO_DISABLE_MEM0 env var")
+    global _mem0_client, _mem0_disabled
+    if _mem0_disabled or os.getenv("MAO_DISABLE_MEM0", "").lower() in ("1", "true", "yes"):
+        raise RuntimeError("Mem0 disabled (ChromaDB unavailable or MAO_DISABLE_MEM0=1)")
     if _mem0_client is None:
         logger.info("Initialising Mem0 client (chroma collection=mao_memory)")
-        _mem0_client = Memory.from_config(_build_mem0_config())
+        try:
+            _mem0_client = Memory.from_config(_build_mem0_config())
+        except Exception as exc:
+            _mem0_disabled = True
+            logger.warning(
+                "Mem0 init failed — disabling for this process to avoid repeated timeouts: %s", exc
+            )
+            raise RuntimeError(f"Mem0 init failed: {exc}") from exc
     return _mem0_client
 
 
