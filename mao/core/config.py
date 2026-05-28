@@ -46,8 +46,8 @@ class MAOConfig:
     qdrant_api_key: str | None  = field(default_factory=lambda: os.getenv("QDRANT_API_KEY") or None)
     qdrant_collection: str      = field(default_factory=lambda: os.getenv("QDRANT_COLLECTION", "mao_knowledge"))
 
-    # Vector backend: "chromadb" (local dev) | "qdrant" (cloud/HF Spaces)
-    vector_backend: str = field(default_factory=lambda: os.getenv("VECTOR_BACKEND", "chromadb"))
+    # Vector backend: "qdrant" (default) | "chromadb" (local fallback)
+    vector_backend: str = field(default_factory=lambda: os.getenv("VECTOR_BACKEND", "qdrant"))
 
     # Postgres (optional — for metrics only)
     postgres_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "postgresql://mao:mao@localhost:5432/mao"))

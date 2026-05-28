@@ -18,6 +18,7 @@ env/
 .env.*
 .env.local
 .env.*.local
+!.env.example
 
 # pytest / coverage
 .pytest_cache/
@@ -57,12 +58,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
-
-# Internal AI planning docs (not for public GitHub)
-docs/superpowers/
-
-# Claude Code settings (local only)
-.claude/
 
 # Local scripts not for deployment
 scripts/start_hf.sh
