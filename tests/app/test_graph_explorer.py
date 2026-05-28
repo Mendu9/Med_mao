@@ -71,7 +71,7 @@ def test_render_graph_explorer_empty_graph(monkeypatch):
     col = MagicMock()
     col.__enter__ = MagicMock(return_value=col)
     col.__exit__ = MagicMock(return_value=False)
-    mock_st.columns.return_value = [col, col, col, col]
+    mock_st.columns.return_value = [col, col, col]
     mock_st.selectbox.return_value = "All"
     mock_st.slider.return_value = 200
     mock_st.text_input.return_value = ""

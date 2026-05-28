@@ -382,7 +382,6 @@ def render_graph_explorer() -> None:
         value=False,
         key="ge_edge_labels",
     )
-    search_query: str = ""
 
     # --- Load graph ---------------------------------------------------------
     with st.spinner("Loading knowledge graph..."):
@@ -430,21 +429,9 @@ def render_graph_explorer() -> None:
             )
             return
 
-    # --- Search filter — collect highlight set before capping ---------------
-    search_highlight: set = set()
-    if search_query.strip():
-        q_lower = search_query.strip().lower()
-        search_highlight = {n for n in g.nodes() if q_lower in str(n).lower()}
-        if not search_highlight:
-            st.info(f"No nodes matched '{search_query}'. Showing full subgraph.")
-
     # --- Cap to max_nodes by degree -----------------------------------------
     top_nodes = sorted(g.degree(), key=lambda x: x[1], reverse=True)[:max_nodes]
     top_node_set = {n for n, _ in top_nodes}
-    # Always include search-matched nodes (up to 20 extras) even if outside top-N
-    if search_highlight:
-        extras = list(search_highlight - top_node_set)[:20]
-        top_node_set.update(extras)
     g = g.subgraph(top_node_set).copy()
 
     # --- Stats row ----------------------------------------------------------
@@ -462,39 +449,6 @@ def render_graph_explorer() -> None:
         import plotly.graph_objects as go
 
         fig = _build_plotly_figure(g, pos, show_edge_labels=show_edge_labels)
-
-        # Overlay a highlight trace for search matches
-        if search_highlight:
-            nodes_in_view = list(g.nodes())
-            hl_x: list[float] = []
-            hl_y: list[float] = []
-            hl_z: list[float] = []
-            hl_text: list[str] = []
-            for n in nodes_in_view:
-                if n in search_highlight:
-                    x, y, z = pos.get(n, (0.0, 0.0, 0.0))
-                    hl_x.append(x)
-                    hl_y.append(y)
-                    hl_z.append(z)
-                    hl_text.append(str(n))
-            if hl_x:
-                fig.add_trace(go.Scatter3d(
-                    x=hl_x, y=hl_y, z=hl_z,
-                    mode="markers+text",
-                    marker={
-                        "size": 14,
-                        "color": "#ffffff",
-                        "opacity": 1.0,
-                        "line": {"width": 2, "color": "#f39c12"},
-                    },
-                    text=hl_text,
-                    textfont={"color": "#f39c12", "size": 11},
-                    textposition="top center",
-                    hoverinfo="text",
-                    showlegend=False,
-                    name="search_match",
-                ))
-
         st.plotly_chart(fig, use_container_width=True)
 
         # --- Graph Statistics expander --------------------------------------
@@ -526,46 +480,7 @@ def render_graph_explorer() -> None:
         )
         return
 
-    # --- Node detail expander -----------------------------------------------
-    if search_query.strip() and search_highlight:
-        with st.expander(
-            f"Node details — {len(search_highlight)} match(es) for '{search_query}'",
-            expanded=True,
-        ):
-            for n in list(search_highlight)[:10]:
-                if n not in g.nodes:
-                    continue
-                attrs = dict(g.nodes[n])
-                node_type = attrs.get("node_type", "entity")
-                deg = g.degree(n)
-                try:
-                    successors   = list(g.successors(n))[:5]
-                    predecessors = list(g.predecessors(n))[:5]
-                except Exception:
-                    successors, predecessors = [], []
 
-                st.markdown(f"**{n}**")
-                dcol1, dcol2, dcol3 = st.columns(3)
-                dcol1.markdown(f"Type: `{node_type}`")
-                dcol2.markdown(f"Degree: `{deg}`")
-                dcol3.markdown(f"Domain: `{_classify_node_domain(str(n), attrs)}`")
-                if successors:
-                    st.caption("Outgoing: " + ", ".join(str(s) for s in successors))
-                if predecessors:
-                    st.caption("Incoming: " + ", ".join(str(p) for p in predecessors))
-                st.divider()
-
-    # --- Node-type breakdown table ------------------------------------------
-    with st.expander("Node type breakdown", expanded=False):
-        if type_counts:
-            import pandas as pd
-            df = pd.DataFrame(
-                sorted(type_counts.items(), key=lambda x: -x[1]),
-                columns=["node_type", "count"],
-            )
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No type data available.")
 
 
 def build_graph_explorer_tab(*args, **kwargs):
