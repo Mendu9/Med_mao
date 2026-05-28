@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
@@ -191,16 +193,14 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     start_time = time.perf_counter()
 
     # Cache lookup — return immediately for identical recent queries (TTL 5 min)
-    import hashlib as _hashlib
-    import json as _json
     _query_cache_key = (
-        f"query:{_hashlib.md5(f'{request.user_id}:{request.query}'.encode()).hexdigest()}"
+        f"query:{hashlib.md5(f'{request.user_id}:{request.query}'.encode()).hexdigest()}"
     )
     _redis = get_redis()
     _cached = safe_get(_redis, _query_cache_key)
     if _cached:
         try:
-            _cached_data = _json.loads(_cached)
+            _cached_data = json.loads(_cached)
             logger.info("Cache HIT request_id=%s", request_id)
             return ChatResponse(
                 response=_cached_data.get("response", ""),
@@ -212,8 +212,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
                 sources=[],
                 web_sources=[],
             )
-        except Exception:
-            pass  # malformed cache entry — proceed normally
+        except Exception as _cache_exc:
+            logger.debug("Cache entry malformed, ignoring: %s", _cache_exc)
 
     logger.info(
         "request_id=%s user_id=%s query=%r",
@@ -290,9 +290,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
     def _cache_session() -> None:
         try:
-            import json as _json
-            redis_client = get_redis()
-            _payload = _json.dumps({
+                    redis_client = get_redis()
+            _payload = json.dumps({
                 "response": result.get("response", ""),
                 "agent_used": agent_used,
                 "intent": intent,
@@ -401,8 +400,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
                 yield f"data: {word}\n\n"
                 await asyncio.sleep(0)  # yield control to event loop between tokens
         # metadata event
-        import json as _json
-        meta_payload = {
+            meta_payload = {
             "intent": result.get("intent", ""),
             "agent_used": result.get("agent_used", ""),
             "latency_ms": round(latency_ms, 1),
@@ -410,7 +408,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
             "web_sources": result.get("metadata", {}).get("web_sources", []),
             "uncertainty_flag": result.get("metadata", {}).get("uncertainty_flag", False),
         }
-        yield f"data: __meta__:{_json.dumps(meta_payload)}\n\n"
+        yield f"data: __meta__:{json.dumps(meta_payload)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -720,7 +718,6 @@ async def post_feedback(req: FeedbackRequest):
 @app.get("/export/report/{session_id}")
 async def export_report(session_id: str):
     import asyncpg
-    import json as _json
     import os
     from fastapi import Response
     from mao.report.report_card import build_report_card
@@ -732,7 +729,7 @@ async def export_report(session_id: str):
         await conn.close()
         if not row or not row["report_card"]:
             raise HTTPException(status_code=404, detail="Report not found")
-        card = build_report_card(**_json.loads(row["report_card"]))
+        card = build_report_card(**json.loads(row["report_card"]))
         pdf_bytes = card.to_pdf()
         return Response(
             content=pdf_bytes,
