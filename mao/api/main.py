@@ -303,7 +303,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
     def _cache_session() -> None:
         try:
-                    redis_client = get_redis()
+            redis_client = get_redis()
             _payload = json.dumps({
                 "response": result.get("response", ""),
                 "agent_used": agent_used,
