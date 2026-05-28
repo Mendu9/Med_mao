@@ -212,178 +212,156 @@ def _fetch_graph_topology() -> dict[str, Any]:
 # Tab 1: Chat
 # ---------------------------------------------------------------------------
 
-def _render_chat_tab() -> None:
-    """Render the Chat tab with streaming responses and metadata sidebar."""
-    col_main, col_meta = st.columns([3, 1])
+def _render_response_meta(meta: dict[str, Any]) -> None:
+    """Render response metadata inline below an assistant message."""
+    nested_meta = meta.get("metadata") or {}
 
-    with col_main:
-        st.markdown("### Chat with MAO")
-        st.markdown(
-            "_Ask about Alzheimer's disease, stroke, brain health, or request clinical summaries._"
-        )
-
-        # Render conversation history
-        for msg in st.session_state["messages"]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        # Chat input
-        user_input = st.chat_input(
-            "Ask about Alzheimer's, stroke, or brain health..."
-        )
-
-        if user_input:
-            st.session_state["request_count"] += 1
-
-            # Append user message
-            st.session_state["messages"].append(
-                {"role": "user", "content": user_input}
-            )
-            with st.chat_message("user"):
-                st.markdown(user_input)
-
-            # Build history for API (exclude the message just appended)
-            history = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state["messages"][:-1]
-            ]
-
-            full_response = ""
-            resp_data: dict[str, Any] = {}
-
-            with st.chat_message("assistant"):
-                placeholder = st.empty()
-
-                # Stream response word-by-word; capture trailing __meta__: event for metadata.
-                for token in _stream_response(
-                    user_input, st.session_state["user_id"], history
-                ):
-                    if token.startswith("__meta__:"):
-                        try:
-                            import json as _json
-                            meta_parsed = _json.loads(token[9:].strip())
-                            resp_data = meta_parsed
-                        except Exception:
-                            pass
-                        continue
-                    full_response += token
-                    placeholder.markdown(full_response + " ▌")
-                placeholder.markdown(full_response)
-
-            st.session_state["messages"].append(
-                {"role": "assistant", "content": full_response}
-            )
-            if resp_data:
-                st.session_state["last_metadata"] = resp_data
-            st.rerun()
-
-    with col_meta:
-        st.markdown("### Response Info")
-        meta = st.session_state.get("last_metadata", {})
-
-        # Uncertainty warning banner
-        uncertainty = meta.get("uncertainty_flag", False)
+    # Uncertainty warning
+    uncertainty = meta.get("uncertainty_flag", False)
+    try:
+        nli_val: float | None = float(nested_meta.get("nli_score", 1.0))
+    except (TypeError, ValueError):
         nli_val = None
-        nested_meta_warn = meta.get("metadata") or {}
-        try:
-            nli_val = float(nested_meta_warn.get("nli_score", 1.0))
-        except (TypeError, ValueError):
-            nli_val = None
 
-        if uncertainty or (nli_val is not None and nli_val < 0.7):
-            st.warning(
-                "⚠️ **Low confidence** — This response may contain unverified claims. "
-                "Always verify with a qualified clinician.",
-                icon="⚠️",
-            )
+    if uncertainty or (nli_val is not None and nli_val < 0.7):
+        st.warning(
+            "⚠️ Low confidence — verify with a qualified clinician.",
+            icon="⚠️",
+        )
 
-        # Intent badge
-        intent = meta.get("intent", "")
-        if intent:
-            color = _INTENT_COLORS.get(intent, "gray")
-            st.markdown(f"**Intent:** :{color}[{intent}]")
-        else:
-            st.markdown("**Intent:** _waiting..._")
+    # Compact one-line summary: intent · agent · latency
+    parts: list[str] = []
+    intent = meta.get("intent", "")
+    if intent:
+        color = _INTENT_COLORS.get(intent, "gray")
+        parts.append(f":{color}[{intent}]")
+    agent = meta.get("agent_used", "")
+    if agent:
+        parts.append(f"`{agent}`")
+    latency = meta.get("latency_ms")
+    if latency is not None:
+        parts.append(f"{latency:.0f} ms")
+    if parts:
+        st.caption("  ·  ".join(parts))
 
-        agent = meta.get("agent_used", "")
-        if agent:
-            st.markdown(f"**Agent:** `{agent}`")
-
-        latency = meta.get("latency_ms")
-        if latency is not None:
-            st.markdown(f"**Latency:** {latency:.0f} ms")
-
-        st.divider()
-
-        # Sources
-        sources = meta.get("sources", [])
-        if not sources:
-            sources = (meta.get("metadata") or {}).get("sources", [])
-        web_sources = meta.get("web_sources", [])
-        if not web_sources:
-            web_sources = (meta.get("metadata") or {}).get("web_sources", [])
-
-        if sources:
-            st.markdown("**Sources:**")
+    # Sources (collapsed to keep chat clean)
+    sources = meta.get("sources", []) or nested_meta.get("sources", [])
+    web_sources = meta.get("web_sources", []) or nested_meta.get("web_sources", [])
+    if sources or web_sources:
+        with st.expander("Sources", expanded=False):
             for src in sources[:5]:
                 title = src.get("title") or src.get("source", "Unknown")
                 score = src.get("score")
                 score_str = f" `{score:.3f}`" if score else ""
                 st.markdown(f"- {title}{score_str}")
-
-        if web_sources:
-            st.markdown("**Web:**")
             for ws in web_sources[:3]:
                 url = ws.get("url", "")
                 title = ws.get("title", url)
                 if url:
                     st.markdown(f"- [{title}]({url})")
 
-        st.divider()
+    # Eval scores (collapsed)
+    faithfulness     = nested_meta.get("faithfulness")
+    nli_score        = nested_meta.get("nli_score")
+    answer_relevancy = nested_meta.get("answer_relevancy")
+    if any(v is not None for v in [faithfulness, answer_relevancy, nli_score]):
+        with st.expander("Eval scores", expanded=False):
+            if faithfulness is not None:
+                try:
+                    val = float(faithfulness)
+                    st.markdown(f"Faithfulness: {int(val * 100)}%")
+                    st.progress(min(1.0, val))
+                except (TypeError, ValueError):
+                    pass
+            if answer_relevancy is not None:
+                try:
+                    val = float(answer_relevancy)
+                    st.markdown(f"Answer relevancy: {int(val * 100)}%")
+                    st.progress(min(1.0, val))
+                except (TypeError, ValueError):
+                    pass
+            if nli_score is not None:
+                try:
+                    val = float(nli_score)
+                    st.markdown(f"NLI score: {int(val * 100)}%")
+                    st.progress(min(1.0, val))
+                except (TypeError, ValueError):
+                    pass
 
-        # Eval scores
-        nested_meta = meta.get("metadata") or {}
-        faithfulness      = nested_meta.get("faithfulness")
-        nli_score         = nested_meta.get("nli_score")
-        answer_relevancy  = nested_meta.get("answer_relevancy")
-
-        if faithfulness is not None:
-            try:
-                val = float(faithfulness)
-                st.markdown(f"**Faithfulness:** {int(val * 100)}%")
-                st.progress(min(1.0, val))
-            except (TypeError, ValueError):
-                pass
-
-        if answer_relevancy is not None:
-            try:
-                val = float(answer_relevancy)
-                st.markdown(f"**Answer relevancy:** {int(val * 100)}%")
-                st.progress(min(1.0, val))
-            except (TypeError, ValueError):
-                pass
-
-        if nli_score is not None:
-            try:
-                val = float(nli_score)
-                st.markdown(f"**NLI score:** {int(val * 100)}%")
-                st.progress(min(1.0, val))
-            except (TypeError, ValueError):
-                pass
-
-        # Memory context
-        memory_ctx = nested_meta.get("memory_context", [])
-        if memory_ctx:
-            st.divider()
-            st.markdown("**Memory context:**")
+    memory_ctx = nested_meta.get("memory_context", [])
+    if memory_ctx:
+        with st.expander("Memory context", expanded=False):
             for item in memory_ctx[:3]:
                 st.markdown(f"- _{str(item)[:80]}_")
 
-        st.divider()
-        if st.button("Clear conversation", use_container_width=True):
-            st.session_state["messages"] = []
-            st.session_state["last_metadata"] = {}
-            st.rerun()
+
+def _render_chat_tab() -> None:
+    """Render the Chat tab with streaming responses and inline metadata."""
+    st.markdown("### Chat with MAO")
+    st.markdown(
+        "_Ask about Alzheimer's disease, stroke, brain health, or request clinical summaries._"
+    )
+
+    # Render conversation history
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat input
+    user_input = st.chat_input(
+        "Ask about Alzheimer's, stroke, or brain health..."
+    )
+
+    if user_input:
+        st.session_state["request_count"] += 1
+
+        st.session_state["messages"].append(
+            {"role": "user", "content": user_input}
+        )
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state["messages"][:-1]
+        ]
+
+        full_response = ""
+        resp_data: dict[str, Any] = {}
+
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+
+            for token in _stream_response(
+                user_input, st.session_state["user_id"], history
+            ):
+                if token.startswith("__meta__:"):
+                    try:
+                        import json as _json
+                        meta_parsed = _json.loads(token[9:].strip())
+                        resp_data = meta_parsed
+                    except Exception:
+                        pass
+                    continue
+                full_response += token
+                placeholder.markdown(full_response + " ▌")
+            placeholder.markdown(full_response)
+
+            # Render metadata inline below the response
+            if resp_data:
+                _render_response_meta(resp_data)
+
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": full_response}
+        )
+        if resp_data:
+            st.session_state["last_metadata"] = resp_data
+        st.rerun()
+
+    if st.button("Clear conversation"):
+        st.session_state["messages"] = []
+        st.session_state["last_metadata"] = {}
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -634,10 +612,7 @@ CLINICIAN: Dr. A. Patel, Consultant Neurologist
         "**Accepted report types:** discharge summaries, neuropsychological assessments, "
         "radiology reports, neurology letters, neuropsychiatric evaluations\n\n"
         "**Output includes:** Diagnosis summary, key findings, medication list, next steps\n\n"
-        "**Sample reports online:**\n"
-        "- [NIH NIA Alzheimer's case vignettes](https://www.nia.nih.gov/health/alzheimers-and-dementia/alzheimers-disease-fact-sheet)\n"
-        "- [ClinicalCases.org neurology cases](https://www.clinicalcases.org)\n"
-        "- Tick **'Use sample clinical report'** above to run the demo without uploading."
+        "Tick **'Use sample clinical report'** above to run the demo without uploading."
     )
 
 
@@ -798,35 +773,6 @@ def _render_health_tab() -> None:
 def _render_eval_tab() -> None:
     """Render the Eval & Observability dashboard tab."""
     st.markdown("### Evaluation & Observability")
-
-    langsmith_project = os.getenv("LANGSMITH_PROJECT", "MED")
-    ls_enabled = bool(os.getenv("LANGSMITH_API_KEY"))
-
-    # Observability links panel
-    with st.expander("📍 Where to view each system", expanded=True):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**RAGAS scores**")
-            st.caption("This tab (table below) or `GET /eval/dashboard`")
-            st.markdown("**Prometheus metrics**")
-            st.caption("`http://localhost:8080/metrics` — scrape with Grafana for charts")
-            st.markdown("**NLI checker**")
-            st.caption("Inline in API logs (`unentailed_ratio=X`). ⚠️ appended to responses when >30%")
-        with col_b:
-            st.markdown("**LangSmith traces**")
-            if ls_enabled:
-                st.caption(f"Enabled ✅ — project: `{langsmith_project}`")
-                st.markdown("[Open smith.langchain.com →](https://smith.langchain.com)")
-            else:
-                st.caption("Not enabled — add `LANGSMITH_API_KEY` to .env")
-            st.markdown("**pgAdmin tables**")
-            st.caption(
-                "Host: `localhost:5432` | DB: `mao` | User: `mao` | PW: `mao`\n\n"
-                "Tables: `response_metrics` (RAGAS), `chat_sessions` (history), "
-                "`guardrail_events` (blocks), `response_feedback` (thumbs)"
-            )
-
-    st.divider()
 
     if st.button("🔄 Refresh RAGAS scores", type="secondary"):
         data = _fetch_eval_dashboard()
@@ -1004,12 +950,6 @@ def main() -> None:
     with tab_eval:
         _render_eval_tab()
 
-    # Subtle footer
-    ls_key = os.getenv("LANGSMITH_API_KEY", "")
-    ls_icon = "✅" if ls_key else "❌"
-    st.caption(
-        f"MAO Clinical AI — powered by LangGraph + GraphRAG + Groq | LangSmith: {ls_icon}"
-    )
 
 
 if __name__ == "__main__":
