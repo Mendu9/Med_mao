@@ -63,6 +63,7 @@ _qdrant_client: Any | None = None
 _bm25_index: "BM25Okapi | None" = None
 _bm25_corpus: list[str] = []
 _bm25_chunk_ids: list[str] = []
+_bm25_metadata: list[dict] = []  # parallel to _bm25_corpus — stores source + other chunk metadata
 
 _BM25_PICKLE_PATH = cfg.data_dir / "bm25_index.pkl"
 
@@ -74,7 +75,7 @@ _bm25_loaded: bool = False
 
 def _load_bm25_from_disk() -> None:
     """Load BM25 index from disk on first call; no-op if already loaded or MAO_DISABLE_BM25=1."""
-    global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_loaded
+    global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_metadata, _bm25_loaded
     if _bm25_loaded:
         return
     _bm25_loaded = True  # mark before load so concurrent callers don't double-load
@@ -91,6 +92,7 @@ def _load_bm25_from_disk() -> None:
             _bm25_index = saved["index"]
             _bm25_corpus = saved["corpus"]
             _bm25_chunk_ids = saved["chunk_ids"]
+            _bm25_metadata = saved.get("metadata", [{} for _ in _bm25_corpus])
             logger.info(
                 "BM25 index loaded from disk: %d documents (%s)",
                 len(_bm25_corpus), _BM25_PICKLE_PATH,
@@ -349,7 +351,7 @@ def _entity_search_chroma(entities: list[str], limit: int) -> list[dict[str, Any
     results: list[dict[str, Any]] = []
     try:
         col = _get_collection()
-        entity_query = " ".join(entities[:10])
+        entity_query = " ".join(entities[:5])
         query_embedding = embed_query(entity_query)
         res = col.query(
             query_embeddings=[query_embedding],
@@ -415,7 +417,7 @@ def _entity_search_qdrant(entities: list[str], limit: int) -> list[dict[str, Any
 
 def _build_bm25_index(chunks: list[dict[str, Any]]) -> None:
     """Build BM25 index from chunk dicts; persists to disk. No-op if rank-bm25 absent."""
-    global _bm25_index, _bm25_corpus, _bm25_chunk_ids
+    global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_metadata
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
@@ -425,6 +427,10 @@ def _build_bm25_index(chunks: list[dict[str, Any]]) -> None:
     tokenized = [c["text"].lower().split() for c in chunks]
     _bm25_corpus = [c["text"] for c in chunks]
     _bm25_chunk_ids = [c.get("chunk_id", str(i)) for i, c in enumerate(chunks)]
+    _bm25_metadata = [
+        {k: v for k, v in c.items() if k != "text"}
+        for c in chunks
+    ]
     _bm25_index = BM25Okapi(tokenized)
     logger.info("BM25 index built: %d documents", len(chunks))
 
@@ -434,7 +440,12 @@ def _build_bm25_index(chunks: list[dict[str, Any]]) -> None:
         _BM25_PICKLE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_BM25_PICKLE_PATH, "wb") as fh:
             pickle.dump(
-                {"index": _bm25_index, "corpus": _bm25_corpus, "chunk_ids": _bm25_chunk_ids},
+                {
+                    "index": _bm25_index,
+                    "corpus": _bm25_corpus,
+                    "chunk_ids": _bm25_chunk_ids,
+                    "metadata": _bm25_metadata,
+                },
                 fh,
                 protocol=pickle.HIGHEST_PROTOCOL,
             )
@@ -460,12 +471,13 @@ def _bm25_search(query: str, n: int = 20) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for idx in top_indices:
             if scores[idx] > 0:
+                meta = _bm25_metadata[idx] if idx < len(_bm25_metadata) else {}
                 results.append({
                     "chunk_id": _bm25_chunk_ids[idx],
                     "text": _bm25_corpus[idx],
                     "score": float(scores[idx]),
-                    "source": "",
-                    "metadata": {},
+                    "source": meta.get("source", ""),
+                    "metadata": meta,
                     "retrieval_method": "bm25",
                 })
         logger.debug("BM25 search: %d results for query len=%d", len(results), len(tokenized_query))

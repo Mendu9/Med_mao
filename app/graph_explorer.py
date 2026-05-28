@@ -52,6 +52,15 @@ _NODE_TYPE_PALETTE: dict[str, str] = {
 
 _DEFAULT_COLOR = "#95a5a6"  # grey for unknown types
 
+# Node types produced by generic spaCy en_core_web_sm that are NOT biomedical.
+# Nodes carrying any of these types are stripped from the display graph.
+_NON_BIOMEDICAL_TYPES: frozenset[str] = frozenset({
+    "PERSON", "ORG", "GPE", "LOC", "NORP", "FAC",
+    "CARDINAL", "ORDINAL", "PERCENT", "MONEY",
+    "DATE", "TIME", "EVENT", "LANGUAGE", "LAW",
+    "WORK_OF_ART", "PRODUCT",
+})
+
 # Domain keyword sets for domain-filter fallback (when node_type not set)
 _DOMAIN_NODE_KEYWORDS: dict[str, list[str]] = {
     "Alzheimer": [
@@ -63,6 +72,12 @@ _DOMAIN_NODE_KEYWORDS: dict[str, list[str]] = {
         "csf", "pet", "fdg",
         "alois", "braak",
         "HP:0002511", "MONDO:0004975",
+        # Additional biomedical keywords
+        "bdnf", "vegf", "mtor", "autophagy", "lysosome",
+        "synuclein", "tdp-43", "fus", "granulin", "progranulin",
+        "galantamine", "rivastigmine", "cognitive",
+        "hippocampus", "entorhinal", "prefrontal",
+        "neuritic", "tangle", "plaque", "synapt",
     ],
     "Stroke": [
         "stroke", "ischemi", "hemorrhag", "subarachnoid", "lacunar",
@@ -72,6 +87,11 @@ _DOMAIN_NODE_KEYWORDS: dict[str, list[str]] = {
         "alteplase", "clopidogrel", "aspirin", "tpa",
         "doppler", "holter", "ecg", "pfo",
         "HP:0001297", "MONDO:0005098",
+        # Additional biomedical keywords
+        "thrombect", "penumbra", "collateral",
+        "rankin", "anticoagul", "warfarin",
+        "dabigatran", "rivaroxaban", "apixaban",
+        "carotid", "atrial",
     ],
 }
 
@@ -128,8 +148,10 @@ def _load_graph() -> Any:
     """Load the MAO knowledge graph. Returns an empty DiGraph on failure."""
     import networkx as nx
     try:
-        from mao.rag.graph_builder import load_graph as _load
-        return _load()
+        from mao.rag.graph_builder import load_graph as _load, clean_graph
+        g = _load()
+        g = clean_graph(g)  # Remove any non-biomedical nodes
+        return g
     except Exception as exc:
         logger.warning("load_graph() failed: %s", exc)
         return nx.DiGraph()
@@ -230,6 +252,8 @@ def _build_plotly_figure(
     for n in nodes:
         attrs = dict(g.nodes[n])
         node_type = attrs.get("node_type", "entity")
+        source = attrs.get("source", "")
+        ontology_id = attrs.get("ontology_id", "")
         deg = degrees.get(n, 0)
         try:
             # Show first 5 connected nodes (mix of in/out for directed graphs)
@@ -239,12 +263,17 @@ def _build_plotly_figure(
         except Exception:
             nbrs = []
         nbr_str = ", ".join(str(nb) for nb in nbrs) if nbrs else "none"
-        hover_texts.append(
-            f"<b>{n}</b><br>"
-            f"type: {node_type}<br>"
-            f"degree: {deg}<br>"
-            f"connected: {nbr_str}"
-        )
+        lines = [
+            f"<b>{n}</b>",
+            f"type: {node_type}",
+            f"degree: {deg}",
+            f"connected: {nbr_str}",
+        ]
+        if ontology_id:
+            lines.append(f"id: {ontology_id}")
+        if source:
+            lines.append(f"source: {source}")
+        hover_texts.append("<br>".join(lines))
 
     node_trace = go.Scatter3d(
         x=node_x,
@@ -377,6 +406,14 @@ def render_graph_explorer() -> None:
         )
         return
 
+    # --- Filter non-biomedical nodes (PERSON, GPE, LOC, etc.) ---------------
+    display_nodes = [
+        n for n in g.nodes()
+        if g.nodes[n].get("node_type", "ENTITY") not in _NON_BIOMEDICAL_TYPES
+    ]
+    if len(display_nodes) < g.number_of_nodes():
+        g = g.subgraph(display_nodes).copy()
+
     # Capture full-graph stats before any slicing
     full_node_count = g.number_of_nodes()
     full_edge_count = g.number_of_edges()
@@ -482,6 +519,28 @@ def render_graph_explorer() -> None:
                 ))
 
         st.plotly_chart(fig, use_container_width=True)
+
+        # --- Graph Statistics expander --------------------------------------
+        with st.expander("Graph Statistics", expanded=False):
+            total_nodes = g.number_of_nodes()
+            total_edges = g.number_of_edges()
+
+            # Count by node type
+            stat_type_counts: dict[str, int] = {}
+            for _n, _attrs in g.nodes(data=True):
+                nt = _attrs.get("node_type", "unknown")
+                stat_type_counts[nt] = stat_type_counts.get(nt, 0) + 1
+
+            stat_col1, stat_col2 = st.columns(2)
+            with stat_col1:
+                st.metric("Total Nodes", total_nodes)
+                st.metric("Total Edges", total_edges)
+            with stat_col2:
+                st.write("**Node Types:**")
+                for nt, count in sorted(
+                    stat_type_counts.items(), key=lambda x: -x[1]
+                )[:10]:
+                    st.write(f"- {nt}: {count}")
 
     except ImportError:
         st.error(

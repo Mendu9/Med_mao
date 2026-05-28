@@ -45,12 +45,20 @@ from tqdm import tqdm
 
 from mao.core.config import cfg
 from mao.rag.embedder import embed_texts
-from mao.rag.graph_builder import build_graph_from_documents, load_graph, save_graph
+from mao.rag.graph_builder import build_graph_from_documents, extract_entities, load_graph, save_graph
 
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE    = 512
 _CHUNK_OVERLAP = 50
+
+# NER labels that are NOT biomedical — exclude from chunk entity metadata
+_NON_BIO_LABELS: frozenset[str] = frozenset({
+    "PERSON", "ORG", "GPE", "LOC", "NORP", "FAC",
+    "DATE", "TIME", "CARDINAL", "ORDINAL", "PERCENT",
+    "MONEY", "QUANTITY", "EVENT", "LANGUAGE", "LAW",
+    "WORK_OF_ART", "PRODUCT",
+})
 
 # ---------------------------------------------------------------------------
 # Optional adaptive chunker — degrade gracefully if unavailable
@@ -116,6 +124,15 @@ def ingest_wikipedia_topics(
         if not chunks:
             continue
 
+        # Enrich each chunk with NER entities (biomedical labels only)
+        for chunk in chunks:
+            try:
+                raw_ents = extract_entities(chunk["text"])
+                bio_ents = [e for e, lbl in raw_ents if lbl not in _NON_BIO_LABELS]
+                chunk["entities"] = ",".join(bio_ents[:20])
+            except Exception:  # noqa: BLE001
+                chunk["entities"] = ""
+
         # Store in ChromaDB
         _upsert_chunks(collection, chunks)
         all_docs.extend(chunks)
@@ -167,11 +184,19 @@ def ingest_squad(max_examples: int = 500) -> int:
             continue
         seen_contexts.add(ctx_hash)
 
+        try:
+            raw_ents_sq = extract_entities(context)
+            squad_ents = ",".join(
+                e for e, lbl in raw_ents_sq if lbl not in _NON_BIO_LABELS
+            )
+        except Exception:  # noqa: BLE001
+            squad_ents = ""
         docs.append({
             "text": context,
             "source": "squad_v2",
             "chunk_id": f"squad_{ctx_hash}",
             "title": example.get("title", ""),
+            "entities": squad_ents,
         })
 
         if len(docs) >= max_examples:
@@ -232,6 +257,7 @@ def _upsert_chunks(
                 "title": c.get("title", ""),
                 "chunk_index": str(c.get("chunk_index", 0)),
                 "chunk_id": c.get("chunk_id", ""),
+                "entities": c.get("entities", ""),
             }
             for c in batch
         ]
