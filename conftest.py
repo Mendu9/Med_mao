@@ -1,7 +1,6 @@
+from __future__ import annotations
 import sys
-import os
-
-# Ensure project root is on sys.path so `app` and `mao` packages are importable
-_root = os.path.abspath(os.path.dirname(__file__))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+from pathlib import Path
+_ROOT = Path(__file__).parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
