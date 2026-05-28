@@ -168,7 +168,7 @@ class IngestResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     groq: str
-    chromadb: str
+    vector_store: str
     postgres: str
 
 
@@ -497,20 +497,20 @@ async def health() -> HealthResponse:
     Check connectivity to all downstream services.
     Returns {"status": "ok"} only if all three pass.
     """
-    groq_status     = await _check_groq()
-    chromadb_status = await _check_chromadb()
-    postgres_status = await _check_postgres()
+    groq_status          = await _check_groq()
+    vector_store_status  = await _check_vector_store()
+    postgres_status      = await _check_postgres()
 
     overall = (
         "ok"
-        if all(s == "ok" for s in [groq_status, chromadb_status, postgres_status])
+        if all(s == "ok" for s in [groq_status, vector_store_status, postgres_status])
         else "degraded"
     )
 
     return HealthResponse(
         status=overall,
         groq=groq_status,
-        chromadb=chromadb_status,
+        vector_store=vector_store_status,
         postgres=postgres_status,
     )
 
@@ -630,16 +630,21 @@ async def _check_groq() -> str:
         return f"error: {exc}"
 
 
-async def _check_chromadb() -> str:
+async def _check_vector_store() -> str:
     try:
-        import chromadb
         loop = asyncio.get_event_loop()
-
-        def _ping():
-            client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
-            client.heartbeat()
-
-        await loop.run_in_executor(None, _ping)
+        if cfg.vector_backend == "qdrant":
+            def _ping():
+                from qdrant_client import QdrantClient
+                client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
+                client.get_collections()
+            await loop.run_in_executor(None, _ping)
+        else:
+            def _ping():  # type: ignore[misc]
+                import chromadb
+                client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
+                client.heartbeat()
+            await loop.run_in_executor(None, _ping)
         return "ok"
     except Exception as exc:
         return f"error: {exc}"
