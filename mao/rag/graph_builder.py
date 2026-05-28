@@ -1,9 +1,36 @@
-"""Builds and persists a NetworkX MultiDiGraph of biomedical entities extracted via scispaCy NER co-occurrence."""
+"""
+mao/rag/graph_builder.py
+------------------------
+Builds a NetworkX entity graph from ingested documents.
+
+Why NetworkX over Neo4j:
+  - Zero infrastructure overhead — pure Python in-process
+  - Sufficient for corpus sizes up to ~500K entities
+  - Serializable to JSON (no running graph DB to manage)
+  - Trivially mockable in tests
+
+Entity extraction strategy:
+  - scispaCy NER (en_ner_bc5cdr_md or en_core_sci_lg) for biomedical entities
+    (DISEASE, CHEMICAL, etc.) with fallback to en_core_web_sm
+  - Co-occurrence within a *sentence* = edge (weighted by frequency)
+  - Graph persisted to disk as JSON; reloaded on startup
+
+Graph type: nx.MultiDiGraph
+  - Directed so future relation types (e.g. "treats", "causes") can be
+    represented as distinct edge keys in the same direction
+  - Multi so the same node pair can have multiple relation types
+
+Integration points:
+  - data/ingest_wikipedia.py calls build_graph_from_documents()
+  - data/ingest_alzheimers.py calls build_graph_from_documents()
+  - rag/retriever.py calls expand_via_graph() for graph traversal step
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +48,113 @@ _nlp = None  # type: ignore[assignment]
 
 # Graph — loaded lazily, cached at module level (700 MB JSON, must not reload per query)
 _graph_cache: "nx.MultiDiGraph | None" = None
+
+# ---------------------------------------------------------------------------
+# Biomedical entity filtering
+# ---------------------------------------------------------------------------
+
+# Entity labels produced by scispaCy / ontology loaders that are always valid
+_BIOMEDICAL_LABELS: frozenset[str] = frozenset({
+    # scispaCy BC5CDR — these are always valid biomedical labels
+    "DISEASE", "CHEMICAL",
+    # ontology-loaded nodes
+    "phenotype", "disease", "drug", "gene/protein",
+    "biological_process", "pathway", "anatomy",
+    # Note: "ENTITY" is intentionally excluded — generic ENTITY-typed nodes
+    # must pass the _BIOMEDICAL_PATTERNS regex to be kept.
+})
+
+# Labels that are definitely NOT biomedical (en_core_web_sm general NER)
+_NON_BIOMEDICAL_LABELS: frozenset[str] = frozenset({
+    "PERSON", "ORG", "GPE", "LOC", "NORP", "FAC",
+    "CARDINAL", "ORDINAL", "PERCENT", "MONEY",
+    "QUANTITY", "TIME", "DATE", "EVENT", "LANGUAGE",
+    "LAW", "WORK_OF_ART", "PRODUCT",
+})
+
+# Regex patterns for biomedical terms — used as fallback when en_core_web_sm is active
+_BIOMEDICAL_PATTERNS: re.Pattern[str] = re.compile(
+    r'\b('
+    # Alzheimer's disease terms
+    r'amyloid(?:[\-\s]?beta|[\-\s]?β|[\-\s]?b(?:eta)?)?|Aβ|tau\s+(?:protein|tangle)|tau\b|'
+    r'neurofibrillary\s+tangle|APOE\d?|apolipoprotein\s+E|presenilin\s*[12]|PSEN[12]|'
+    r'beta\-?secretase|gamma\-?secretase|APP\b|amyloid\s+precursor\s+protein|'
+    r'donepezil|memantine|galantamine|rivastigmine|lecanemab|aducanumab|donanemab|'
+    r'leqembi|cognitive\s+(?:decline|impairment)|mild\s+cognitive\s+impairment|MCI\b|'
+    r"dementia|Alzheimer\'?s?(?:\s+disease)?|neurodegeneration|synaptic\s+(?:loss|dysfunction)|"
+    r'hippocampal\s+atrophy|cholinergic|TREM2|ABCA7|microglia(?:l)?|neuroinflammation|'
+    r'blood[\-\s]brain\s+barrier|BBB\b|'
+    # Drug / chemical terms
+    r'acetylcholine|dopamine|serotonin|norepinephrine|glutamate|GABA\b|'
+    r'acetylcholinesterase|cholinesterase\s+inhibitor|NMDA\s+receptor|'
+    r'statin\b|beta[\-\s]blocker|calcium[\-\s]channel\s+blocker|'
+    # Stroke terms
+    r'ischemi(?:c|a)|hemorrhagic\s+stroke|stroke\b|cerebrovascular|infarct(?:ion)?|'
+    r'thrombus|thrombosis|embolism|alteplase|tPA\b|t\-PA\b|'
+    r'thrombectomy|endovascular|NIHSS\b|mRS\b|modified\s+Rankin|'
+    r'cerebral\s+(?:blood\s+flow|edema|ischemia)|penumbra|'
+    r'atrial\s+fibrillation|anticoagulant|aspirin\b|clopidogrel|warfarin\b|'
+    # Genetic / molecular biology terms
+    r'mutation\b|allele\b|polymorphism\b|SNP\b|genome\b|genomic|'
+    r'transcription\s+factor|signaling\s+pathway|phosphorylation|methylation|'
+    r'expression\s+(?:of\s+)?(?:\w+\s+)?(?:gene|protein)|mRNA\b|RNA\b|DNA\b|'
+    # General biomedical
+    r'protein\b|enzyme\b|receptor\b|neuron(?:al)?|synapse(?:s|tic)?|'
+    r'cortex|hippocampus|cerebral|neurological|clinical\s+trial|'
+    r'biomarker|cerebrospinal\s+fluid|CSF\b|PET\s+(?:scan|imaging)|MRI\b|fMRI\b|'
+    r'inflammation|cytokine|oxidative\s+stress|mitochondria(?:l)?|'
+    r'blood\s+pressure|hypertension|hyperlipidemia|diabetes\b|insulin\b|'
+    r'neuropathology|neuroprotect(?:ive|ion)|autophagy|apoptosis|'
+    r'synuclein|Lewy\s+body|Parkinson|ALS\b|multiple\s+sclerosis|'
+    r'hippocampus|cerebellum|frontal\s+lobe|temporal\s+lobe|parietal\s+lobe'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Known biomedical acronyms to uppercase-normalise
+_BIOMEDICAL_ACRONYMS: frozenset[str] = frozenset({
+    "APP", "APOE", "PSEN1", "PSEN2", "TREM2", "ABCA7",
+    "MCI", "BBB", "CSF", "MRI", "TPA", "NIHSS", "MRS",
+})
+
+
+def _is_valid_biomedical_entity(text: str, label: str) -> bool:
+    """Return True only for biomedical entities worth keeping in the graph."""
+    if label in _BIOMEDICAL_LABELS:
+        return True
+    if label in _NON_BIOMEDICAL_LABELS:
+        return False
+    # Unknown label type — check it looks biomedical via regex
+    return bool(_BIOMEDICAL_PATTERNS.search(text))
+
+
+def _normalize_entity(text: str) -> str:
+    """Normalise entity text: uppercase known acronyms, else title-case."""
+    stripped = text.strip()
+    if stripped.upper() in _BIOMEDICAL_ACRONYMS:
+        return stripped.upper()
+    return stripped.title()
+
+
+def _extract_biomedical_regex(text: str) -> list[tuple[str, str]]:
+    """
+    Extract biomedical terms from *text* using regex patterns.
+
+    Used as a supplementary extractor when only en_core_web_sm is available,
+    to recover biomedical entities that general NER would miss or mislabel.
+
+    Returns list of (entity_text, "ENTITY") tuples.
+    """
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _BIOMEDICAL_PATTERNS.finditer(text):
+        raw = match.group(0).strip()
+        if len(raw) >= 3:
+            normalised = _normalize_entity(raw)
+            if normalised not in seen:
+                seen.add(normalised)
+                results.append((normalised, "ENTITY"))
+    return results
 
 
 def _load_nlp():
@@ -62,65 +196,44 @@ def _get_nlp():
 # Entity extraction
 # ---------------------------------------------------------------------------
 
-_MIN_ENTITY_LEN = 3
-_MAX_ENTITY_LEN = 120
-
-# Labels from en_core_web_sm that carry no biomedical signal — skip them
-# so the graph stays clinically relevant when the fallback model is active.
-_SKIP_LABELS_WEB_SM = frozenset({
-    "DATE", "TIME", "PERCENT", "MONEY", "QUANTITY", "ORDINAL", "CARDINAL",
-    "FAC", "NORP", "LANGUAGE", "EVENT", "WORK_OF_ART", "LAW", "LOC",
-})
-
-
-def _is_valid_entity(text: str, label: str) -> bool:
-    """Return True if the entity string is a plausible biomedical entity."""
-    t = text.strip()
-    if len(t) < _MIN_ENTITY_LEN or len(t) > _MAX_ENTITY_LEN:
-        return False
-    # Must start with a letter or digit (rules out punctuation fragments)
-    if not (t[0].isalpha() or t[0].isdigit()):
-        return False
-    # Short all-lowercase tokens ≤6 chars are almost always PDF extraction artifacts
-    if len(t) <= 6 and t.islower():
-        return False
-    # Starts with a lowercase letter AND is short — very likely a fragment
-    if len(t) <= 8 and t[0].islower() and not t[0].isdigit():
-        # Allow known short biomedical abbreviations (all-caps or mixed)
-        if not any(c.isupper() for c in t):
-            return False
-    # Strings with no vowels are likely consonant-only fragments
-    stripped_alpha = "".join(c for c in t.lower() if c.isalpha())
-    if len(stripped_alpha) >= 4 and not any(c in "aeiou" for c in stripped_alpha):
-        return False
-    # Contains ? or other non-printable/special chars — likely garbled unicode from PDF
-    if "?" in t or "\x00" in t:
-        return False
-    # Drop web_sm non-biomedical label types
-    if label in _SKIP_LABELS_WEB_SM:
-        return False
-    return True
-
-
 def extract_entities(text: str) -> list[tuple[str, str]]:
     """
-    Run spaCy NER on *text*.
+    Run spaCy NER on *text*, keeping only biomedical entities.
 
     Returns list of (entity_text, entity_label) tuples.
     For scispaCy BC5CDR the label will be "DISEASE" or "CHEMICAL".
     For en_core_sci_lg unlabelled spans get "ENTITY".
-    For en_core_web_sm the label will be "PERSON", "ORG", "GPE", etc.
+    For en_core_web_sm, non-biomedical labels (PERSON, GPE, LOC, etc.) are
+    dropped and regex-based biomedical extraction is added instead.
 
     Called by rag/retriever.py — signature must remain stable.
     """
     nlp = _get_nlp()
     doc = nlp(text)
     results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
     for ent in doc.ents:
         label = ent.label_ if ent.label_ else "ENTITY"
         entity_text = ent.text.strip()
-        if _is_valid_entity(entity_text, label):
-            results.append((entity_text, label))
+        if len(entity_text) < 3:
+            continue
+        if not _is_valid_biomedical_entity(entity_text, label):
+            continue
+        normalised = _normalize_entity(entity_text)
+        if normalised not in seen:
+            seen.add(normalised)
+            results.append((normalised, label))
+
+    # When using en_core_web_sm (no scispaCy), supplement with regex extraction
+    # so we still capture known biomedical terms the general model missed/skipped.
+    model_name = nlp.meta.get("name", "")
+    if "web_sm" in model_name or "web_md" in model_name or "web_lg" in model_name:
+        for entity_text, label in _extract_biomedical_regex(text):
+            if entity_text not in seen:
+                seen.add(entity_text)
+                results.append((entity_text, label))
+
     return results
 
 
@@ -163,13 +276,24 @@ def build_graph_from_documents(
 
         # Process each sentence independently — sentence-level co-occurrence
         for sent in spacy_doc.sents:
-            # Collect unique entities in this sentence (dedup by text, keep label)
+            # Collect unique biomedical entities in this sentence (dedup by text, keep label)
             seen: dict[str, str] = {}
             for ent in sent.ents:
                 label = ent.label_ if ent.label_ else "ENTITY"
                 entity_text = ent.text.strip()
-                if len(entity_text) > 1:
-                    seen[entity_text] = label
+                if len(entity_text) < 3:
+                    continue
+                if not _is_valid_biomedical_entity(entity_text, label):
+                    continue
+                normalised = _normalize_entity(entity_text)
+                seen[normalised] = label
+
+            # For en_core_web_sm, supplement with regex biomedical extraction
+            model_name = nlp.meta.get("name", "")
+            if "web_sm" in model_name or "web_md" in model_name or "web_lg" in model_name:
+                for entity_text, label in _extract_biomedical_regex(sent.text):
+                    if entity_text not in seen:
+                        seen[entity_text] = label
 
             sent_entities = list(seen.items())  # list of (text, label)
 
@@ -201,6 +325,73 @@ def build_graph_from_documents(
         G.number_of_nodes(),
         G.number_of_edges(),
         len(documents),
+    )
+    return G
+
+
+# ---------------------------------------------------------------------------
+# Graph cleaning
+# ---------------------------------------------------------------------------
+
+def clean_graph(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
+    """
+    Remove any non-biomedical nodes from an existing graph in-place.
+
+    Called automatically by load_graph() so that even graphs built before
+    this filter was introduced are cleaned on first load.
+    """
+    to_remove = []
+    for node, attrs in G.nodes(data=True):
+        node_str = str(node)
+        node_type = attrs.get("node_type", "ENTITY")
+
+        # Hard reject: known non-biomedical NER label
+        if node_type in _NON_BIOMEDICAL_LABELS:
+            to_remove.append(node)
+            continue
+
+        # Reject garbage/truncated tokens under 3 chars or over 80 chars
+        stripped = node_str.strip()
+        if len(stripped) < 3 or len(stripped) > 80:
+            to_remove.append(node)
+            continue
+
+        # Reject nodes with non-ASCII special characters (truncated/malformed entities)
+        if re.search(r'[´`\x00-\x08\x0b-\x1f\x7f-\x9f]', stripped):
+            to_remove.append(node)
+            continue
+
+        # Reject nodes with newlines or very long names (garbage text fragments)
+        if "\n" in node_str or len(node_str) > 80:
+            to_remove.append(node)
+            continue
+
+        # Reject multi-word phrases that are clearly organization/publication names,
+        # not biomedical concepts — en_core_web_sm legacy artifacts.
+        if re.match(
+            r'^[Tt]he\s+(National|American|Oxford|Cincinnati|Los Angeles|Stroke|Alzheimer)',
+            node_str,
+        ):
+            to_remove.append(node)
+            continue
+        # Reject obvious PERSON names (First Last pattern, no biomedical keyword)
+        if re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$', node_str) and not _BIOMEDICAL_PATTERNS.search(node_str):
+            to_remove.append(node)
+            continue
+        # Reject slang/colloquial/non-scientific phrases
+        if re.match(r'^[Tt]he\s+\w+\s+(Mafia|Gang|Club|Group|Society|Project|Plan|Association)\b', node_str):
+            to_remove.append(node)
+            continue
+
+        # For ENTITY-typed nodes AND unknown-type nodes, require biomedical regex match
+        if node_type not in _BIOMEDICAL_LABELS and not _is_valid_biomedical_entity(node_str.strip(), node_type):
+            to_remove.append(node)
+
+    G.remove_nodes_from(to_remove)
+    logger.info(
+        "clean_graph: removed %d non-biomedical nodes, %d remain",
+        len(to_remove),
+        G.number_of_nodes(),
     )
     return G
 
@@ -264,6 +455,9 @@ def load_graph(path: Path | None = None) -> nx.MultiDiGraph:
         )
         G = nx.MultiDiGraph(G)
     logger.info("Graph loaded: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
+
+    # Strip any non-biomedical nodes that crept in from earlier en_core_web_sm builds
+    clean_graph(G)
 
     if path is None:
         _graph_cache = G  # store in cache for subsequent calls
@@ -341,22 +535,6 @@ def expand_via_graph(
         len(seed_entities), len(expanded), actual_hops,
     )
     return expanded
-
-
-def clean_graph(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
-    """
-    Remove clearly invalid nodes from a loaded graph (e.g. PDF extraction fragments).
-
-    Applies the same _is_valid_entity filter used during ingestion.
-    Returns the same graph instance with bad nodes removed in-place.
-    """
-    bad_nodes = [
-        n for n in list(G.nodes())
-        if not _is_valid_entity(str(n), G.nodes[n].get("node_type", "ENTITY"))
-    ]
-    G.remove_nodes_from(bad_nodes)
-    logger.info("clean_graph: removed %d invalid nodes, %d remain", len(bad_nodes), G.number_of_nodes())
-    return G
 
 
 if __name__ == "__main__":
