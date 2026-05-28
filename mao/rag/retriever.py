@@ -310,12 +310,22 @@ def _vector_search_qdrant(query: str, n: int) -> list[dict[str, Any]]:
     try:
         client = _get_qdrant_client()
         query_embedding = embed_query(query)
-        results = client.search(
-            collection_name=cfg.qdrant_collection,
-            query_vector=query_embedding,
-            limit=n,
-            with_payload=True,
-        )
+        # qdrant-client >= 1.9: use query_points; < 1.9: use search
+        try:
+            response = client.query_points(
+                collection_name=cfg.qdrant_collection,
+                query=query_embedding,
+                limit=n,
+                with_payload=True,
+            )
+            results = response.points
+        except AttributeError:
+            results = client.search(  # type: ignore[attr-defined]
+                collection_name=cfg.qdrant_collection,
+                query_vector=query_embedding,
+                limit=n,
+                with_payload=True,
+            )
         chunks = []
         for hit in results:
             payload = hit.payload or {}
