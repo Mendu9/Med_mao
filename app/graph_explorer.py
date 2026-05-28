@@ -337,11 +337,6 @@ def render_graph_explorer() -> None:
     Does NOT call st.set_page_config() and does NOT import gradio.
     """
     st.markdown("### Knowledge Graph Explorer")
-    st.caption(
-        "Node colors: Disease · Chemical · Drug · Gene/Protein · "
-        "Phenotype · Pathway · Anatomy  |  "
-        "Node size scales with degree (connectivity)."
-    )
 
     # Guard: MAO_DISABLE_GRAPH=1 disables graph loading (HF Spaces CPU constraint)
     if os.getenv("MAO_DISABLE_GRAPH", "0") == "1":
@@ -353,7 +348,7 @@ def render_graph_explorer() -> None:
         return
 
     # --- Controls -----------------------------------------------------------
-    ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 2, 2, 3])
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 3])
 
     with ctrl_col1:
         domain_filter: str = st.selectbox(
@@ -379,14 +374,7 @@ def render_graph_explorer() -> None:
             value=200,
             step=50,
             key="ge_max_nodes",
-            help="Cap to top-N by degree for performance. Full graph may have 100K+ nodes.",
-        )
-
-    with ctrl_col4:
-        search_query: str = st.text_input(
-            "Search / highlight node",
-            placeholder="e.g. APOE, amyloid, stroke",
-            key="ge_search",
+            help="Cap to top-N by degree for performance.",
         )
 
     show_edge_labels: bool = st.checkbox(
@@ -394,6 +382,7 @@ def render_graph_explorer() -> None:
         value=False,
         key="ge_edge_labels",
     )
+    search_query: str = ""
 
     # --- Load graph ---------------------------------------------------------
     with st.spinner("Loading knowledge graph..."):
@@ -464,18 +453,6 @@ def render_graph_explorer() -> None:
     s2.metric("Displayed edges", g.number_of_edges())
     s3.metric("Full graph nodes", f"{full_node_count:,}")
     s4.metric("Full graph edges", f"{full_edge_count:,}")
-
-    type_counts: dict[str, int] = {}
-    for _, attrs in g.nodes(data=True):
-        nt = attrs.get("node_type", "entity")
-        type_counts[nt] = type_counts.get(nt, 0) + 1
-
-    if type_counts:
-        top_types = sorted(type_counts.items(), key=lambda x: -x[1])[:8]
-        st.caption(
-            "Node types (displayed): "
-            + "  |  ".join(f"{nt}: {cnt:,}" for nt, cnt in top_types)
-        )
 
     # --- Layout + render ----------------------------------------------------
     with st.spinner(f"Computing {layout_choice} layout for {g.number_of_nodes()} nodes..."):
