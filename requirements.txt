@@ -1,6 +1,7 @@
 # MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
-# Force binary-only for ALL packages — prevents any source compilation on HF
---prefer-binary
+
+# setuptools provides pkg_resources needed when grpcio builds from source
+setuptools>=70.0.0
 
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
