@@ -1,4 +1,7 @@
-"""HuggingFace Spaces entrypoint — delegates to app/streamlit_app.py."""
+"""HuggingFace Spaces entrypoint — delegates to app/streamlit_app.py.
+
+Graph: 1766 nodes (697 CHEMICAL + 1069 DISEASE), 5713 edges — scispaCy BC5CDR NER.
+"""
 import runpy, sys, os
 
 # Ensure the project root is on the path
