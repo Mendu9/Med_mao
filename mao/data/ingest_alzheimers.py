@@ -159,7 +159,7 @@ def ingest_alzheimers_pdfs(
                 text,
                 source=source_name,
                 title=pdf_path.stem,
-                domain="alzheimers",
+                domain="alzheimer",
                 chunk_size=chunk_size,
                 overlap=chunk_overlap,
             )

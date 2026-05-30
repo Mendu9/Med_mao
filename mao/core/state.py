@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, TypedDict
 import uuid
+from mao.core.config import TOKEN_BUDGET
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,14 @@ class MAOState(TypedDict, total=False):
     # Feedback
     session_id: str
 
+    # GraphRAG retrieved context (written by graphrag_node, read by domain_supervisor)
+    retrieved_docs: list
+    web_results: list
+
+    # Supervisor outputs
+    sources: list
+    ungrounded_claims: list[str]
+
 
 # ---------------------------------------------------------------------------
 # Intent label constants — router classifies into exactly these strings
@@ -138,8 +147,7 @@ def make_initial_state(
 
     Called by api/main.py before invoking the LangGraph graph.
     """
-    import uuid as _uuid
-    sid = str(_uuid.uuid4())
+    sid = str(uuid.uuid4())
     return MAOState(
         user_query=user_query,
         user_id=user_id,
@@ -157,8 +165,12 @@ def make_initial_state(
         council_verdict=None,
         completeness_ok=False,
         missing_sub_queries=[],
-        token_budget_remaining=7050,
+        token_budget_remaining=TOKEN_BUDGET,
         uncertainty_flag=False,
         pii_scrubbed_query=user_query,
         session_id=sid,
+        retrieved_docs=[],
+        web_results=[],
+        sources=[],
+        ungrounded_claims=[],
     )

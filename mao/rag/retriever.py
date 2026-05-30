@@ -42,9 +42,8 @@ Integration points:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
-
-import chromadb
 
 from mao.core.config import cfg, CACHE_TTL
 from mao.core.query_cache import QueryCache
@@ -56,7 +55,7 @@ if TYPE_CHECKING:
     from rank_bm25 import BM25Okapi
 
 _cache = QueryCache(ttl=CACHE_TTL)
-_chroma_client: chromadb.HttpClient | None = None
+_chroma_client = None   # lazy-initialised only when vector_backend == "chromadb"
 _chroma_collection = None
 _qdrant_client: Any | None = None
 
@@ -64,6 +63,7 @@ _bm25_index: "BM25Okapi | None" = None
 _bm25_corpus: list[str] = []
 _bm25_chunk_ids: list[str] = []
 _bm25_metadata: list[dict] = []  # parallel to _bm25_corpus — stores source + other chunk metadata
+_bm25_lock = threading.Lock()  # guards all _bm25_* globals
 
 _BM25_PICKLE_PATH = cfg.data_dir / "bm25_index.pkl"
 
@@ -76,9 +76,10 @@ _bm25_loaded: bool = False
 def _load_bm25_from_disk() -> None:
     """Load BM25 index from disk on first call; no-op if already loaded or MAO_DISABLE_BM25=1."""
     global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_metadata, _bm25_loaded
-    if _bm25_loaded:
-        return
-    _bm25_loaded = True  # mark before load so concurrent callers don't double-load
+    with _bm25_lock:
+        if _bm25_loaded:
+            return
+        _bm25_loaded = True  # set inside lock — prevents double-load under concurrent workers
     import os
     if os.getenv("MAO_DISABLE_BM25", "0") == "1":
         logger.info("BM25 index loading skipped (MAO_DISABLE_BM25=1)")
@@ -104,6 +105,7 @@ def _load_bm25_from_disk() -> None:
 def _get_collection():
     global _chroma_client, _chroma_collection
     if _chroma_collection is None:
+        import chromadb  # deferred — only needed when vector_backend == "chromadb"
         _chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
         _chroma_collection = _chroma_client.get_or_create_collection(cfg.chroma_collection)
         logger.info("ChromaDB collection '%s' ready (%d docs)", cfg.chroma_collection, _chroma_collection.count())
