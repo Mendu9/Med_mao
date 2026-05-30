@@ -23,12 +23,20 @@ os.environ.setdefault("TORCH_HOME", "/tmp/hf_cache/torch")
 def _start_api():
     import uvicorn
     from mao.api.main import app as fastapi_app
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8080, log_level="warning")
+    config = uvicorn.Config(
+        fastapi_app,
+        host="0.0.0.0",
+        port=8080,
+        log_level="warning",
+        loop="asyncio",      # explicit loop — avoids uvloop import issues on HF
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 api_thread = threading.Thread(target=_start_api, daemon=True, name="fastapi")
 api_thread.start()
 
 # Give the API a moment to bind before Streamlit starts making requests
-time.sleep(3)
+time.sleep(5)
 
 runpy.run_module("app.streamlit_app", run_name="__main__", alter_sys=True)

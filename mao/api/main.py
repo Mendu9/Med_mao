@@ -37,10 +37,9 @@ from mao.monitoring.metrics import (
 logger = logging.getLogger(__name__)
 # configure_logging is called inside lifespan startup (after uvicorn installs its handlers)
 
-# Thread pool for running synchronous LangGraph calls without blocking asyncio.
-# Each LangGraph invocation can take 60-180 s; 8 workers allows concurrent requests
-# without queuing (which would make subsequent requests appear to hang/timeout).
-_executor = ThreadPoolExecutor(max_workers=8)
+# Thread pool for synchronous LangGraph calls — recreated on each lifespan startup
+# so that process-level restarts (HF Spaces daemon thread) get a fresh executor.
+_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=8)
 
 # Keep strong references to fire-and-forget asyncio tasks to prevent GC cancellation.
 _bg_tasks: set[asyncio.Task] = set()
@@ -53,6 +52,10 @@ _bg_tasks: set[asyncio.Task] = set()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm graph + models before accepting requests; clean up on shutdown."""
+    global _executor
+    # Recreate executor if it was shut down by a previous uvicorn lifecycle
+    if _executor._shutdown:
+        _executor = ThreadPoolExecutor(max_workers=8)
     configure_logging(level=cfg.log_level)  # after uvicorn installs its own handlers
     logger.info("MAO API starting up — downloading/loading models...")
     loop = asyncio.get_running_loop()
