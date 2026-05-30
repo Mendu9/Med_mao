@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from mao.core.config import CLINICAL_MODEL
+
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +29,12 @@ def senior_supervisor_node(state: dict) -> dict:
         temperature=0.0,
     ).strip()
     try:
-        parsed = json.loads(raw)
+        cleaned = _JSON_FENCE_RE.sub("", raw.strip())
+        brace_start = cleaned.find("{")
+        brace_end   = cleaned.rfind("}")
+        if brace_start != -1 and brace_end > brace_start:
+            cleaned = cleaned[brace_start : brace_end + 1]
+        parsed = json.loads(cleaned)
         missing = parsed.get("missing", [])
     except json.JSONDecodeError:
         missing = []

@@ -56,14 +56,24 @@ if _LANGSMITH_ENABLED:
 # ---------------------------------------------------------------------------
 
 _groq_client: Groq | None = None
+_async_groq_client = None   # type: ignore[assignment]  # AsyncGroq | None
 
 
 def _get_groq_client() -> Groq:
-    """Return the shared Groq client, initialising it on first call."""
+    """Return the shared sync Groq client, initialising it on first call."""
     global _groq_client
     if _groq_client is None:
         _groq_client = Groq(api_key=cfg.groq_api_key)
     return _groq_client
+
+
+def _get_async_groq_client():
+    """Return the shared async Groq client, initialising it on first call."""
+    global _async_groq_client
+    if _async_groq_client is None:
+        from groq import AsyncGroq
+        _async_groq_client = AsyncGroq(api_key=cfg.groq_api_key)
+    return _async_groq_client
 
 
 @_traceable(name="groq_chat", run_type="llm")
@@ -110,11 +120,10 @@ async def achat(
     max_tokens: int = 1024,
     model: str | None = None,
 ) -> str:
-    """Async Groq chat — avoids thread executor overhead for async callers."""
-    from groq import AsyncGroq
+    """Async Groq chat — reuses a shared AsyncGroq client (connection pooling via httpx)."""
     _model = model or cfg.groq_model
     try:
-        client = AsyncGroq(api_key=cfg.groq_api_key)
+        client = _get_async_groq_client()
         resp = await client.chat.completions.create(
             model=_model,
             messages=messages,

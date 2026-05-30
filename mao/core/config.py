@@ -19,12 +19,6 @@ class MAOConfig:
     groq_judge_model: str = field(default_factory=lambda: os.getenv("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile"))
     ollama_base_url: str  = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
 
-    # Pinecone (optional — replaced by ChromaDB; kept for backwards compatibility)
-    pinecone_api_key: str | None    = field(default_factory=lambda: os.getenv("PINECONE_API_KEY") or None)
-    pinecone_index: str | None      = field(default_factory=lambda: os.getenv("PINECONE_INDEX") or None)
-    pinecone_mem0_index: str | None = field(default_factory=lambda: os.getenv("PINECONE_MEM0_INDEX") or None)
-    pinecone_region: str            = field(default_factory=lambda: os.getenv("PINECONE_REGION", "us-east-1"))
-
     # Embeddings (sentence-transformers, local, no API key)
     # NeuML/pubmedbert-base-embeddings: 768-dim, trained on PubMed, far better biomedical recall
     embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "NeuML/pubmedbert-base-embeddings"))

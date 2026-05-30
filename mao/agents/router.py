@@ -125,7 +125,8 @@ def router_node(state: MAOState) -> MAOState:
     metadata: dict  = state.get("metadata", {})
 
     # --- Deterministic routing: image or PDF present → always clinical ---
-    if metadata.get("image_b64") or metadata.get("report_path"):
+    if (metadata.get("image_b64") or metadata.get("image_url")
+            or metadata.get("report_path") or metadata.get("report_b64")):
         logger.info("Router: image/report detected → clinical (no LLM needed)")
         state["intent"] = INTENT_CLINICAL
         state["memory_context"] = ""

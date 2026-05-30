@@ -310,7 +310,7 @@ def _chunk_text(
     text: str,
     source: str,
     title: str,
-    domain: str = "alzheimers",
+    domain: str = "alzheimer",
     chunk_size: int = _CHUNK_SIZE,
     overlap: int = _CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:

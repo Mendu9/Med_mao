@@ -103,6 +103,14 @@ class MAOState(TypedDict, total=False):
     sources: list
     ungrounded_claims: list[str]
 
+    # Streaming hint — set by /chat/stream endpoint before graph invocation.
+    # When True, streaming-capable agents (graphrag, clinical, summarizer) skip
+    # their final LLM call and store messages in _stream_messages so the endpoint
+    # can drive Groq with stream=True for true token-by-token delivery.
+    _want_stream: bool
+    _stream_messages: list  # list[dict] — messages to send to Groq with stream=True
+    _stream_model: str      # model name to use for streaming
+
 
 # ---------------------------------------------------------------------------
 # Intent label constants — router classifies into exactly these strings
@@ -173,4 +181,7 @@ def make_initial_state(
         web_results=[],
         sources=[],
         ungrounded_claims=[],
+        _want_stream=False,
+        _stream_messages=[],
+        _stream_model="",
     )
