@@ -82,17 +82,29 @@ def _build_mem0_config() -> dict[str, Any]:
 
 # Lazy singleton — avoids network calls at import time
 _mem0_client: Memory | None = None
+_mem0_disabled: bool = False  # latched True after first failure to stop per-request timeouts
 
 
 def get_mem0_client() -> Memory:
-    """Return the shared Mem0 Memory instance, initialising on first call."""
+    """Return shared Mem0 Memory instance, initialising on first call.
+
+    After any connection failure the flag is latched so subsequent requests
+    skip the 8-second ChromaDB timeout and degrade to empty memory context.
+    """
     import os
-    global _mem0_client
-    if os.getenv("MAO_DISABLE_MEM0", "").lower() in ("1", "true", "yes"):
-        raise RuntimeError("Mem0 disabled via MAO_DISABLE_MEM0 env var")
+    global _mem0_client, _mem0_disabled
+    if _mem0_disabled or os.getenv("MAO_DISABLE_MEM0", "").lower() in ("1", "true", "yes"):
+        raise RuntimeError("Mem0 disabled (ChromaDB unavailable or MAO_DISABLE_MEM0=1)")
     if _mem0_client is None:
         logger.info("Initialising Mem0 client (chroma collection=mao_memory)")
-        _mem0_client = Memory.from_config(_build_mem0_config())
+        try:
+            _mem0_client = Memory.from_config(_build_mem0_config())
+        except Exception as exc:
+            _mem0_disabled = True
+            logger.warning(
+                "Mem0 init failed — disabling for this process to avoid repeated timeouts: %s", exc
+            )
+            raise RuntimeError(f"Mem0 init failed: {exc}") from exc
     return _mem0_client
 
 
@@ -115,11 +127,15 @@ def search_memories(query: str, user_id: str, limit: int = 5) -> str:
     """
     try:
         client = get_mem0_client()
-        results: list[dict[str, Any]] = client.search(
-            query=query,
-            user_id=user_id,
-            limit=limit,
-        )
+        # mem0 >= 0.1.40 moved user_id to filters=; try new API, fall back to old
+        try:
+            results: list[dict[str, Any]] = client.search(
+                query=query,
+                filters={"user_id": user_id},
+                limit=limit,
+            )
+        except TypeError:
+            results = client.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
         # mem0 may return a dict with a "results" key in newer versions
         if isinstance(results, dict):
             results = results.get("results", [])
@@ -155,11 +171,17 @@ def save_memory(
     """
     try:
         client = get_mem0_client()
+        # Truncate to stay within Groq free-tier TPM limits (llama-3.1-8b: 6000 TPM).
+        # Mem0 only needs a summary of the exchange — full RAG responses are too long.
+        truncated_response = assistant_response[:800] + ("…" if len(assistant_response) > 800 else "")
         messages = [
-            {"role": "user",      "content": user_query},
-            {"role": "assistant", "content": assistant_response},
+            {"role": "user",      "content": user_query[:400]},
+            {"role": "assistant", "content": truncated_response},
         ]
-        client.add(messages, user_id=user_id)
+        try:
+            client.add(messages, user_id=user_id)
+        except TypeError:
+            client.add(messages, filters={"user_id": user_id})  # type: ignore[call-arg]
         logger.debug("Memory saved for user=%s", user_id)
 
     except Exception as exc:  # noqa: BLE001

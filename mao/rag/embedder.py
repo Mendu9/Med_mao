@@ -20,7 +20,8 @@ def _get_model():
 
 
 def embed_query(text: str) -> list[float]:
-    return _get_model().encode(text, convert_to_numpy=True).tolist()
+    # .flatten() ensures 1-D output even when the model returns a 2-D array for a single string
+    return _get_model().encode(text, convert_to_numpy=True).flatten().tolist()
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

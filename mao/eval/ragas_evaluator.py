@@ -15,7 +15,7 @@ def _ls_traceable(fn):
     try:
         from langsmith import traceable
         return traceable(name="ragas_score_response", run_type="chain")(fn)
-    except ImportError:
+    except Exception:  # guard against version-incompatible langsmith installs
         return fn
 
 # Agents that produce retrieved contexts — only these are scored
@@ -23,6 +23,9 @@ _SCOREABLE_AGENTS = {"graphrag", "clinical"}
 
 # Faithfulness threshold for hallucination flag
 _FAITHFULNESS_THRESHOLD = 0.7
+
+# Faithfulness below this triggers retraining candidate storage
+_RETRAINING_THRESHOLD = 0.6
 
 
 @_ls_traceable
@@ -58,7 +61,7 @@ async def score_response(
         return {}
 
     try:
-        scores = await asyncio.get_event_loop().run_in_executor(
+        scores = await asyncio.get_running_loop().run_in_executor(
             None,
             _run_ragas_sync,
             question,
@@ -73,7 +76,7 @@ async def score_response(
         return {}
 
     # Store to Postgres
-    await asyncio.get_event_loop().run_in_executor(
+    await asyncio.get_running_loop().run_in_executor(
         None,
         _store_metrics,
         request_id,
@@ -111,7 +114,59 @@ async def score_response(
             faithfulness,
         )
 
+    # Eval feedback loop: flag for retraining when faithfulness is very low
+    if faithfulness < _RETRAINING_THRESHOLD:
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            _store_retraining_candidate,
+            request_id,
+            user_id,
+            agent_used,
+            question,
+            answer,
+            contexts,
+            faithfulness,
+            scores.get("answer_relevancy", 0.0),
+            "low_faithfulness",
+        )
+
     return scores
+
+
+def _store_retraining_candidate(
+    request_id: str,
+    user_id: str,
+    agent_used: str,
+    question: str,
+    answer: str,
+    contexts: list[str],
+    faithfulness: float,
+    answer_relevancy: float,
+    trigger_reason: str,
+) -> None:
+    """Store a poor-quality response as a retraining candidate (sync, runs in executor)."""
+    try:
+        from mao.db import get_db_session
+        from mao.db.models import RetrainingCandidate
+        with get_db_session() as db:
+            db.add(RetrainingCandidate(
+                request_id=request_id,
+                user_id=user_id,
+                agent_used=agent_used,
+                question=question,
+                answer=answer,
+                contexts=contexts,
+                faithfulness=faithfulness,
+                answer_relevancy=answer_relevancy,
+                trigger_reason=trigger_reason,
+            ))
+        logger.info(
+            "Retraining candidate stored: request_id=%s faithfulness=%.3f",
+            request_id,
+            faithfulness,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Retraining candidate store failed (non-fatal): %s", exc)
 
 
 def _run_ragas_sync(
@@ -261,7 +316,7 @@ async def run_full_ragas_eval(samples: list[dict]) -> dict[str, float]:
         totals[key] = totals.get(key, 0.0) + val
         counts[key] = counts.get(key, 0) + 1
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     for sample in samples:
         question: str = sample.get("question", "")

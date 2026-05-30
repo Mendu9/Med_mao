@@ -24,6 +24,6 @@ def classify_domain(query: str) -> str:
     return label if label in _VALID_DOMAINS else "general"
 
 def classifier_node(state: dict) -> dict:
-    query = state.get("pii_scrubbed_query") or state.get("query", "")
+    query = state.get("pii_scrubbed_query") or state.get("user_query", "")
     domain = classify_domain(query)
     return {**state, "domain": domain}

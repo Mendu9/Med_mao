@@ -10,7 +10,7 @@ from typing import Any
 import requests
 from mao.core import llm as groq_llm
 
-from mao.core.config import cfg, MRI_CONFIDENCE_GATE, TOKEN_BUDGET
+from mao.core.config import cfg, MRI_CONFIDENCE_GATE, TOKEN_BUDGET, CLINICAL_MODEL
 from mao.core.state import MAOState
 from mao.core.token_counter import truncate_to_budget
 from mao.eval.nli_checker import check_all_claims
@@ -373,6 +373,7 @@ def _summarize_report(report_text: str, memory_context: str) -> str:
     try:
         return groq_llm.chat(
             messages=[{"role": "user", "content": prompt}],
+            model=CLINICAL_MODEL,
             temperature=0.0,
             max_tokens=300,
         ).strip()
@@ -392,14 +393,13 @@ def _extract_structured_fields(report_text: str) -> dict:
     try:
         raw = groq_llm.chat(
             messages=[{"role": "user", "content": prompt}],
+            model=CLINICAL_MODEL,
             temperature=0.0,
             max_tokens=512,
         ).strip()
-        import json as _json
-        # Extract JSON from response
         start = raw.find("{")
         end = raw.rfind("}") + 1
-        return _json.loads(raw[start:end]) if start >= 0 else {}
+        return json.loads(raw[start:end]) if start >= 0 else {}
     except Exception as exc:
         logger.error("Structured extraction failed: %s", exc)
         return {}
@@ -485,13 +485,14 @@ def _web_search_clinical(query: str) -> str:
 
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    """Call Groq for clinical synthesis."""
+    """Call Groq for clinical synthesis using the 70B clinical model."""
     try:
         return groq_llm.chat(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
+            model=CLINICAL_MODEL,
             temperature=0.1,
             max_tokens=1024,
         ).strip()

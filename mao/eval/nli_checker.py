@@ -1,25 +1,54 @@
+from __future__ import annotations
+
 import logging
+import threading
 from mao.core.config import NLI_MODEL, NLI_ENTAILMENT_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
 _cross_encoder = None
+_nli_disabled  = False  # latched True on load failure to avoid repeated crashes
+_nli_lock      = threading.Lock()
+
+_MAX_PREMISE_CHARS = 2000  # ~512 tokens; truncate before sending to cross-encoder
 
 
 def _get_encoder():
-    global _cross_encoder
-    if _cross_encoder is None:
-        from sentence_transformers import CrossEncoder
-        _cross_encoder = CrossEncoder(NLI_MODEL)
+    global _cross_encoder, _nli_disabled
+    if _nli_disabled:
+        return None
+    if _cross_encoder is not None:
+        return _cross_encoder
+    with _nli_lock:
+        # Double-checked locking — re-test inside lock to prevent double-load
+        if _nli_disabled:
+            return None
+        if _cross_encoder is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                _cross_encoder = CrossEncoder(NLI_MODEL)
+            except Exception as exc:
+                _nli_disabled = True
+                logger.warning("NLI model failed to load — disabling NLI checks: %s", exc)
+                return None
     return _cross_encoder
+
+
+def _safe_result(claim: str) -> dict:
+    return {"claim": claim, "entailed": False, "score": 0.0, "contradiction_score": 0.0}
 
 
 def check_claim(premise: str, claim: str) -> dict:
     enc = _get_encoder()
+    if enc is None:
+        return _safe_result(claim)
+    if len(premise) > _MAX_PREMISE_CHARS:
+        logger.warning("NLI premise truncated from %d to %d chars", len(premise), _MAX_PREMISE_CHARS)
+        premise = premise[:_MAX_PREMISE_CHARS]
     scores = enc.predict([[premise, claim]])[0]
     if len(scores) < 3:
         logger.warning("NLI model returned unexpected score shape: %s", scores)
-        return {"claim": claim, "entailed": False, "score": 0.0, "contradiction_score": 0.0}
+        return _safe_result(claim)
     entailment_score = float(scores[2])
     return {
         "claim": claim,
@@ -31,13 +60,18 @@ def check_claim(premise: str, claim: str) -> dict:
 
 def check_all_claims(claims: list[str], premise: str) -> list[dict]:
     enc = _get_encoder()
+    if enc is None:
+        return [_safe_result(c) for c in claims]
+    if len(premise) > _MAX_PREMISE_CHARS:
+        logger.warning("NLI premise truncated from %d to %d chars", len(premise), _MAX_PREMISE_CHARS)
+        premise = premise[:_MAX_PREMISE_CHARS]
     pairs = [[premise, c] for c in claims]
     all_scores = enc.predict(pairs)
     results = []
     for claim, scores in zip(claims, all_scores):
         if len(scores) < 3:
             logger.warning("NLI model returned unexpected score shape: %s", scores)
-            results.append({"claim": claim, "entailed": False, "score": 0.0, "contradiction_score": 0.0})
+            results.append(_safe_result(claim))
             continue
         entailment_score = float(scores[2])
         results.append({
@@ -47,3 +81,14 @@ def check_all_claims(claims: list[str], premise: str) -> list[dict]:
             "contradiction_score": float(scores[0]),
         })
     return results
+
+
+async def async_check_all_claims(claims: list[str], premise: str) -> list[dict]:
+    """Async wrapper — runs check_all_claims in a thread executor to avoid blocking the event loop.
+
+    The cross-encoder predict() call is synchronous and CPU-bound (~100-500ms).
+    Running it in a thread pool lets FastAPI continue serving other requests while NLI runs.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, check_all_claims, claims, premise)

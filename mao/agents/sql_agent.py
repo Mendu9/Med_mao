@@ -40,7 +40,6 @@ import logging
 import re
 from typing import Any
 
-import requests
 from mao.core import llm as groq_llm
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -214,9 +213,59 @@ def sql_node(state: MAOState) -> MAOState:
 def _generate_sql(system_prompt: str, user_query: str) -> str:
     try:
         return groq_llm.chat(
-            messages=messages,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_query},
+            ],
             temperature=0.0,
             max_tokens=256,
+        ).strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("SQL generation failed: %s", exc)
+        return "SELECT 1"
+
+
+def _is_safe_sql(sql: str) -> bool:
+    """Allow only SELECT statements — block DDL/DML."""
+    clean = sql.strip().lstrip(";").upper()
+    return clean.startswith("SELECT")
+
+
+def _execute_sql(sql: str) -> tuple[list, list, str | None]:
+    """Execute SQL and return (rows, column_names, error_or_None)."""
+    try:
+        engine = _get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(sql))
+            columns = list(result.keys())
+            rows = [list(row) for row in result.fetchmany(50)]
+        return rows, columns, None
+    except SQLAlchemyError as exc:
+        logger.error("SQL execution error: %s", exc)
+        return [], [], str(exc)
+
+
+def _format_results(rows: list, columns: list) -> str:
+    if not rows:
+        return "No results returned."
+    header = " | ".join(columns)
+    lines = [header, "-" * len(header)]
+    for row in rows[:20]:
+        lines.append(" | ".join(str(v) for v in row))
+    if len(rows) > 20:
+        lines.append(f"... ({len(rows)} rows total, showing first 20)")
+    return "\n".join(lines)
+
+
+def _synthesize(system_prompt: str, user_prompt: str) -> str:
+    try:
+        return groq_llm.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=512,
         ).strip()
     except Exception as exc:  # noqa: BLE001
         logger.error("SQL synthesis failed: %s", exc)

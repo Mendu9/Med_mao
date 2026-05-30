@@ -36,6 +36,6 @@ def log_guardrail_event(
                 detail=stored_detail,
             )
             session.add(event)
-            session.commit()
+            # get_db_session context manager commits on exit — no explicit commit needed
     except Exception as exc:
         logger.warning("Failed to log guardrail event %s: %s", name, exc)
