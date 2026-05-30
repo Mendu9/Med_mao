@@ -131,7 +131,7 @@ def ingest_alzheimers_pdfs(
                 text,
                 source=source_name,
                 title=pdf_path.stem,
-                domain="alzheimers",
+                domain="alzheimer",
                 chunk_size=chunk_size,
                 overlap=chunk_overlap,
             )
@@ -282,7 +282,7 @@ def _chunk_text(
     text: str,
     source: str,
     title: str,
-    domain: str = "alzheimers",
+    domain: str = "alzheimer",
     chunk_size: int = _CHUNK_SIZE,
     overlap: int = _CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:

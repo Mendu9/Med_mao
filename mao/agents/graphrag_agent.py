@@ -7,10 +7,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from mao.core import llm as groq_llm
+from mao.core.config import FAST_MODEL
 from mao.core.state import MAOState
 from mao.core.web_search import web_search as _web_search
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
 from mao.rag.retriever import retrieve
+
+try:
+    from mao.data.ingest_pubmed import live_pubmed_search as _live_pubmed_search
+except Exception:
+    _live_pubmed_search = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +36,12 @@ GROUNDING RULES (strictly enforced):
      Treat them as the primary ground truth for specific clinical facts.
   2. Web results (marked [WEB #N]) are supplementary. Use them to fill gaps or
      provide recency, but NEVER use a web result to contradict a RAG chunk.
-  3. If RAG chunks are present, your answer MUST cite them using their source
-     and chunk_id: e.g. "According to [RAG 2: alzheimer_review.pdf / chunk a3b4c5]..."
+  3. If RAG chunks are present, your answer MUST cite them using their doc_id (title)
+     and source file: e.g. "According to [RAG 2: CT Perfusion in Stroke (ct_perfusion_2023.pdf)]..."
+     — use doc_id as the human-readable title, NOT the raw chunk_id hash.
   4. For web results, cite the URL: e.g. "A recent report ([WEB 1]: https://...)..."
   5. If neither source confirms a claim, say so explicitly — do not fabricate.
-  6. Always end with a "Sources:" section listing every cited RAG chunk_id and web URL.
+  6. Always end with a "Sources:" section listing each RAG doc title + source file, and web URLs.
 """
 
 _CONTEXT_TEMPLATE = """\
@@ -118,9 +125,20 @@ def graphrag_node(state: MAOState) -> MAOState:
         top_score, rag_sufficient, len(ranked_chunks), trigger_web,
     )
 
-    # Step 4: Web-search fallback (supplements RAG, never replaces it)
+    # Step 4: Fallbacks when RAG score is insufficient
     web_results: list[dict[str, str]] = []
+    pubmed_snippets: list[dict[str, str]] = []
     if trigger_web:
+        # 4a: Live PubMed search — higher quality than web for clinical queries
+        if _live_pubmed_search is not None:
+            try:
+                pubmed_snippets = _live_pubmed_search(user_query, max_results=5)
+                if pubmed_snippets:
+                    logger.info("PubMed live fallback: %d abstracts", len(pubmed_snippets))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("PubMed live fallback skipped: %s", exc)
+
+        # 4b: DuckDuckGo/web search as additional supplementary source
         try:
             web_results = _web_search(user_query, num_results=5)
             logger.info("Web search returned %d results for fallback", len(web_results))
@@ -146,6 +164,15 @@ def graphrag_node(state: MAOState) -> MAOState:
     else:
         context_parts.append("=== RAG Knowledge Base ===\nNo relevant documents found.")
 
+    if pubmed_snippets:
+        pm_strs = [
+            f"[PUBMED {i+1}] title: {r.get('title', '')} | year: {r.get('year', '')} | "
+            f"journal: {r.get('journal', '')} | source: {r.get('source', '')}\n"
+            f"{r.get('abstract', '')[:500]}"
+            for i, r in enumerate(pubmed_snippets)
+        ]
+        context_parts.append("=== PubMed Live Search (peer-reviewed supplement) ===\n" + "\n\n".join(pm_strs))
+
     if web_results:
         web_strs = [
             _WEB_TEMPLATE.format(
@@ -163,10 +190,22 @@ def graphrag_node(state: MAOState) -> MAOState:
     # Step 6: LLM generation with citations
     system_prompt = build_system_prompt(_GRAPHRAG_SYSTEM, memory_context)
     user_prompt = f"{context_block}\n\nUser question: {user_query}"
-    response = _call_llm(system_prompt, user_prompt, state.get("chat_history", []))
 
-    # Step 7: Mem0 post-hook
-    save_memory(user_query, response, user_id)
+    # Build messages once — reused by both sync and streaming paths.
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    messages.extend(state.get("chat_history", [])[-4:])
+    messages.append({"role": "user", "content": user_prompt})
+
+    if state.get("_want_stream"):
+        state["_stream_messages"] = messages
+        state["_stream_model"]    = FAST_MODEL
+        response = ""
+    else:
+        response = _call_llm_from_messages(messages)
+
+    # Step 7: Mem0 post-hook (skip when no response yet — streaming fills it later)
+    if response:
+        save_memory(user_query, response, user_id)
 
     state["response"]   = response
     state["agent_used"] = "graphrag"
@@ -202,15 +241,7 @@ def graphrag_node(state: MAOState) -> MAOState:
     return state
 
 
-def _call_llm(
-    system_prompt: str,
-    user_prompt: str,
-    chat_history: list[dict[str, str]],
-) -> str:
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    messages.extend(chat_history[-4:])
-    messages.append({"role": "user", "content": user_prompt})
-
+def _call_llm_from_messages(messages: list[dict[str, Any]]) -> str:
     try:
         return groq_llm.chat(
             messages=messages,

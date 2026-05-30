@@ -107,7 +107,11 @@ def rerank(
         all_scores: list[float] = []
         for i in range(0, len(pairs), _MAX_BATCH):
             batch = pairs[i : i + _MAX_BATCH]
-            all_scores.extend(reranker.compute_score(batch, normalize=True))
+            raw = reranker.compute_score(batch, normalize=True)
+            # Some FlagReranker versions return a scalar float for single-pair batches
+            if isinstance(raw, (int, float)):
+                raw = [float(raw)]
+            all_scores.extend(raw)
         scores: list[float] = all_scores
         elapsed_ms = (time.monotonic() - _t0) * 1000
         logger.debug("Reranker scored %d pairs in %.0fms", len(pairs), elapsed_ms)

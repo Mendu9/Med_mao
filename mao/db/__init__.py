@@ -22,11 +22,18 @@ def init_db() -> None:
             return
         try:
             url = os.environ.get("MAO_DATABASE_URL", "postgresql://mao:mao@localhost:5432/mao")
-            engine = create_engine(url, pool_pre_ping=True)
+            engine = create_engine(
+                url,
+                pool_pre_ping=True,   # recycles stale connections automatically
+                pool_size=10,         # base pool: 10 persistent connections
+                max_overflow=20,      # burst: 20 extra connections under load
+                pool_timeout=30,      # raise if no free connection after 30 s
+                pool_recycle=1800,    # recycle after 30 min (avoids DB-side idle timeouts)
+            )
             Base.metadata.create_all(engine)
             _engine = engine
             _SessionLocal = sessionmaker(bind=engine)
-            logger.info("Database initialised: %s", url)
+            logger.info("Database initialised pool_size=10 max_overflow=20: %s", url)
         except Exception as exc:
             logger.critical("Database init failed: %s", exc)
             raise

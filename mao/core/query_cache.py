@@ -4,10 +4,22 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_WHITESPACE_RE = re.compile(r"\s+")
+_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def _normalize_query(query: str) -> str:
+    """Normalize for semantic cache keying: lowercase, strip punctuation, collapse whitespace."""
+    q = query.lower()
+    q = _PUNCT_RE.sub(" ", q)
+    q = _WHITESPACE_RE.sub(" ", q).strip()
+    return q
 
 
 def _to_json(value: Any) -> Any:
@@ -31,10 +43,10 @@ def _from_json_ranked(data: Any) -> Any:
 
 
 class QueryCache:
-    """RAG query result cache.
+    """RAG query result cache with semantic normalization.
 
     Uses Redis when available (TTL-based), falls back to in-process dict.
-    The public API (get/set/make_key/clear) is identical in both modes.
+    The public API (get/set/make_key/make_semantic_key/clear) is identical in both modes.
     """
 
     def __init__(self, ttl: int = 300):
@@ -47,8 +59,19 @@ class QueryCache:
             self._redis = None
 
     def make_key(self, embedding: list[float]) -> str:
+        """Vector-based key — exact match on embedding."""
         raw = json.dumps(embedding, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()
+
+    def make_semantic_key(self, query: str, domain: str = "", top_k: int = 0) -> str:
+        """Normalized text key — matches semantically equivalent phrasings.
+
+        "What is Alzheimer's?" and "what is alzheimers" get the same key.
+        Domain and top_k are included to prevent cross-domain cache pollution.
+        """
+        normalized = _normalize_query(query)
+        raw = f"{normalized}|{domain}|{top_k}"
+        return "sem:" + hashlib.sha256(raw.encode()).hexdigest()
 
     def get(self, key: str) -> Any | None:
         if self._redis is not None:

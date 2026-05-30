@@ -2,7 +2,7 @@
 
 ## Overview
 
-MAO is a clinical AI system designed for Alzheimer's and stroke domains. It combines a LangGraph multi-agent pipeline, GraphRAG retrieval, persistent memory, safety guardrails, and a Gradio web UI. All LLM inference runs locally via Ollama — no external LLM API required.
+MAO is a clinical AI system designed for Alzheimer's and stroke domains. It combines a LangGraph multi-agent pipeline, GraphRAG retrieval, persistent memory, safety guardrails, and a Streamlit web UI. LLM inference runs via Groq cloud API (free tier). Frontend: `app/streamlit_app.py` (Streamlit, port 8501). Legacy Gradio frontend (`app/frontend.py`) is abandoned — do not edit.
 
 ---
 
