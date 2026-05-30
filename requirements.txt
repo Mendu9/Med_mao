@@ -1,6 +1,9 @@
 # MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
 
-# setuptools provides pkg_resources needed when grpcio builds from source
+# grpcio/grpcio-tools: pin to versions with pre-built cp313 manylinux wheels on PyPI
+# Must be listed FIRST so pip resolves and installs wheels before building anything else
+grpcio==1.71.0
+grpcio-tools==1.71.0
 setuptools>=70.0.0
 
 # --- Core orchestration ---
