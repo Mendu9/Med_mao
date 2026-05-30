@@ -1,4 +1,4 @@
-# MAO — Multi-Agent Orchestrator
+# MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
 
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
@@ -13,29 +13,16 @@ langchain-huggingface>=0.1.0
 mem0ai>=0.1.0
 
 # --- Vector store ---
-# pinecone>=5.0.0  # optional, replaced by ChromaDB
-qdrant-client>=1.9.0  # cloud mirror for HF Spaces deployment
+qdrant-client>=1.9.0
 
 # --- Embeddings (local sentence-transformers, works on HF Spaces) ---
 sentence-transformers>=3.0.0
-# FlagEmbedding 1.3.x imports is_torch_fx_available removed in transformers>=4.47
 transformers>=4.40.0,<4.47.0
 
 # --- Graph ---
 networkx>=3.3,<4.0
-
-# --- NLP / NER ---
-spacy>=3.7,<4.0
-# After install: python -m spacy download en_core_web_sm
-# Biomedical NER (scispaCy — install models separately):
-#   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_ner_bc5cdr_md-0.5.4.tar.gz
-#   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_lg-0.5.4.tar.gz
-scispacy>=0.5.4
-pronto>=2.5.0
-nxontology>=0.5.0
-biopython>=1.83
-rank-bm25>=0.2.2
-nltk>=3.8.0
+# spacy/scispacy excluded — require C++ compiler (thinc) unavailable on HF free tier
+# Graph is pre-built locally and loaded from entity_graph.json
 
 # --- Reranker ---
 FlagEmbedding>=1.2.0
@@ -45,38 +32,18 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0,<3.0.0
 
-# --- Database (optional — metrics only) ---
-sqlalchemy>=2.0,<3.0
-psycopg2-binary>=2.9,<3.0
-
 # --- Tools ---
 duckduckgo-search>=6.1.0
 wikipedia-api>=0.6.0
-numexpr>=2.10.0
-
-# --- Multimodal ---
-openai-whisper>=20231117
-Pillow>=10.3.0
 
 # --- Config / HTTP ---
 requests>=2.32.0
 python-dotenv>=1.0.0
-
-# --- MRI prediction ---
-tensorflow>=2.16.0
-tf-keras>=2.16.0
-opencv-python>=4.9.0
 numpy>=1.26.0
+Pillow>=10.3.0
 
 # --- PDF parsing ---
 pypdf>=4.0.0
-
-# --- Data ingestion ---
-datasets>=2.20.0
-tqdm>=4.66
-
-# --- Gradio UI ---
-gradio>=5.29.0
 
 # --- Streamlit UI ---
 streamlit>=1.35.0
@@ -89,9 +56,3 @@ ragas>=0.3.0,<0.4.0
 # --- Observability ---
 prometheus-client>=0.20.0
 prometheus-fastapi-instrumentator>=6.0.0
-
-# --- Dev / testing ---
-pytest>=8.0
-pytest-asyncio>=0.23.0
-httpx>=0.27.0
-plotly>=5.18.0
