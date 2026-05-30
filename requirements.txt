@@ -1,6 +1,6 @@
 # MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
-# Force binary-only for packages that fail to compile on HF (no C compiler, no pkg_resources)
---only-binary grpcio,grpcio-tools,grpcio-status
+# Force binary-only for ALL packages — prevents any source compilation on HF
+--prefer-binary
 
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
@@ -17,7 +17,7 @@ mem0ai>=0.1.0
 # --- Vector store ---
 qdrant-client>=1.9.0,<2.0.0
 
-# --- Embeddings (local sentence-transformers, works on HF Spaces) ---
+# --- Embeddings ---
 sentence-transformers>=3.0.0
 transformers>=4.40.0,<4.47.0
 
@@ -29,7 +29,7 @@ FlagEmbedding>=1.2.0
 
 # --- API ---
 fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
+uvicorn>=0.30.0
 pydantic>=2.7.0,<3.0.0
 
 # --- Tools ---
