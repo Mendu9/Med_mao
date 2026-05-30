@@ -7,7 +7,6 @@ import logging
 import re
 from typing import Any
 
-import numexpr
 import requests
 from mao.core import llm as groq_llm
 import wikipediaapi
@@ -155,6 +154,7 @@ def _calculator(expression: str) -> str:
     try:
         # Strip any markdown code fences
         clean_expr = re.sub(r"```.*?```", "", expression, flags=re.DOTALL).strip()
+        import numexpr
         result = numexpr.evaluate(clean_expr)
         return str(float(result))
     except Exception as exc:  # noqa: BLE001

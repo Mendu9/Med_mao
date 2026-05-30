@@ -44,6 +44,8 @@ pydantic>=2.7.0,<3.0.0
 # --- Tools ---
 duckduckgo-search>=6.1.0
 wikipedia-api>=0.6.0
+numexpr>=2.10.0
+sqlalchemy>=2.0,<3.0
 
 # --- Config / HTTP ---
 redis>=4.0.0
