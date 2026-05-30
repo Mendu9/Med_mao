@@ -93,9 +93,29 @@ def _load_bm25_from_disk() -> None:
         try:
             from rank_bm25 import BM25Okapi
 
-            if _BM25_JSON_PATH.exists():
+            # Try local disk first, then HF Hub (for HF Spaces where the 95MB file can't be bundled)
+            _bm25_json_resolved = _BM25_JSON_PATH
+            if not _bm25_json_resolved.exists():
+                hf_repo = os.getenv("BM25_HF_REPO", "ArunMendu/Med_mao-data")
+                hf_filename = os.getenv("BM25_HF_FILENAME", "bm25_corpus.json")
+                try:
+                    from huggingface_hub import hf_hub_download
+                    logger.info("BM25 corpus not on disk — downloading from HF Hub (%s/%s)", hf_repo, hf_filename)
+                    downloaded = hf_hub_download(
+                        repo_id=hf_repo,
+                        filename=hf_filename,
+                        repo_type="dataset",
+                        local_dir="/tmp",
+                    )
+                    import pathlib
+                    _bm25_json_resolved = pathlib.Path(downloaded)
+                    logger.info("BM25 corpus downloaded to %s", _bm25_json_resolved)
+                except Exception as dl_exc:
+                    logger.warning("BM25 HF Hub download failed — BM25 disabled: %s", dl_exc)
+
+            if _bm25_json_resolved.exists():
                 import json as _json
-                with open(_BM25_JSON_PATH, "r", encoding="utf-8") as fh:
+                with open(_bm25_json_resolved, "r", encoding="utf-8") as fh:
                     saved = _json.load(fh)
                 corpus    = saved["corpus"]
                 chunk_ids = saved["chunk_ids"]
@@ -108,7 +128,7 @@ def _load_bm25_from_disk() -> None:
                 _bm25_loaded    = True   # set last — after all globals are populated
                 logger.info(
                     "BM25 index rebuilt from JSON corpus: %d documents (%s)",
-                    len(corpus), _BM25_JSON_PATH,
+                    len(corpus), _bm25_json_resolved,
                 )
                 return
 
