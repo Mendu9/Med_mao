@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 # Users can override these via HF Space secrets.
 os.environ.setdefault("MAO_DISABLE_MEM0", "1")    # Mem0 needs ChromaDB (local service) — disabled by default; set 0 + CHROMA_* secrets to enable
 os.environ.setdefault("MAO_DISABLE_GRAPH", "0")   # Graph enabled
-os.environ.setdefault("MAO_DISABLE_BM25", "1")    # BM25 corpus (95 MB) excluded from HF Spaces; vector-only retrieval used instead
+os.environ.setdefault("MAO_DISABLE_BM25", "0")    # corpus downloaded from HF Hub dataset ArunMendu/Med_mao-data on first use
 os.environ.setdefault("MAO_DISABLE_RERANKER", "0")  # Reranker enabled
 
 # Prevent TensorFlow import hang (FlagEmbedding / reranker)

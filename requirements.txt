@@ -30,6 +30,9 @@ transformers>=4.40.0,<4.47.0
 # --- Graph ---
 networkx>=3.3,<4.0
 
+# --- BM25 sparse retrieval ---
+rank-bm25>=0.2.2
+
 # --- Reranker ---
 FlagEmbedding>=1.2.0
 
