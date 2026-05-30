@@ -746,7 +746,7 @@ async def _check_vector_store() -> str:
         if cfg.vector_backend == "qdrant":
             def _ping():
                 from qdrant_client import QdrantClient
-                client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
+                client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key, prefer_grpc=False)
                 client.get_collections()
             await loop.run_in_executor(None, _ping)
         else:

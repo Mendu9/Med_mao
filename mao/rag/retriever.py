@@ -164,7 +164,7 @@ def _get_qdrant_client():
             raise ValueError(
                 "VECTOR_BACKEND=qdrant requires QDRANT_CLUSTER_ENDPOINT and QDRANT_API_KEY in .env"
             )
-        _qdrant_client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
+        _qdrant_client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key, prefer_grpc=False)
         count = _qdrant_client.count(cfg.qdrant_collection).count
         logger.info("Qdrant collection '%s' ready (%d points)", cfg.qdrant_collection, count)
 
