@@ -4,34 +4,37 @@ import logging
 import os
 from typing import Any
 
-import redis
-
 logger = logging.getLogger(__name__)
 
 _REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
-_sync_client: redis.Redis | None = None
-_redis_unavailable: bool = False  # True after first failed connect; suppresses repeat warnings
+_sync_client: Any | None = None
+_redis_unavailable: bool = False  # True after first failed connect or missing package
 
 
-def get_redis() -> redis.Redis | None:
+def get_redis() -> Any | None:
     global _sync_client, _redis_unavailable
     if _sync_client is not None:
         return _sync_client
     if _redis_unavailable:
         return None
     try:
-        client = redis.Redis.from_url(_REDIS_URL, decode_responses=True)
+        import redis as _redis
+        client = _redis.Redis.from_url(_REDIS_URL, decode_responses=True)
         client.ping()
         _sync_client = client
         return _sync_client
+    except ImportError:
+        logger.warning("redis package not installed — caching disabled")
+        _redis_unavailable = True
+        return None
     except Exception as exc:
         logger.warning("Redis unavailable — caching disabled: %s", exc)
         _redis_unavailable = True
         return None
 
 
-def safe_get(client: redis.Redis | None, key: str) -> str | None:
+def safe_get(client: Any | None, key: str) -> str | None:
     if client is None:
         return None
     try:
@@ -41,7 +44,7 @@ def safe_get(client: redis.Redis | None, key: str) -> str | None:
         return None
 
 
-def safe_set(client: redis.Redis | None, key: str, value: Any, ex: int = 300) -> None:
+def safe_set(client: Any | None, key: str, value: Any, ex: int = 300) -> None:
     if client is None:
         return
     try:
