@@ -3,7 +3,9 @@
 # grpcio/grpcio-tools: pin to versions with pre-built cp313 manylinux wheels on PyPI
 # Must be listed FIRST so pip resolves and installs wheels before building anything else
 grpcio==1.71.0
-grpcio-tools==1.71.0
+# grpcio-tools excluded — required at build time by qdrant-client but not at runtime;
+# listing it here causes protobuf conflict with streamlit==1.35.0 (needs protobuf<4)
+# grpcio wheel above satisfies qdrant-client's build dep without the tools conflict
 setuptools>=70.0.0
 
 # --- Core orchestration ---
