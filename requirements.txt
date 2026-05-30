@@ -2,11 +2,10 @@
 
 # grpcio/grpcio-tools: pin to versions with pre-built cp313 manylinux wheels on PyPI
 # Must be listed FIRST so pip resolves and installs wheels before building anything else
-grpcio==1.62.2
-# grpcio-tools: must be <=1.62.x — versions >=1.63 require protobuf>=5 which conflicts with streamlit==1.35.0 (protobuf<4)
-grpcio-tools==1.62.2
-# protobuf<4 required by streamlit==1.35.0 and compatible with grpcio 1.62.x
-protobuf>=3.20,<4
+grpcio==1.71.0
+grpcio-tools==1.71.0
+# protobuf>=5 required by grpcio-tools>=1.63; override streamlit==1.35.0's protobuf<4 by upgrading streamlit
+protobuf>=5.26.1,<6
 setuptools>=70.0.0
 
 # --- Core orchestration ---
@@ -53,7 +52,8 @@ Pillow>=10.3.0
 pypdf>=4.0.0
 
 # --- Streamlit UI ---
-streamlit>=1.35.0
+# 1.40+ accepts protobuf>=5, compatible with grpcio-tools>=1.63
+streamlit>=1.40.0
 plotly>=5.18.0
 pyvis>=0.3.1
 
