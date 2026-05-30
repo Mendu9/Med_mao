@@ -1,8 +1,5 @@
 # MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
 
-# setuptools provides pkg_resources — required by grpcio-tools build on HF Python 3.12 image
-setuptools>=70.0.0
-
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
 langchain-core>=0.3.0,<0.4.0
@@ -16,7 +13,10 @@ langchain-huggingface>=0.1.0
 mem0ai>=0.1.0
 
 # --- Vector store ---
-qdrant-client>=1.9.0
+# Pin grpcio to a version with pre-built manylinux wheels for Python 3.12
+# so pip never attempts to compile from source (which requires pkg_resources)
+grpcio==1.62.2
+qdrant-client>=1.9.0,<2.0.0
 
 # --- Embeddings (local sentence-transformers, works on HF Spaces) ---
 sentence-transformers>=3.0.0
