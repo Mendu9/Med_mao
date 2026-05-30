@@ -42,6 +42,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from mao.core.config import cfg
+from mao.core.logging_config import configure_logging, set_trace_id
 from mao.core.rate_limiter import check_rate_limit
 from mao.core.redis_client import get_redis, safe_get, safe_set
 from mao.core.state import make_initial_state
@@ -56,10 +57,7 @@ from mao.monitoring.metrics import (
 )
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=cfg.log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-)
+# configure_logging is called inside lifespan startup (after uvicorn installs its handlers)
 
 # Thread pool for running synchronous LangGraph calls without blocking asyncio.
 # Each LangGraph invocation can take 60-180 s; 8 workers allows concurrent requests
@@ -74,8 +72,9 @@ _executor = ThreadPoolExecutor(max_workers=8)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm graph + models before accepting requests; clean up on shutdown."""
+    configure_logging(level=cfg.log_level)  # after uvicorn installs its own handlers
     logger.info("MAO API starting up — downloading/loading models...")
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _warm_all():
         # Initialise DB first (idempotent, raises on failure)
@@ -140,6 +139,16 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def _trace_id_middleware(request: Request, call_next):
+    """Inject trace_id into logging context for every request."""
+    trace_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    set_trace_id(trace_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = trace_id
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +217,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     Constructs a MAOState, invokes the LangGraph graph in a thread pool
     (because LangGraph .invoke() is synchronous), and returns the result.
     """
-    if not check_rate_limit(request.user_id):
+    _client_ip = req.client.host if req.client else None
+    if not check_rate_limit(request.user_id, client_ip=_client_ip):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again in 60 seconds.")
 
     request_id = uuid.uuid4().hex
@@ -257,7 +267,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
 
     # Run graph in thread pool to keep async loop unblocked
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         graph = get_graph()
         result = await loop.run_in_executor(_executor, graph.invoke, state)
     except Exception as exc:
@@ -297,7 +307,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         except Exception as exc:
             logger.warning("ChatSession persist failed request_id=%s: %s", request_id, exc)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     loop.run_in_executor(_executor, _save_session)
 
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
@@ -346,16 +356,27 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
 
 
 @app.post("/chat/stream")
-async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingResponse:
+async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingResponse:  # noqa: C901
     """
-    SSE streaming chat endpoint.
+    SSE streaming chat endpoint — true token-by-token streaming from Groq.
 
-    Runs the same LangGraph pipeline as /chat (synchronously in an executor),
-    then streams the final response text word-by-word as Server-Sent Events.
-    Format per event: "data: {word}\\n\\n"
-    Terminator: "data: [DONE]\\n\\n"
+    Architecture:
+      1. Input guardrails applied synchronously (PII scrub etc.)
+      2. LangGraph graph runs in executor to build state (router, retrieval, guardrails)
+         up to the point where the final LLM call is needed.
+      3. If the resolved agent supports streaming (graphrag / clinical / summarizer),
+         the final answer is generated via chat_stream() with stream=True and tokens
+         are yielded directly to the SSE response.
+      4. If streaming is not possible (e.g. structured JSON agent like sql/tool),
+         we fall back to word-splitting the pre-computed response — still fast since
+         the heavy work (retrieval, reranking) was already done before this point.
+
+    SSE format per token: "data: {token}\\n\\n"
+    Metadata event:       "data: __meta__:{json}\\n\\n"
+    Terminator:           "data: [DONE]\\n\\n"
     """
-    if not check_rate_limit(request.user_id):
+    _client_ip = req.client.host if req.client else None
+    if not check_rate_limit(request.user_id, client_ip=_client_ip):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again in 60 seconds.")
 
     request_id = uuid.uuid4().hex
@@ -376,10 +397,15 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         chat_history=[m.model_dump() for m in request.chat_history],
     )
     state["metadata"] = request.metadata
+    # Signal to streaming-capable agents to defer their final LLM call
+    state["_want_stream"] = True
 
-    # Run graph synchronously in executor (LangGraph .invoke() is not async)
+    # Run graph in executor — retrieval, graph traversal, reranking happen here.
+    # The agents that support streaming (graphrag/clinical/summarizer) store their
+    # LLM prompt in state["_stream_messages"] and their model in state["_stream_model"]
+    # instead of making the final LLM call themselves, so we can stream it below.
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         graph = get_graph()
         result = await loop.run_in_executor(_executor, graph.invoke, state)
     except Exception as exc:
@@ -388,40 +414,103 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
 
     result = await apply_output_guardrails(result, request_id)
 
-    response_text: str = result.get("response", "")
     latency_ms = (time.perf_counter() - start_time) * 1000
+    agent_used = result.get("agent_used", "unknown")
+
     logger.info(
         "stream request_id=%s agent=%s latency=%.0fms",
-        request_id,
-        result.get("agent_used", "unknown"),
-        latency_ms,
+        request_id, agent_used, latency_ms,
     )
 
-    async def _token_generator():
-        words = response_text.split(" ")
-        for word in words:
-            if word:
-                yield f"data: {word}\n\n"
-                await asyncio.sleep(0)  # yield control to event loop between tokens
-        # metadata event — outside the for loop, sent once after all words
-        meta_payload = {
+    # Build SSE metadata payload (sent once after all tokens)
+    def _meta_payload(final_latency: float) -> str:
+        payload = {
             "intent": result.get("intent", ""),
-            "agent_used": result.get("agent_used", ""),
-            "latency_ms": round(latency_ms, 1),
+            "agent_used": agent_used,
+            "latency_ms": round(final_latency, 1),
             "sources": result.get("metadata", {}).get("sources", []),
             "web_sources": result.get("metadata", {}).get("web_sources", []),
             "uncertainty_flag": result.get("metadata", {}).get("uncertainty_flag", False),
         }
-        yield f"data: __meta__:{json.dumps(meta_payload)}\n\n"
+        return f"data: __meta__:{json.dumps(payload)}\n\n"
+
+    # ----------------------------------------------------------------
+    # True streaming path: if the graph stored _stream_messages, call
+    # Groq with stream=True and yield each delta token directly.
+    # ----------------------------------------------------------------
+    stream_messages: list[dict] | None = result.get("_stream_messages")
+    stream_model: str | None = result.get("_stream_model")
+
+    def _sse_encode(token: str) -> str:
+        """Encode a token as a safe SSE data line.
+
+        JSON-encodes the token so newlines, colons, and other SSE-special
+        characters cannot corrupt the frame or be misinterpreted by EventSource.
+        Client must JSON.parse each data payload.
+        """
+        return f"data: {json.dumps(token)}\n\n"
+
+    if stream_messages:
+        from mao.core.llm import chat_stream as _chat_stream
+        from mao.core.config import FAST_MODEL
+
+        _model = stream_model or FAST_MODEL
+        _running_loop = asyncio.get_running_loop()
+
+        async def _true_token_generator():
+            # Bridge sync generator to async via queue — yields tokens as they arrive
+            # rather than buffering the entire response first.
+            queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=256)
+
+            def _produce():
+                try:
+                    for tok in _chat_stream(stream_messages, model=_model):
+                        if tok:
+                            _running_loop.call_soon_threadsafe(queue.put_nowait, tok)
+                except Exception as exc:
+                    logger.error("Groq stream failed request_id=%s: %s", request_id, exc)
+                finally:
+                    _running_loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+            _executor.submit(_produce)
+
+            while True:
+                tok = await queue.get()
+                if tok is None:
+                    break
+                yield _sse_encode(tok)
+                await asyncio.sleep(0)
+
+            final_ms = (time.perf_counter() - start_time) * 1000
+            yield _meta_payload(final_ms)
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            _true_token_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Request-ID": request_id},
+        )
+
+    # ----------------------------------------------------------------
+    # Fallback path: word-split the pre-computed response.
+    # Used for structured agents (sql, tool, multimodal) whose output
+    # is fully computed before streaming begins.
+    # ----------------------------------------------------------------
+    response_text: str = result.get("response", "")
+
+    async def _word_token_generator():
+        for word in response_text.split(" "):
+            if word:
+                yield _sse_encode(word + " ")
+                await asyncio.sleep(0)
+        final_ms = (time.perf_counter() - start_time) * 1000
+        yield _meta_payload(final_ms)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
-        _token_generator(),
+        _word_token_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Request-ID": request_id,
-        },
+        headers={"Cache-Control": "no-cache", "X-Request-ID": request_id},
     )
 
 
@@ -640,7 +729,7 @@ def _run_alzheimers_ingestion(
 async def _check_groq() -> str:
     try:
         from mao.core import llm as groq_llm
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             lambda: groq_llm.chat([{"role": "user", "content": "ping"}], max_tokens=3),
@@ -652,7 +741,7 @@ async def _check_groq() -> str:
 
 async def _check_vector_store() -> str:
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         if cfg.vector_backend == "qdrant":
             def _ping():
                 from qdrant_client import QdrantClient
@@ -674,7 +763,7 @@ async def _check_postgres() -> str:
     try:
         from mao.agents.sql_agent import _get_engine
         from sqlalchemy import text
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _ping():
             engine = _get_engine()
@@ -783,7 +872,7 @@ async def eval_dashboard():
                 feedback[key] = int(r.cnt)
             return {"metrics": metrics, "feedback": feedback}
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_executor, _query)
     except Exception as exc:
         logger.error("Dashboard query failed: %s", exc)
@@ -856,7 +945,7 @@ async def eval_retrieval(k: int = 5, regenerate: bool = False, samples: int = 50
             "history": history,
         }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(_executor, _run)
     except Exception as exc:

@@ -45,19 +45,6 @@ def _build_mem0_config() -> dict[str, Any]:
                 "collection_name": "mao_memory",
             },
         },
-        # PINECONE: "vector_store": {
-        # PINECONE:     "provider": "pinecone",
-        # PINECONE:     "config": {
-        # PINECONE:         "api_key": cfg.pinecone_api_key,
-        # PINECONE:         "collection_name": cfg.pinecone_mem0_index,
-        # PINECONE:         "embedding_model_dims": cfg.embed_dim,
-        # PINECONE:         "metric": "cosine",
-        # PINECONE:         "serverless_config": {
-        # PINECONE:             "cloud": "aws",
-        # PINECONE:             "region": cfg.pinecone_region,
-        # PINECONE:         },
-        # PINECONE:     },
-        # PINECONE: },
         "embedder": {
             "provider": "huggingface",
             "config": {

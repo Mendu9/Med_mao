@@ -42,7 +42,7 @@ class ResponseMetrics(Base):
     __tablename__ = "response_metrics"
     id                = Column(Integer, primary_key=True, autoincrement=True)
     request_id        = Column(String, nullable=False)
-    session_id        = Column(Uuid(as_uuid=True), ForeignKey("chat_sessions.session_id"), nullable=False)
+    session_id        = Column(Uuid(as_uuid=True), ForeignKey("chat_sessions.session_id"), nullable=True)
     user_id           = Column(String, nullable=False)
     agent_used        = Column(String)
     faithfulness      = Column(Float)
@@ -92,3 +92,24 @@ class GuardrailEvent(Base):
     triggered      = Column(Boolean, nullable=False)
     detail         = Column(Text)
     created_at     = Column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class RetrainingCandidate(Base):
+    """Poor-quality responses flagged for eval-driven retraining / human review.
+
+    Populated by ragas_evaluator when faithfulness < RETRAINING_THRESHOLD or
+    a user gives a thumbs-down rating. Export periodically for fine-tuning.
+    """
+    __tablename__ = "retraining_candidates"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    request_id       = Column(String, nullable=False)
+    user_id          = Column(String, nullable=False)
+    agent_used       = Column(String)
+    question         = Column(Text, nullable=False)
+    answer           = Column(Text, nullable=False)
+    contexts         = Column(JSON)      # list[str] — chunk texts used
+    faithfulness     = Column(Float)
+    answer_relevancy = Column(Float)
+    trigger_reason   = Column(String)    # "low_faithfulness" | "user_thumbsdown"
+    reviewed         = Column(Boolean, default=False)
+    created_at       = Column(DateTime(timezone=True), default=_now, nullable=False)

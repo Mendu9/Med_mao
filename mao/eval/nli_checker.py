@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import threading
 from mao.core.config import NLI_MODEL, NLI_ENTAILMENT_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
 _cross_encoder = None
-_nli_disabled = False  # latched True on load failure to avoid repeated crashes
+_nli_disabled  = False  # latched True on load failure to avoid repeated crashes
+_nli_lock      = threading.Lock()
 
 _MAX_PREMISE_CHARS = 2000  # ~512 tokens; truncate before sending to cross-encoder
 
@@ -15,14 +17,20 @@ def _get_encoder():
     global _cross_encoder, _nli_disabled
     if _nli_disabled:
         return None
-    if _cross_encoder is None:
-        try:
-            from sentence_transformers import CrossEncoder
-            _cross_encoder = CrossEncoder(NLI_MODEL)
-        except Exception as exc:
-            _nli_disabled = True
-            logger.warning("NLI model failed to load — disabling NLI checks: %s", exc)
+    if _cross_encoder is not None:
+        return _cross_encoder
+    with _nli_lock:
+        # Double-checked locking — re-test inside lock to prevent double-load
+        if _nli_disabled:
             return None
+        if _cross_encoder is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                _cross_encoder = CrossEncoder(NLI_MODEL)
+            except Exception as exc:
+                _nli_disabled = True
+                logger.warning("NLI model failed to load — disabling NLI checks: %s", exc)
+                return None
     return _cross_encoder
 
 
@@ -73,3 +81,14 @@ def check_all_claims(claims: list[str], premise: str) -> list[dict]:
             "contradiction_score": float(scores[0]),
         })
     return results
+
+
+async def async_check_all_claims(claims: list[str], premise: str) -> list[dict]:
+    """Async wrapper — runs check_all_claims in a thread executor to avoid blocking the event loop.
+
+    The cross-encoder predict() call is synchronous and CPU-bound (~100-500ms).
+    Running it in a thread pool lets FastAPI continue serving other requests while NLI runs.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, check_all_claims, claims, premise)

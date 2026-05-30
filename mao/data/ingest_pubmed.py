@@ -20,7 +20,6 @@ import os
 import time
 from typing import Any
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -357,6 +356,48 @@ def main() -> None:
     print('  curl -X POST http://localhost:8080/chat \\')
     print('    -H "Content-Type: application/json" \\')
     print('    -d \'{"query": "What are current treatments for amyloid-beta aggregation?", "user_id": "test"}\'')
+
+
+def live_pubmed_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    """Fetch PubMed abstracts for *query* and return as RAG-compatible snippets.
+
+    This is the fallback path for graphrag_agent when Qdrant returns insufficient results.
+    Does NOT ingest into ChromaDB — returns snippets directly for in-context use.
+
+    Returns:
+        list of {"title", "abstract", "source", "year", "journal"} dicts.
+        Empty list if biopython unavailable, NCBI unreachable, or any error.
+    """
+    if not _BIOPYTHON_AVAILABLE:
+        logger.debug("live_pubmed_search skipped — biopython not installed")
+        return []
+
+    pubmed_email = os.getenv("PUBMED_EMAIL")
+    if not pubmed_email:
+        logger.debug("live_pubmed_search skipped — PUBMED_EMAIL not set")
+        return []
+
+    try:
+        from Bio import Entrez
+        Entrez.email = pubmed_email
+        pmids = _search_pubmed(query, max_results=max_results)
+        if not pmids:
+            return []
+        articles = _fetch_pubmed_batch(pmids[:max_results])
+        logger.info("Live PubMed fallback: %d articles for query %r", len(articles), query[:60])
+        return [
+            {
+                "title":    a["title"],
+                "abstract": a["abstract"][:600],
+                "source":   a["source"],
+                "year":     a["year"],
+                "journal":  a["journal"],
+            }
+            for a in articles
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("live_pubmed_search failed (non-fatal): %s", exc)
+        return []
 
 
 if __name__ == "__main__":

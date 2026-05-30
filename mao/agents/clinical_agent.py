@@ -441,11 +441,9 @@ def _extract_structured_fields(report_text: str) -> dict:
             temperature=0.0,
             max_tokens=512,
         ).strip()
-        import json as _json
-        # Extract JSON from response
         start = raw.find("{")
         end = raw.rfind("}") + 1
-        return _json.loads(raw[start:end]) if start >= 0 else {}
+        return json.loads(raw[start:end]) if start >= 0 else {}
     except Exception as exc:
         logger.error("Structured extraction failed: %s", exc)
         return {}
