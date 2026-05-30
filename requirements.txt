@@ -1,4 +1,6 @@
 # MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
+# Force binary-only for packages that fail to compile on HF (no C compiler, no pkg_resources)
+--only-binary grpcio,grpcio-tools,grpcio-status
 
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
@@ -13,9 +15,6 @@ langchain-huggingface>=0.1.0
 mem0ai>=0.1.0
 
 # --- Vector store ---
-# Pin grpcio to a version with pre-built manylinux wheels for Python 3.12
-# so pip never attempts to compile from source (which requires pkg_resources)
-grpcio==1.62.2
 qdrant-client>=1.9.0,<2.0.0
 
 # --- Embeddings (local sentence-transformers, works on HF Spaces) ---
@@ -24,8 +23,6 @@ transformers>=4.40.0,<4.47.0
 
 # --- Graph ---
 networkx>=3.3,<4.0
-# spacy/scispacy excluded — require C++ compiler (thinc) unavailable on HF free tier
-# Graph is pre-built locally and loaded from entity_graph.json
 
 # --- Reranker ---
 FlagEmbedding>=1.2.0
