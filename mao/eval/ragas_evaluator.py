@@ -341,7 +341,7 @@ async def run_full_ragas_eval(samples: list[dict]) -> dict[str, float]:
         totals[key] = totals.get(key, 0.0) + val
         counts[key] = counts.get(key, 0) + 1
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     for sample in samples:
         question: str = sample.get("question", "")

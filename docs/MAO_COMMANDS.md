@@ -194,7 +194,15 @@ curl -X POST http://localhost:8080/ingest/knowledge-bases
 ```bash
 python -m mao.data.ingest_all
 ```
-python.exe -m mao.data.reingest_all --skip-drop --only pubmed wikipedia pm
+### Reingest specific sources only
+
+```bash
+# Reingest without dropping existing data, specific sources
+python -m mao.data.reingest_all --skip-drop --only pubmed wikipedia alzheimers
+
+# Available sources: pubmed, wikipedia, alzheimers, knowledge_bases
+```
+
 ---
 
 ## API Usage
@@ -385,10 +393,114 @@ mypy mao/ --ignore-missing-imports
 bandit -r mao/
 ```
 
+### Evaluation
+
+```bash
 # Generate golden dataset (one-time, ~2 min)
 python -m mao.eval.retrieval_metrics --generate --samples 50
 
-# Then run evaluation
+# Run evaluation
 python -m mao.eval.retrieval_metrics --eval --k 5
 
+# Generate + evaluate in one pass
 python -m mao.eval.retrieval_metrics --generate --samples 100 --eval --k 5
+```
+
+---
+
+## Multi-Worker Production Deployment
+
+```bash
+# Production start (gunicorn + uvicorn workers)
+gunicorn mao.api.main:app --config gunicorn.conf.py --bind 0.0.0.0:8080
+
+# Override worker count (default: cpu_count * 2 + 1)
+MAO_WORKERS=4 gunicorn mao.api.main:app --config gunicorn.conf.py --bind 0.0.0.0:8080
+
+# Disable preload (useful for debugging, saves memory isolation)
+MAO_PRELOAD_APP=0 gunicorn mao.api.main:app --config gunicorn.conf.py --bind 0.0.0.0:8080
+```
+
+---
+
+## Performance / Debug Flags
+
+```bash
+# Disable reranker (faster startup, uses cosine similarity only)
+MAO_DISABLE_RERANKER=1 uvicorn mao.api.main:app ...
+
+# Disable BM25 sparse retrieval
+MAO_DISABLE_BM25=1 uvicorn mao.api.main:app ...
+
+# Disable Mem0 (skip ChromaDB memory lookups)
+MAO_DISABLE_MEM0=1 uvicorn mao.api.main:app ...
+
+# JSON structured logging (auto-enabled in Docker)
+LOG_FORMAT=json uvicorn mao.api.main:app ...
+
+# Set log level
+LOG_LEVEL=DEBUG uvicorn mao.api.main:app ...
+```
+
+---
+
+## BM25 Index Management
+
+```bash
+# Check if BM25 corpus exists
+python -c "from mao.rag.retriever import _BM25_JSON_PATH; print(_BM25_JSON_PATH, _BM25_JSON_PATH.exists())"
+
+# Manually trigger BM25 index rebuild from Qdrant
+python -m mao.data.mirror_to_qdrant   # re-mirrors data and builds new BM25 index
+
+# Verify BM25 corpus size
+python -c "
+import json
+from mao.rag.retriever import _BM25_JSON_PATH
+d = json.load(open(_BM25_JSON_PATH))
+print(f'BM25 corpus: {len(d[\"corpus\"])} documents')
+"
+```
+
+---
+
+## Graph Inspection
+
+```bash
+# Check graph state
+python -c "
+from mao.rag.graph_builder import load_graph
+G = load_graph()
+print(f'Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')
+"
+
+# View node types
+python -c "
+from mao.rag.graph_builder import load_graph
+G = load_graph()
+types = {}
+for _, d in G.nodes(data=True):
+    t = d.get('node_type','unknown')
+    types[t] = types.get(t,0) + 1
+print(types)
+"
+
+# Test graph traversal
+python -c "
+from mao.rag.graph_builder import load_graph, expand_via_graph
+G = load_graph()
+print(expand_via_graph(G, ['Donepezil'], hops=2, max_nodes=10))
+"
+```
+
+---
+
+## Rate Limiting
+
+```bash
+# Check Redis rate limit keys
+redis-cli keys "ratelimit:*"
+
+# Clear all rate limit keys (emergency reset)
+redis-cli --scan --pattern "ratelimit:*" | xargs redis-cli del
+```
