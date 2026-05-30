@@ -1,7 +1,4 @@
-"""HuggingFace Spaces entrypoint — delegates to app/streamlit_app.py.
-
-Graph: 1766 nodes (697 CHEMICAL + 1069 DISEASE), 5713 edges — scispaCy BC5CDR NER.
-"""
+"""MAO Clinical AI — HuggingFace Spaces entry point."""
 import runpy, sys, os
 
 # Ensure the project root is on the path

@@ -1,22 +1,4 @@
-"""
-mao/memory/mem0_handler.py
---------------------------
-Mem0 wrapper that every agent node calls before and after its LLM call.
-
-Pattern (MANDATORY in every agent):
-  1. BEFORE LLM: memories = await search_memories(query, user_id)
-  2. Inject into system prompt under "What you know about this user:"
-  3. AFTER LLM:  await save_memory(user_query, llm_response, user_id)
-
-Why Mem0 instead of custom memory:
-  - Automatic compression and deduplication — no bespoke logic needed
-  - Production-tested open-source library
-  - Pluggable vector store (we use ChromaDB to keep infra homogeneous)
-
-Integration points:
-  - Called by EVERY agent node in agents/
-  - Config from mao/core/config.py
-"""
+"""Per-user persistent memory — stores and retrieves conversation history."""
 
 from __future__ import annotations
 

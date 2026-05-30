@@ -1,4 +1,4 @@
-"""Cross-encoder reranker using BAAI/bge-reranker-v2-m3 via FlagEmbedding; called at step 9 of the retrieval pipeline."""
+"""Re-ranks retrieved chunks by clinical relevance before the LLM call."""
 
 from __future__ import annotations
 

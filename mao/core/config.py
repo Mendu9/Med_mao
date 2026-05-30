@@ -1,7 +1,4 @@
-"""
-mao/core/config.py — central config from .env
-All modules import `cfg` from here.
-"""
+"""Central configuration loaded from environment variables."""
 from __future__ import annotations
 import os
 from dataclasses import dataclass, field

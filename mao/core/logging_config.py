@@ -1,18 +1,4 @@
-"""
-mao/core/logging_config.py
---------------------------
-Structured JSON logging with per-request trace_id propagation.
-
-Usage:
-    from mao.core.logging_config import configure_logging, set_trace_id, get_trace_id
-
-    configure_logging(level="INFO")      # called once at app startup
-    set_trace_id("req-abc123")           # called once per request in middleware
-    logger.info("processing query")      # emits {"level":"INFO","trace_id":"req-abc123",...}
-
-The trace_id is stored in a contextvars.ContextVar so it propagates through
-asyncio tasks spawned from the request context without manual plumbing.
-"""
+"""Structured logging with per-request trace ID propagation."""
 from __future__ import annotations
 
 import contextvars

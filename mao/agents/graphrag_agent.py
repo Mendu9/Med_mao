@@ -1,4 +1,4 @@
-"""GraphRAG retrieval agent: hybrid RAG + optional web-search fallback with provenance citations."""
+"""Retrieves biomedical knowledge and generates grounded answers with source citations."""
 
 from __future__ import annotations
 

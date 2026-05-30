@@ -1,18 +1,4 @@
-"""
-mao/core/state.py
------------------
-Canonical state schema for the MAO LangGraph graph.
-
-Every agent node receives and returns a MAOState dict.
-Adding keys here is the ONLY way to extend the shared state —
-never pass side-channel data between nodes.
-
-Integration points:
-  - agents/router.py          reads user_query, memory_context, chat_history
-  - agents/*.py               read all keys; write response, agent_used, metadata
-  - memory/mem0_handler.py    reads/writes memory_context
-  - api/main.py               constructs initial state from ChatRequest
-"""
+"""Shared state schema passed between all agent nodes."""
 
 from __future__ import annotations
 

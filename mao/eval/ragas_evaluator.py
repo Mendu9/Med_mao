@@ -1,4 +1,4 @@
-"""Async RAGAS scorer (faithfulness, relevancy, precision, recall) running as a background task after /chat."""
+"""Evaluates response quality using RAGAS metrics (faithfulness, relevancy, precision, recall)."""
 
 from __future__ import annotations
 

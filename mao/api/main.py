@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for MAO: /chat, /chat/stream (SSE), /ingest, /health, /graph endpoints."""
+"""MAO Clinical AI — REST API."""
 
 from __future__ import annotations
 

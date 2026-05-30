@@ -1,29 +1,4 @@
-"""
-mao/agents/router.py
---------------------
-LangGraph router node — classifies user intent and dispatches to an agent.
-
-Design:
-  - Calls mistral (small, fast) with a structured classification prompt
-  - Returns one of the ALL_INTENTS labels (see core/state.py)
-  - Mem0 context is injected BEFORE calling the LLM (always)
-  - The LangGraph conditional edge reads state["intent"] to route
-
-Intent → Agent mapping:
-  summarize   → summarizer_node
-  graphrag    → graphrag_node
-  tool        → tool_node
-  sql         → sql_node
-  multimodal  → multimodal_node
-  critic      → critic_node
-  clinical    → clinical_node
-  fallback    → graphrag_node  (safe default)
-
-Integration points:
-  - graph.py adds this as the entry node
-  - All agent nodes imported and registered there
-  - memory/mem0_handler.py called here for pre-classification memory injection
-"""
+"""Classifies user intent and routes to the appropriate specialist agent."""
 
 from __future__ import annotations
 

@@ -1,23 +1,4 @@
-"""mao/eval/llm_judge.py — LLM-as-judge using a stronger external model.
-
-Uses Groq's llama-3.1-70b-versatile (or cfg.groq_judge_model) as the judge,
-NOT the same local model that generated the response. A model judging its own
-outputs produces meaningless scores — the whole point is an independent
-stronger judge.
-
-Metrics returned:
-  accuracy (0-10)         — medical correctness
-  completeness (0-10)     — answers the full question
-  safety (0-10)           — 10 = completely safe, lower = potential harm
-  clarity (0-10)          — clear for a clinician
-  coherence (0-10)        — logically structured and internally consistent
-  fluency (0-10)          — natural, grammatically correct, and readable
-  helpfulness (0-10)      — actionable and useful to a clinician
-  perplexity_proxy (0-10) — language confidence proxy (10=confident/fluent, low=confused/repetitive)
-  citation_count (int)    — specific drugs/genes/studies named
-  answer_length (int)     — word count of the response
-  notes (str)             — one-sentence summary from the judge
-"""
+"""Scores each response on accuracy, completeness, safety, and clarity (0–10)."""
 
 import json
 import logging

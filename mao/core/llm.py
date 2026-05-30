@@ -1,8 +1,4 @@
-"""
-mao/core/llm.py — LLM chat helper used by all agents.
-Primary backend: Groq. Ollama calls are preserved but commented out.
-LangSmith tracing: enabled automatically when LANGSMITH_API_KEY is set.
-"""
+"""LLM chat helper shared by all agents."""
 from __future__ import annotations
 import json
 import logging
