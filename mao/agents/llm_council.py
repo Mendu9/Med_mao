@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from mao.core.config import CLINICAL_MODEL, COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS

@@ -38,7 +38,6 @@ import logging
 import re
 from typing import Any
 
-import requests
 from mao.core import llm as groq_llm
 
 from mao.core.config import cfg

@@ -403,8 +403,8 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
             if word:
                 yield f"data: {word}\n\n"
                 await asyncio.sleep(0)  # yield control to event loop between tokens
-        # metadata event
-            meta_payload = {
+        # metadata event — outside the for loop, sent once after all words
+        meta_payload = {
             "intent": result.get("intent", ""),
             "agent_used": result.get("agent_used", ""),
             "latency_ms": round(latency_ms, 1),
@@ -700,15 +700,13 @@ class FeedbackRequest(BaseModel):
 @app.post("/feedback")
 async def post_feedback(req: FeedbackRequest):
     import asyncpg
-    import os
     try:
-        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-        await conn.execute(
-            "INSERT INTO response_feedback (session_id, rating, comment, created_at) "
-            "VALUES ($1, $2, $3, NOW())",
-            req.session_id, 1 if req.thumbs_up else -1, req.comment,
-        )
-        await conn.close()
+        async with await asyncpg.connect(os.environ["DATABASE_URL"]) as conn:
+            await conn.execute(
+                "INSERT INTO response_feedback (session_id, rating, comment, created_at) "
+                "VALUES ($1, $2, $3, NOW())",
+                req.session_id, 1 if req.thumbs_up else -1, req.comment,
+            )
         return {"status": "ok"}
     except Exception as e:
         logger.error("Feedback insert failed: %s", e)
@@ -726,11 +724,10 @@ async def export_report(session_id: str):
     from fastapi import Response
     from mao.report.report_card import build_report_card
     try:
-        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-        row = await conn.fetchrow(
-            "SELECT report_card FROM chat_sessions WHERE session_id = $1", session_id
-        )
-        await conn.close()
+        async with await asyncpg.connect(os.environ["DATABASE_URL"]) as conn:
+            row = await conn.fetchrow(
+                "SELECT report_card FROM chat_sessions WHERE session_id = $1", session_id
+            )
         if not row or not row["report_card"]:
             raise HTTPException(status_code=404, detail="Report not found")
         card = build_report_card(**json.loads(row["report_card"]))

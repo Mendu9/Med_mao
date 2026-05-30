@@ -111,24 +111,24 @@ async def achat(
     model: str | None = None,
 ) -> str:
     """Async Groq chat — avoids thread executor overhead for async callers."""
+    from groq import AsyncGroq
+    _model = model or cfg.groq_model
     try:
-        from groq import AsyncGroq
         client = AsyncGroq(api_key=cfg.groq_api_key)
         resp = await client.chat.completions.create(
-            model=model or cfg.groq_model,
+            model=_model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        usage = resp.usage
+        if usage:
+            _usage_tracker.record(
+                model=_model,
+                input_tokens=usage.prompt_tokens or 0,
+                output_tokens=usage.completion_tokens or 0,
+            )
         return resp.choices[0].message.content or ""
-    except ImportError:
-        # AsyncGroq not available — fall back to sync in executor
-        import asyncio
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: chat(messages, temperature=temperature, max_tokens=max_tokens, model=model),
-        )
     except Exception as exc:
         logger.error("Async Groq LLM call failed: %s", exc)
         raise

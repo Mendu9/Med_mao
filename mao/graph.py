@@ -152,6 +152,7 @@ def build_graph() -> StateGraph:
         {
             NODE_SUMMARIZER: NODE_SUMMARIZER,
             NODE_GRAPHRAG:   NODE_GRAPHRAG,
+            "fallback":      NODE_GRAPHRAG,   # fallback intent routes to graphrag
             NODE_TOOL:       NODE_TOOL,
             NODE_SQL:        NODE_SQL,
             NODE_MULTIMODAL: NODE_MULTIMODAL,

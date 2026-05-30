@@ -40,7 +40,6 @@ import logging
 import re
 from typing import Any
 
-import requests
 from mao.core import llm as groq_llm
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError

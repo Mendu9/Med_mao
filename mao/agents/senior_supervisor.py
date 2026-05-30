@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 from mao.core.config import CLINICAL_MODEL
