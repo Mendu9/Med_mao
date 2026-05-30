@@ -1,12 +1,12 @@
 # MAO — Multi-Agent Orchestrator (HuggingFace Spaces)
 
-# grpcio/grpcio-tools: pin to versions with pre-built cp313 manylinux wheels on PyPI
-# Must be listed FIRST so pip resolves and installs wheels before building anything else
+setuptools>=70.0.0
+
+# grpcio/grpcio-tools: cp313 wheels exist for 1.71.x; requires protobuf>=5
+# streamlit>=1.40.0 (set in README.md sdk_version) accepts protobuf>=5
 grpcio==1.71.0
 grpcio-tools==1.71.0
-# protobuf>=5 required by grpcio-tools>=1.63; override streamlit==1.35.0's protobuf<4 by upgrading streamlit
 protobuf>=5.26.1,<6
-setuptools>=70.0.0
 
 # --- Core orchestration ---
 langgraph>=0.2.0,<0.3.0
@@ -52,8 +52,6 @@ Pillow>=10.3.0
 pypdf>=4.0.0
 
 # --- Streamlit UI ---
-# 1.40+ accepts protobuf>=5, compatible with grpcio-tools>=1.63
-streamlit>=1.40.0
 plotly>=5.18.0
 pyvis>=0.3.1
 
