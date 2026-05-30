@@ -64,6 +64,9 @@ logger = logging.getLogger(__name__)
 # without queuing (which would make subsequent requests appear to hang/timeout).
 _executor = ThreadPoolExecutor(max_workers=8)
 
+# Keep strong references to fire-and-forget asyncio tasks to prevent GC cancellation.
+_bg_tasks: set[asyncio.Task] = set()
+
 
 # ---------------------------------------------------------------------------
 # Lifespan: replaces deprecated @app.on_event("startup"/"shutdown")
@@ -331,7 +334,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     # Fire RAGAS hallucination scoring as a background task (non-blocking)
     contexts = [s.get("snippet", "") for s in metadata.get("sources", []) if s.get("snippet")]
     if contexts:
-        asyncio.create_task(
+        _task = asyncio.create_task(
             _score_response_async(
                 question=request.query,
                 answer=result.get("response", ""),
@@ -342,6 +345,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
                 latency_ms=latency_ms,
             )
         )
+        _bg_tasks.add(_task)
+        _task.add_done_callback(_bg_tasks.discard)
 
     return ChatResponse(
         response=result.get("response", ""),

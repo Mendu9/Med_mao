@@ -115,11 +115,15 @@ def search_memories(query: str, user_id: str, limit: int = 5) -> str:
     """
     try:
         client = get_mem0_client()
-        results: list[dict[str, Any]] = client.search(
-            query=query,
-            user_id=user_id,
-            limit=limit,
-        )
+        # mem0 >= 0.1.40 moved user_id to filters=; try new API, fall back to old
+        try:
+            results: list[dict[str, Any]] = client.search(
+                query=query,
+                filters={"user_id": user_id},
+                limit=limit,
+            )
+        except TypeError:
+            results = client.search(query=query, user_id=user_id, limit=limit)  # type: ignore[call-arg]
         # mem0 may return a dict with a "results" key in newer versions
         if isinstance(results, dict):
             results = results.get("results", [])
@@ -155,11 +159,17 @@ def save_memory(
     """
     try:
         client = get_mem0_client()
+        # Truncate to stay within Groq free-tier TPM limits (llama-3.1-8b: 6000 TPM).
+        # Mem0 only needs a summary of the exchange — full RAG responses are too long.
+        truncated_response = assistant_response[:800] + ("…" if len(assistant_response) > 800 else "")
         messages = [
-            {"role": "user",      "content": user_query},
-            {"role": "assistant", "content": assistant_response},
+            {"role": "user",      "content": user_query[:400]},
+            {"role": "assistant", "content": truncated_response},
         ]
-        client.add(messages, user_id=user_id)
+        try:
+            client.add(messages, user_id=user_id)
+        except TypeError:
+            client.add(messages, filters={"user_id": user_id})  # type: ignore[call-arg]
         logger.debug("Memory saved for user=%s", user_id)
 
     except Exception as exc:  # noqa: BLE001
