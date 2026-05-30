@@ -42,9 +42,8 @@ Integration points:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
-
-import chromadb
 
 from mao.core.config import cfg, CACHE_TTL
 from mao.core.query_cache import QueryCache
@@ -56,7 +55,7 @@ if TYPE_CHECKING:
     from rank_bm25 import BM25Okapi
 
 _cache = QueryCache(ttl=CACHE_TTL)
-_chroma_client: chromadb.HttpClient | None = None
+_chroma_client = None   # lazy-initialised only when vector_backend == "chromadb"
 _chroma_collection = None
 _qdrant_client: Any | None = None
 
@@ -64,8 +63,10 @@ _bm25_index: "BM25Okapi | None" = None
 _bm25_corpus: list[str] = []
 _bm25_chunk_ids: list[str] = []
 _bm25_metadata: list[dict] = []  # parallel to _bm25_corpus — stores source + other chunk metadata
+_bm25_lock = threading.Lock()  # guards all _bm25_* globals
 
-_BM25_PICKLE_PATH = cfg.data_dir / "bm25_index.pkl"
+_BM25_PICKLE_PATH = cfg.data_dir / "bm25_index.pkl"   # legacy — migrated to JSON
+_BM25_JSON_PATH   = cfg.data_dir / "bm25_corpus.json"  # safe serialization (no pickle)
 
 logger = logging.getLogger(__name__)
 
@@ -74,36 +75,72 @@ _bm25_loaded: bool = False
 
 
 def _load_bm25_from_disk() -> None:
-    """Load BM25 index from disk on first call; no-op if already loaded or MAO_DISABLE_BM25=1."""
+    """Load BM25 corpus from disk on first call; rebuilds index in memory.
+
+    ALL global writes happen inside _bm25_lock. _bm25_loaded is set LAST,
+    after every global is populated, to prevent other threads from seeing
+    a partially-initialised state.
+    """
     global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_metadata, _bm25_loaded
-    if _bm25_loaded:
-        return
-    _bm25_loaded = True  # mark before load so concurrent callers don't double-load
     import os
-    if os.getenv("MAO_DISABLE_BM25", "0") == "1":
-        logger.info("BM25 index loading skipped (MAO_DISABLE_BM25=1)")
-        return
-    try:
-        import pickle
-        from rank_bm25 import BM25Okapi  # noqa: F401 — ensure importable
-        if _BM25_PICKLE_PATH.exists():
-            with open(_BM25_PICKLE_PATH, "rb") as fh:
-                saved = pickle.load(fh)
-            _bm25_index = saved["index"]
-            _bm25_corpus = saved["corpus"]
-            _bm25_chunk_ids = saved["chunk_ids"]
-            _bm25_metadata = saved.get("metadata", [{} for _ in _bm25_corpus])
-            logger.info(
-                "BM25 index loaded from disk: %d documents (%s)",
-                len(_bm25_corpus), _BM25_PICKLE_PATH,
-            )
-    except Exception as exc:
-        logger.debug("BM25 disk load skipped (%s)", exc)
+    with _bm25_lock:
+        if _bm25_loaded:
+            return
+        if os.getenv("MAO_DISABLE_BM25", "0") == "1":
+            logger.info("BM25 index loading skipped (MAO_DISABLE_BM25=1)")
+            _bm25_loaded = True
+            return
+        try:
+            from rank_bm25 import BM25Okapi
+
+            if _BM25_JSON_PATH.exists():
+                import json as _json
+                with open(_BM25_JSON_PATH, "r", encoding="utf-8") as fh:
+                    saved = _json.load(fh)
+                corpus    = saved["corpus"]
+                chunk_ids = saved["chunk_ids"]
+                metadata  = saved.get("metadata", [{} for _ in corpus])
+                tokenized = [text.lower().split() for text in corpus]
+                _bm25_index     = BM25Okapi(tokenized)
+                _bm25_corpus    = corpus
+                _bm25_chunk_ids = chunk_ids
+                _bm25_metadata  = metadata
+                _bm25_loaded    = True   # set last — after all globals are populated
+                logger.info(
+                    "BM25 index rebuilt from JSON corpus: %d documents (%s)",
+                    len(corpus), _BM25_JSON_PATH,
+                )
+                return
+
+            if _BM25_PICKLE_PATH.exists():
+                import pickle
+                logger.warning(
+                    "Loading BM25 from legacy pickle %s — will migrate to JSON on next ingestion",
+                    _BM25_PICKLE_PATH,
+                )
+                with open(_BM25_PICKLE_PATH, "rb") as fh:
+                    saved = pickle.load(fh)  # noqa: S301 — legacy only; migrated on next write
+                corpus    = saved["corpus"]
+                chunk_ids = saved["chunk_ids"]
+                metadata  = saved.get("metadata", [{} for _ in corpus])
+                tokenized = [text.lower().split() for text in corpus]
+                _bm25_index     = BM25Okapi(tokenized)
+                _bm25_corpus    = corpus
+                _bm25_chunk_ids = chunk_ids
+                _bm25_metadata  = metadata
+                _bm25_loaded    = True   # set last
+                logger.info(
+                    "BM25 index rebuilt from legacy pickle: %d documents", len(corpus)
+                )
+        except Exception as exc:
+            logger.warning("BM25 disk load failed — BM25 disabled for this session: %s", exc)
+            _bm25_loaded = True  # prevent infinite retry on corrupt data
 
 
 def _get_collection():
     global _chroma_client, _chroma_collection
     if _chroma_collection is None:
+        import chromadb  # deferred — only needed when vector_backend == "chromadb"
         _chroma_client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
         _chroma_collection = _chroma_client.get_or_create_collection(cfg.chroma_collection)
         logger.info("ChromaDB collection '%s' ready (%d docs)", cfg.chroma_collection, _chroma_collection.count())
@@ -111,7 +148,12 @@ def _get_collection():
 
 
 def _get_qdrant_client():
-    """Return lazy Qdrant client singleton. Raises if credentials missing."""
+    """Return lazy Qdrant client singleton. Raises if credentials missing.
+
+    Also ensures payload indexes exist for 'entities' (TEXT) and 'domain' (KEYWORD)
+    so that entity-filter scrolls and domain-filter queries use an index rather than
+    scanning all points. create_payload_index is idempotent — safe to call every startup.
+    """
     global _qdrant_client
     if _qdrant_client is None:
         try:
@@ -125,6 +167,33 @@ def _get_qdrant_client():
         _qdrant_client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
         count = _qdrant_client.count(cfg.qdrant_collection).count
         logger.info("Qdrant collection '%s' ready (%d points)", cfg.qdrant_collection, count)
+
+        # Ensure payload indexes for fast filtered search (idempotent)
+        try:
+            from qdrant_client.models import PayloadSchemaType, TextIndexParams, TokenizerType
+            # Full-text index on comma-separated entity names
+            _qdrant_client.create_payload_index(
+                collection_name=cfg.qdrant_collection,
+                field_name="entities",
+                field_schema=TextIndexParams(
+                    type="text",
+                    tokenizer=TokenizerType.WORD,
+                    min_token_len=2,
+                    max_token_len=40,
+                    lowercase=True,
+                ),
+            )
+            # Keyword index on domain for exact-match domain filtering
+            _qdrant_client.create_payload_index(
+                collection_name=cfg.qdrant_collection,
+                field_name="domain",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+            logger.info("Qdrant payload indexes ready: entities (text), domain (keyword)")
+        except Exception as _idx_exc:
+            # Index creation may fail on read-only plans or older qdrant-client versions.
+            # Non-fatal — entity search degrades to full-scan.
+            logger.debug("Qdrant payload index creation skipped: %s", _idx_exc)
     return _qdrant_client
 
 
@@ -162,13 +231,20 @@ def retrieve(
     n = top_n or default_n
     k = top_k or cfg.reranker_top_k
 
-    # Check cache first
+    # Check semantic cache first (normalized text key — no embedding needed)
+    sem_key = _cache.make_semantic_key(query, domain=domain, top_k=k)
+    sem_cached = _cache.get(sem_key)
+    if sem_cached is not None:
+        logger.debug("Semantic cache hit for query domain=%s", domain)
+        return sem_cached
+
+    # Also check vector-based cache (falls back when embedding available)
     try:
         query_embedding = embed_query(query)
         cache_key = _cache.make_key(query_embedding + [hash(domain) % 1_000_000, n, k])
         cached = _cache.get(cache_key)
         if cached is not None:
-            logger.debug("Cache hit for query domain=%s", domain)
+            logger.debug("Vector cache hit for query domain=%s", domain)
             return cached
     except Exception:
         query_embedding = None
@@ -259,7 +335,11 @@ def retrieve(
         k,
     )
 
-    # Store in cache
+    # Store in both caches (semantic key is always available; vector key when embedding succeeded)
+    try:
+        _cache.set(sem_key, ranked_deduped)
+    except Exception:
+        pass
     if cache_key is not None:
         try:
             _cache.set(cache_key, ranked_deduped)
@@ -427,48 +507,61 @@ def _entity_search_qdrant(entities: list[str], limit: int) -> list[dict[str, Any
 
 def _build_bm25_index(chunks: list[dict[str, Any]]) -> None:
     """Build BM25 index from chunk dicts; persists to disk. No-op if rank-bm25 absent."""
-    global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_metadata
+    global _bm25_index, _bm25_corpus, _bm25_chunk_ids, _bm25_metadata, _bm25_loaded
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
         logger.warning("rank-bm25 not installed — BM25 retrieval disabled. pip install rank-bm25")
         return
 
-    tokenized = [c["text"].lower().split() for c in chunks]
-    _bm25_corpus = [c["text"] for c in chunks]
-    _bm25_chunk_ids = [c.get("chunk_id", str(i)) for i, c in enumerate(chunks)]
-    _bm25_metadata = [
-        {k: v for k, v in c.items() if k != "text"}
-        for c in chunks
-    ]
-    _bm25_index = BM25Okapi(tokenized)
+    # Build index and corpus outside the lock (CPU-bound, can take seconds)
+    tokenized  = [c["text"].lower().split() for c in chunks]
+    new_corpus = [c["text"] for c in chunks]
+    new_ids    = [c.get("chunk_id", str(i)) for i, c in enumerate(chunks)]
+    new_meta   = [{k: v for k, v in c.items() if k != "text"} for c in chunks]
+    new_index  = BM25Okapi(tokenized)
+
+    # Swap globals atomically under lock so _bm25_search never sees partial state
+    with _bm25_lock:
+        _bm25_corpus    = new_corpus
+        _bm25_chunk_ids = new_ids
+        _bm25_metadata  = new_meta
+        _bm25_index     = new_index
+        _bm25_loaded    = True
     logger.info("BM25 index built: %d documents", len(chunks))
 
-    # Persist to disk so the index survives server restarts
+    # Persist corpus to disk as JSON (safe) — index is rebuilt from corpus on load.
     try:
-        import pickle
-        _BM25_PICKLE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_BM25_PICKLE_PATH, "wb") as fh:
-            pickle.dump(
-                {
-                    "index": _bm25_index,
-                    "corpus": _bm25_corpus,
-                    "chunk_ids": _bm25_chunk_ids,
-                    "metadata": _bm25_metadata,
-                },
-                fh,
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
-        logger.info("BM25 index persisted to disk: %s", _BM25_PICKLE_PATH)
+        import json as _json
+        _BM25_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "corpus":    _bm25_corpus,
+            "chunk_ids": _bm25_chunk_ids,
+            "metadata":  _bm25_metadata,
+        }
+        with open(_BM25_JSON_PATH, "w", encoding="utf-8") as fh:
+            _json.dump(payload, fh, ensure_ascii=False)
+        logger.info("BM25 corpus persisted to JSON: %s (%d docs)", _BM25_JSON_PATH, len(chunks))
+        # Remove legacy pickle if it exists to avoid confusion
+        if _BM25_PICKLE_PATH.exists():
+            _BM25_PICKLE_PATH.unlink()
+            logger.info("Legacy BM25 pickle removed: %s", _BM25_PICKLE_PATH)
     except Exception as exc:
-        logger.warning("BM25 disk save failed (non-fatal): %s", exc)
+        logger.warning("BM25 JSON save failed (non-fatal): %s", exc)
 
 
 def _bm25_search(query: str, n: int = 20) -> list[dict[str, Any]]:
     """BM25 sparse retrieval; returns [] if index not loaded or rank-bm25 absent."""
-    global _bm25_index
     _load_bm25_from_disk()  # no-op after first call
-    if _bm25_index is None:
+
+    # Snapshot globals under lock to prevent race with concurrent _build_bm25_index
+    with _bm25_lock:
+        index    = _bm25_index
+        corpus   = _bm25_corpus
+        cids     = _bm25_chunk_ids
+        metadata = _bm25_metadata
+
+    if index is None:
         logger.debug("BM25 index not loaded — sparse retrieval disabled")
         return []
 
@@ -476,15 +569,15 @@ def _bm25_search(query: str, n: int = 20) -> list[dict[str, Any]]:
         import numpy as np
 
         tokenized_query = query.lower().split()
-        scores = _bm25_index.get_scores(tokenized_query)
+        scores = index.get_scores(tokenized_query)
         top_indices = np.argsort(scores)[::-1][:n]
         results: list[dict[str, Any]] = []
         for idx in top_indices:
-            if scores[idx] > 0:
-                meta = _bm25_metadata[idx] if idx < len(_bm25_metadata) else {}
+            if scores[idx] > 0 and idx < len(corpus):
+                meta = metadata[idx] if idx < len(metadata) else {}
                 results.append({
-                    "chunk_id": _bm25_chunk_ids[idx],
-                    "text": _bm25_corpus[idx],
+                    "chunk_id": cids[idx] if idx < len(cids) else str(idx),
+                    "text": corpus[idx],
                     "score": float(scores[idx]),
                     "source": meta.get("source", ""),
                     "metadata": meta,

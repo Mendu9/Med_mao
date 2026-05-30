@@ -15,16 +15,9 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 class MAOConfig:
     # LLM backend — model name used by both Groq and Ollama
     groq_api_key: str   = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
-    # GROQ_MODEL takes priority; OLLAMA_MODEL is the local Ollama fallback
-    groq_model: str     = field(default_factory=lambda: os.getenv("GROQ_MODEL", os.getenv("OLLAMA_MODEL", "llama-3.1-8b-instant")))
+    groq_model: str     = field(default_factory=lambda: os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"))
     groq_judge_model: str = field(default_factory=lambda: os.getenv("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile"))
     ollama_base_url: str  = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-
-    # Pinecone (optional — replaced by ChromaDB; kept for backwards compatibility)
-    pinecone_api_key: str | None    = field(default_factory=lambda: os.getenv("PINECONE_API_KEY") or None)
-    pinecone_index: str | None      = field(default_factory=lambda: os.getenv("PINECONE_INDEX") or None)
-    pinecone_mem0_index: str | None = field(default_factory=lambda: os.getenv("PINECONE_MEM0_INDEX") or None)
-    pinecone_region: str            = field(default_factory=lambda: os.getenv("PINECONE_REGION", "us-east-1"))
 
     # Embeddings (sentence-transformers, local, no API key)
     # NeuML/pubmedbert-base-embeddings: 768-dim, trained on PubMed, far better biomedical recall
@@ -57,7 +50,7 @@ class MAOConfig:
     api_port: int = field(default_factory=lambda: int(os.getenv("API_PORT", "8080")))
 
     # Paths
-    data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "d:/project/mao/data")))
+    data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", str(Path(__file__).parent.parent / "data"))))
 
     # Misc
     log_level: str          = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
