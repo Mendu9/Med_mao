@@ -5,9 +5,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Disable heavy components that aren't available on HF free tier by default.
 # Users can override these via HF Space secrets.
-os.environ.setdefault("MAO_DISABLE_MEM0", "1")    # Mem0 needs ChromaDB (local service) — disabled by default; set 0 + CHROMA_* secrets to enable
+os.environ.setdefault("MAO_DISABLE_MEM0", "1")    # Mem0 needs ChromaDB (local service) — disabled by default
 os.environ.setdefault("MAO_DISABLE_GRAPH", "0")   # Graph enabled
-os.environ.setdefault("MAO_DISABLE_BM25", "0")    # corpus downloaded from HF Hub dataset ArunMendu/Med_mao-data on first use
+os.environ.setdefault("MAO_DISABLE_BM25", "1")    # BM25 disabled on HF free CPU: 154K-doc scoring takes 4+ min/query
 os.environ.setdefault("MAO_DISABLE_RERANKER", "0")  # Reranker enabled
 
 os.environ.setdefault("USE_TF", "0")

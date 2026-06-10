@@ -83,6 +83,13 @@ async def lifespan(app: FastAPI):
                 logger.info("Reranker ready.")
             except Exception as exc:
                 logger.warning("Reranker warm-up failed (non-fatal): %s", exc)
+        # Embedding model — warm so first query doesn't pay load penalty (~5s)
+        try:
+            from mao.rag.embedder import embed_query as _embed_query
+            _embed_query("warm-up")
+            logger.info("Embedder ready.")
+        except Exception as exc:
+            logger.warning("Embedder warm-up failed (non-fatal): %s", exc)
         # Build the LangGraph (fast)
         get_graph()
 
