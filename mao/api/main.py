@@ -464,17 +464,20 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         async def _true_token_generator():
             # Bridge sync generator to async via queue — yields tokens as they arrive
             # rather than buffering the entire response first.
-            queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=256)
+            # Unbounded queue: producer uses run_coroutine_threadsafe(queue.put(...))
+            # which back-pressures the producer thread instead of crashing with QueueFull.
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
 
             def _produce():
                 try:
                     for tok in _chat_stream(stream_messages, model=_model):
                         if tok:
-                            _running_loop.call_soon_threadsafe(queue.put_nowait, tok)
+                            fut = asyncio.run_coroutine_threadsafe(queue.put(tok), _running_loop)
+                            fut.result()  # block producer until consumer has space
                 except Exception as exc:
                     logger.error("Groq stream failed request_id=%s: %s", request_id, exc)
                 finally:
-                    _running_loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+                    asyncio.run_coroutine_threadsafe(queue.put(None), _running_loop).result()
 
             _executor.submit(_produce)
 
