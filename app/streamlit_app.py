@@ -125,7 +125,12 @@ def _stream_response(
                     if token.startswith("__meta__:"):
                         yield token  # pass through raw for caller to handle
                         continue
-                    yield token + " "
+                    try:
+                        import json as _json
+                        token = _json.loads(token)
+                    except Exception:
+                        pass  # not JSON-encoded, use as-is
+                    yield token
     except requests.exceptions.ConnectionError:
         yield (
             "\n\n_[Error: Cannot connect to backend. "
