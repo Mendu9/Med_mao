@@ -342,6 +342,12 @@ def retrieve(
             chunk["score"] = chunk.get("score", 0.5) * 1.15  # 15% boost
     logger.debug("Score-boosted %d chunks that appeared in both vector and BM25 results", len(_both))
 
+    # Soft domain boost: rank same-domain chunks higher without excluding any.
+    # A hard filter is unsafe because stored domain tags are inconsistent
+    # (alzheimer/stroke/pubmed) and 'general' matches no stored tag — excluding
+    # non-matching chunks would wipe recall. Boost-only preserves recall.
+    merged = _apply_domain_boost(merged, domain=domain, factor=1.2)
+
     # Step 9: Reranker → top-K
     ranked = rerank(query, merged, top_k=k)
 
@@ -828,6 +834,28 @@ def _mmr_dedup(chunks: list[Any], threshold: float = 0.85) -> list[Any]:
     if dropped:
         logger.debug("MMR dedup: removed %d near-duplicate chunk(s), %d kept", dropped, len(kept))
     return kept
+
+
+def _apply_domain_boost(
+    chunks: list[dict[str, Any]],
+    domain: str,
+    factor: float = 1.2,
+) -> list[dict[str, Any]]:
+    """Multiply the score of chunks whose stored ``domain`` matches the query
+    ``domain``. Recall-preserving: no chunk is ever removed.
+
+    A hard equality filter is unsafe here because ingested data uses
+    inconsistent domain tags (``alzheimer``/``stroke``/``pubmed``) and the
+    classifier's ``general`` matches no stored tag — filtering would wipe recall.
+    Boosting keeps every chunk retrievable while ranking same-domain content
+    higher. ``general`` (and any domain no chunk carries) is a safe no-op.
+    """
+    if not domain or domain == "general":
+        return chunks
+    for chunk in chunks:
+        if chunk.get("domain") == domain:
+            chunk["score"] = chunk.get("score", 0.5) * factor
+    return chunks
 
 
 def _merge_deduplicate(
