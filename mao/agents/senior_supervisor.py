@@ -20,6 +20,12 @@ def senior_supervisor_node(state: dict) -> dict:
     if not sub_queries:
         return {**state, "completeness_ok": True, "missing_sub_queries": []}
 
+    # Skip supervision when streaming path deferred the LLM call — answer is empty
+    # (mirrors domain_supervisor / council). Otherwise every streamed request burns
+    # a CLINICAL_MODEL call comparing sub-questions against an empty answer.
+    if state.get("_want_stream") and not answer:
+        return {**state, "completeness_ok": True, "missing_sub_queries": []}
+
     from mao.core.llm import chat
     prompt = f"SUB-QUESTIONS:\n{json.dumps(sub_queries)}\n\nANSWER:\n{answer}"
     raw = chat(
