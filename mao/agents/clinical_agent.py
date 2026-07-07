@@ -129,7 +129,11 @@ def clinical_node(state: MAOState) -> MAOState:
 
     state["response"]     = response
     state["agent_used"]   = "clinical"
-    state["metadata"]     = {**metadata, **{k: v for k, v in result_meta.items() if not k.startswith("_")}}
+    state["metadata"]     = {
+        **metadata,
+        **{k: v for k, v in result_meta.items() if not k.startswith("_")},
+        "uncertainty_flag": uncertainty_flag,  # API reads this from metadata (main.py:305,444)
+    }
     state["report_card"]  = report.to_dict()
     state["nli_flags"]    = nli_flags
     state["uncertainty_flag"] = uncertainty_flag

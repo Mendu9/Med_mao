@@ -231,3 +231,49 @@ def test_send_query_routes_image_as_image_b64(tmp_path):
     meta = captured.get("metadata", {})
     assert "image_b64" in meta, "PNG must be sent as image_b64"
     assert "report_b64" not in meta, "PNG must NOT be sent as report_b64"
+
+
+# ---------------------------------------------------------------------------
+# uncertainty_flag propagation (patient-safety signal)
+# ---------------------------------------------------------------------------
+
+def test_low_confidence_mri_sets_uncertainty_flag_in_metadata():
+    """A low-confidence MRI prediction must surface uncertainty_flag=True in
+    state['metadata'] — that is where the API reads it (main.py:305,444)."""
+    from mao.agents.clinical_agent import clinical_node
+
+    low_conf_pred = {
+        "prediction": "MildDemented",
+        "full_label": "Mild Demented",
+        "confidence": 0.40,  # below MRI_CONFIDENCE_GATE (0.60)
+        "all_scores": {},
+    }
+    result_meta = {
+        "mode": "mri_image",
+        "prediction": low_conf_pred,
+        "sources": [],
+        "chunks_retrieved": 0,
+        "top_rag_score": 0.0,
+        "rag_sufficient": False,
+        "_ranked_chunks": [],
+    }
+
+    state = {
+        "user_query": "Analyse this MRI",
+        "user_id": "u-test",
+        "domain": "alzheimer",
+        "metadata": {"image_b64": "ZmFrZQ=="},  # triggers the MRI path
+        "memory_context": "ctx",
+    }
+
+    with patch("mao.agents.clinical_agent._handle_mri_image",
+               return_value=("MRI shows mild changes.", result_meta)), \
+         patch("mao.agents.clinical_agent.check_all_claims", return_value=[]), \
+         patch("mao.agents.clinical_agent.save_memory"), \
+         patch("mao.agents.clinical_agent.search_memories", return_value="ctx"):
+        out = clinical_node(state)
+
+    assert out["metadata"].get("uncertainty_flag") is True, (
+        "uncertainty_flag must be present in metadata (API reads it there), "
+        f"got metadata keys: {sorted(out['metadata'].keys())}"
+    )
