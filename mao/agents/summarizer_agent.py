@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from mao.core import llm as groq_llm
 
-from mao.core.config import cfg
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.prompts import get_prompt
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
 
 logger = logging.getLogger(__name__)
@@ -18,17 +19,9 @@ logger = logging.getLogger(__name__)
 _CHUNK_SIZE   = 3000
 _CHUNK_OVERLAP = 200
 
-_SUMMARIZE_SYSTEM = """\
-You are an expert summarizer. Produce a clear, concise summary.
-
-Guidelines:
-  - Lead with a 1-sentence TL;DR
-  - Follow with 3-7 bullet points covering key facts/arguments
-  - Preserve important numbers, names, and dates
-  - Do NOT add information not present in the source
-  - Use plain language; avoid jargon unless the source uses it
-"""
-
+# Map/reduce staging prompts are internal scaffolding, not the production
+# summarisation contract — that one lives in the registry as
+# "summarizer.synthesis".
 _MAP_SYSTEM = """\
 Summarize the following passage in 2-4 bullet points. Be concise.
 """
@@ -61,9 +54,9 @@ def summarizer_node(state: MAOState) -> MAOState:
         source_text = inline_text
         mode = "inline"
     else:
-        # Fall back to GraphRAG retrieval
+        # Fall back to GraphRAG retrieval, scoped to the classifier's domain.
         try:
-            chunks = retrieve(user_query, top_k=5)
+            chunks = retrieve(user_query, top_k=5, domain=state.get("domain") or "alzheimer")
             source_text = "\n\n".join(c.text for c in chunks)
             mode = "kb_retrieval"
         except Exception as exc:  # noqa: BLE001
@@ -78,7 +71,9 @@ def summarizer_node(state: MAOState) -> MAOState:
         return state
 
     # --- Map-reduce for long texts ---
-    system_prompt = build_system_prompt(_SUMMARIZE_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(
+        get_prompt("summarizer.synthesis").template, memory_context
+    )
 
     if len(source_text) > _CHUNK_SIZE * 2:
         response = _map_reduce_summarize(source_text, system_prompt)
@@ -172,6 +167,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
         ]
         return groq_llm.chat(
             messages=messages,
+            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.2,
             max_tokens=768,
         ).strip()

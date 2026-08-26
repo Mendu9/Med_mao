@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional, TypedDict
 import uuid
 from mao.core.config import TOKEN_BUDGET
+from mao.safety.policy import RiskLevel
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +32,9 @@ class MAOState(TypedDict, total=False):
     Populated by the router:
       intent         -- classified intent label (matches INTENT_* constants)
 
+    Populated by the graph's risk gate, before any agent node runs:
+      risk_level     -- RiskLevel value as a plain string ("low"/"standard"/"high")
+
     Conversation context (provided by API layer):
       chat_history   -- list of {"role": str, "content": str} dicts
     """
@@ -41,6 +45,9 @@ class MAOState(TypedDict, total=False):
 
     # --- Router ---
     intent: str
+
+    # --- Safety policy (written by the graph's risk gate before any agent) ---
+    risk_level: str
 
     # --- Memory (injected by mem0_handler before agent runs) ---
     memory_context: str
@@ -90,9 +97,12 @@ class MAOState(TypedDict, total=False):
     ungrounded_claims: list[str]
 
     # Streaming hint — set by /chat/stream endpoint before graph invocation.
-    # When True, streaming-capable agents (graphrag, clinical, summarizer) skip
-    # their final LLM call and store messages in _stream_messages so the endpoint
-    # can drive Groq with stream=True for true token-by-token delivery.
+    # A streaming-capable agent may defer its final LLM call and store messages
+    # in _stream_messages ONLY when the safety policy does not require output
+    # verification for this request's risk_level (P0-1). Deferring leaves
+    # `response` empty, which short-circuits the whole supervision chain, so on
+    # any verified route the agent generates normally and _stream_messages stays
+    # empty. Transport is never an input to a safety decision.
     _want_stream: bool
     _stream_messages: list  # list[dict] — messages to send to Groq with stream=True
     _stream_model: str      # model name to use for streaming
@@ -102,12 +112,15 @@ class MAOState(TypedDict, total=False):
 # Intent label constants — router classifies into exactly these strings
 # ---------------------------------------------------------------------------
 
+#
+# There is deliberately no "sql" intent: LLM-authored SQL against the
+# operational database was removed in P0-3. There is likewise no "code"
+# intent — code_agent.py was deleted and the label was dead (P2-3).
+
 INTENT_SUMMARIZE   = "summarize"
 INTENT_GRAPHRAG    = "graphrag"
 INTENT_TOOL        = "tool"
-INTENT_SQL         = "sql"
 INTENT_MULTIMODAL  = "multimodal"
-INTENT_CODE        = "code"
 INTENT_CRITIC      = "critic"
 INTENT_CLINICAL    = "clinical"
 INTENT_FALLBACK    = "fallback"
@@ -117,14 +130,31 @@ ALL_INTENTS: list[str] = [
     INTENT_SUMMARIZE,
     INTENT_GRAPHRAG,
     INTENT_TOOL,
-    INTENT_SQL,
     INTENT_MULTIMODAL,
-    INTENT_CODE,
     INTENT_CRITIC,
     INTENT_CLINICAL,
     INTENT_FALLBACK,
     INTENT_CHITCHAT,
 ]
+
+
+# ---------------------------------------------------------------------------
+# Risk helpers
+# ---------------------------------------------------------------------------
+
+def risk_level_of(state: dict) -> RiskLevel:
+    """Read ``state["risk_level"]`` as a :class:`RiskLevel`.
+
+    Fail-safe by construction: an absent or unrecognised value resolves to
+    STANDARD, never LOW. LOW is the only level the policy lets skip output
+    verification, so it must only ever be reached by an explicit, valid write
+    from the graph's risk gate.
+    """
+    raw = state.get("risk_level") or ""
+    try:
+        return RiskLevel(raw)
+    except ValueError:
+        return RiskLevel.STANDARD
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +176,7 @@ def make_initial_state(
         user_query=user_query,
         user_id=user_id,
         intent="",
+        risk_level="",
         memory_context="",
         chat_history=chat_history or [],
         response="",

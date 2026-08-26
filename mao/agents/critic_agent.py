@@ -1,31 +1,28 @@
 """
 mao/agents/critic_agent.py
 ---------------------------
-Critic agent — evaluation, review, and feedback on text, code, or plans.
+Critic agent — evidence-oriented review of a supplied draft, claim, or plan.
 
 Route trigger: intent == "critic"
 
 When to route here:
-  - "Review my essay: [paste]"
-  - "Is this code well-written? [paste]"
-  - "Evaluate this business plan"
+  - "Review this summary of the amyloid cascade: [paste]"
   - "What are the weaknesses in this argument?"
-  - "Give me feedback on my answer to this interview question"
-  - "Score this SQL query for performance"
+  - "Evaluate this study protocol"
 
 Why a dedicated critic agent:
   - Evaluation requires a different cognitive mode than generation
   - Using a separate agent prevents the "sycophancy" trap where the same
     agent that generated content also evaluates it favorably
-  - Structured rubric-based evaluation is more defensible and actionable
-  - Interview-ready argument: separating critic from generator is a known
-    technique in Constitutional AI and RLHF pipelines
 
 Design:
-  - Detects artifact type: code, text/prose, SQL, plan/outline
-  - Applies appropriate rubric for each type
-  - Structured output: score (1-10), strengths, weaknesses, specific suggestions
-  - Uses llama3.1:8b — deeper reasoning produces better critique
+  - One review contract, owned by the prompt registry ("critic.review"),
+    so the rubric is versioned and traceable rather than inlined here.
+  - Structured output: score (1-10) plus the issues behind it.
+
+P2-3: the code-review rubric and its artifact-type dispatch were removed with
+the rest of the dead `code` intent (code_agent.py no longer exists). The
+SQL-review rubric went with the SQL route (P0-3).
 
 Integration points:
   - memory/mem0_handler search before / save after
@@ -40,113 +37,18 @@ from typing import Any
 
 from mao.core import llm as groq_llm
 
-from mao.core.config import cfg
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.prompts import get_prompt
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
-
-_CRITIC_SYSTEM_CODE = """\
-You are a senior software engineer conducting a code review.
-
-Evaluate the code on these dimensions:
-  1. Correctness     — does it do what it claims? Any bugs?
-  2. Readability     — naming, comments, structure
-  3. Efficiency      — time/space complexity, unnecessary operations
-  4. Security        — injection risks, unsafe operations, hardcoded secrets
-  5. Pythonic style  — idiomatic use of the language
-  6. Testability     — is it easy to unit test?
-
-Output format:
-  Overall score: X/10
-
-  Strengths:
-  - ...
-
-  Issues (severity: high/medium/low):
-  - [HIGH] ...
-  - [MED]  ...
-
-  Specific suggestions:
-  - ...
-"""
-
-_CRITIC_SYSTEM_PROSE = """\
-You are an expert editor providing constructive feedback on written text.
-
-Evaluate on:
-  1. Clarity        — is the message clear to the target audience?
-  2. Structure      — logical flow, transitions, paragraphing
-  3. Argumentation  — are claims supported with evidence?
-  4. Conciseness    — unnecessary wordiness
-  5. Tone           — appropriate for the context?
-
-Output format:
-  Overall score: X/10
-
-  Strengths:
-  - ...
-
-  Areas for improvement:
-  - ...
-
-  Specific line-level suggestions (quote the original, then suggest):
-  - Original: "..."
-    Suggestion: "..."
-"""
-
-_CRITIC_SYSTEM_SQL = """\
-You are a database performance expert reviewing a SQL query.
-
-Evaluate on:
-  1. Correctness      — will it return the expected results?
-  2. Performance      — missing indexes, N+1, full table scans, unnecessary subqueries
-  3. Readability      — aliasing, formatting, naming
-  4. Safety           — SQL injection risk (if parameterization is absent)
-  5. Edge cases       — NULL handling, empty sets
-
-Output format:
-  Overall score: X/10
-
-  Correctness verdict: PASS / FAIL / UNSURE
-  Performance concerns: (list)
-  Suggested rewrite: (only if substantially different)
-"""
-
-_CRITIC_SYSTEM_PLAN = """\
-You are a senior consultant evaluating a plan or proposal.
-
-Evaluate on:
-  1. Feasibility     — is this achievable with stated constraints?
-  2. Completeness    — are there gaps or unstated assumptions?
-  3. Risk            — what could go wrong? Is risk mitigation present?
-  4. Clarity         — is the success criterion measurable?
-  5. Alternatives    — were better approaches overlooked?
-
-Output format:
-  Overall score: X/10
-
-  What works:
-  - ...
-
-  Risks and gaps:
-  - [CRITICAL] ...
-  - [MINOR]    ...
-
-  Recommendations:
-  - ...
-"""
-
-_ARTIFACT_TYPE_KEYWORDS = {
-    "code": ["def ", "class ", "import ", "function", "python", "javascript", "```"],
-    "sql":  ["select ", "from ", "where ", "join ", "group by", "sql"],
-    "plan": ["plan", "proposal", "roadmap", "strategy", "outline", "steps to"],
-}
 
 
 def critic_node(state: MAOState) -> MAOState:
     """
-    LangGraph node: structured critique of code, prose, SQL, or plans.
+    LangGraph node: evidence-oriented critique of a supplied draft or plan.
     """
     user_query: str = state["user_query"]
     user_id: str    = state["user_id"]
@@ -156,17 +58,8 @@ def critic_node(state: MAOState) -> MAOState:
         memory_context = search_memories(user_query, user_id)
         state["memory_context"] = memory_context
 
-    artifact_type = _detect_artifact_type(user_query)
-    logger.info("Critic agent artifact type: %s", artifact_type)
-
-    system_map = {
-        "code":  _CRITIC_SYSTEM_CODE,
-        "sql":   _CRITIC_SYSTEM_SQL,
-        "plan":  _CRITIC_SYSTEM_PLAN,
-        "prose": _CRITIC_SYSTEM_PROSE,
-    }
     system_prompt = build_system_prompt(
-        system_map.get(artifact_type, _CRITIC_SYSTEM_PROSE),
+        get_prompt("critic.review").template,
         memory_context,
     )
 
@@ -182,24 +75,13 @@ def critic_node(state: MAOState) -> MAOState:
 
     state["response"]   = response
     state["agent_used"] = "critic"
-    state["metadata"]   = {
-        "artifact_type": artifact_type,
-        "score": score,
-    }
+    state["metadata"]   = {"score": score}
     return state
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _detect_artifact_type(query: str) -> str:
-    q_lower = query.lower()
-    for atype, keywords in _ARTIFACT_TYPE_KEYWORDS.items():
-        if any(kw in q_lower for kw in keywords):
-            return atype
-    return "prose"
-
 
 def _extract_instruction(query: str) -> str:
     """
@@ -247,6 +129,7 @@ def _call_llm(
     try:
         return groq_llm.chat(
             messages=messages,
+            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.2,
             max_tokens=768,
         ).strip()
@@ -259,7 +142,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     from mao.core.state import make_initial_state
     state = make_initial_state(
-        "Review this code:\n```python\ndef add(a, b):\n    return a+b\n```",
+        "Review this claim: amyloid plaques alone are sufficient to cause dementia.",
         "user-test",
     )
     state = critic_node(state)

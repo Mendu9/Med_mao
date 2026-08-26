@@ -7,11 +7,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from mao.core import llm as groq_llm
-from mao.core.config import FAST_MODEL
-from mao.core.state import MAOState
+from mao.core.state import MAOState, risk_level_of
 from mao.core.web_search import web_search as _web_search
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.prompts import get_prompt
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
+from mao.safety.policy import get_policy
 
 try:
     from mao.data.ingest_pubmed import live_pubmed_search as _live_pubmed_search
@@ -26,23 +29,6 @@ logger = logging.getLogger(__name__)
 # (bge-reranker scores are 0-1 after normalize=True, but when the reranker is
 # disabled the raw cosine similarity is used instead — keep threshold low.)
 RAG_CONFIDENCE_THRESHOLD: float = 0.10
-
-_GRAPHRAG_SYSTEM = """\
-You are a precise, factual medical and scientific assistant with access to a \
-curated knowledge base of research papers and a supplementary web search.
-
-GROUNDING RULES (strictly enforced):
-  1. RAG chunks (marked [RAG #N]) come from peer-reviewed ingested documents.
-     Treat them as the primary ground truth for specific clinical facts.
-  2. Web results (marked [WEB #N]) are supplementary. Use them to fill gaps or
-     provide recency, but NEVER use a web result to contradict a RAG chunk.
-  3. If RAG chunks are present, your answer MUST cite them using their doc_id (title)
-     and source file: e.g. "According to [RAG 2: CT Perfusion in Stroke (ct_perfusion_2023.pdf)]..."
-     — use doc_id as the human-readable title, NOT the raw chunk_id hash.
-  4. For web results, cite the URL: e.g. "A recent report ([WEB 1]: https://...)..."
-  5. If neither source confirms a claim, say so explicitly — do not fabricate.
-  6. Always end with a "Sources:" section listing each RAG doc title + source file, and web URLs.
-"""
 
 _CONTEXT_TEMPLATE = """\
 --- Retrieved Knowledge ---
@@ -78,12 +64,18 @@ def graphrag_node(state: MAOState) -> MAOState:
 
     # Step 2: GraphRAG retrieval pipeline
     # If the decomposer produced multiple sub-queries, retrieve in parallel.
+    # `domain` comes from the classifier node and must reach retrieve(), or
+    # every query is served from the default index.
+    domain: str = state.get("domain") or "alzheimer"
     sub_queries: list[str] = state.get("sub_queries", [])
     try:
         if len(sub_queries) > 1:
             all_chunks: list = []
             with ThreadPoolExecutor(max_workers=min(3, len(sub_queries))) as pool:
-                futures = {pool.submit(retrieve, sq, top_k=5): sq for sq in sub_queries}
+                futures = {
+                    pool.submit(retrieve, sq, top_k=5, domain=domain): sq
+                    for sq in sub_queries
+                }
                 for future in as_completed(futures):
                     try:
                         chunks = future.result()
@@ -109,7 +101,7 @@ def graphrag_node(state: MAOState) -> MAOState:
                 len(ranked_chunks),
             )
         else:
-            ranked_chunks = retrieve(user_query)
+            ranked_chunks = retrieve(user_query, domain=domain)
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG retrieval failed: %s", exc)
         ranked_chunks = []
@@ -188,19 +180,38 @@ def graphrag_node(state: MAOState) -> MAOState:
     context_block = _CONTEXT_TEMPLATE.format(chunks="\n\n".join(context_parts))
 
     # Step 6: LLM generation with citations
-    system_prompt = build_system_prompt(_GRAPHRAG_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(
+        get_prompt("graphrag.synthesis").template, memory_context
+    )
     user_prompt = f"{context_block}\n\nUser question: {user_query}"
 
-    # Build messages once — reused by both sync and streaming paths.
+    # Build messages once — reused by both sync and deferred paths.
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
     messages.extend(state.get("chat_history", [])[-4:])
     messages.append({"role": "user", "content": user_prompt})
 
-    if state.get("_want_stream"):
+    # P0-1: deferring generation to the streaming endpoint leaves
+    # state["response"] empty, which short-circuits the entire supervision
+    # chain (verification -> domain_supervisor -> council -> senior). That is
+    # only acceptable where the policy does not require verification at all.
+    # Transport must never be an input to a safety decision, so the risk level
+    # — not `_want_stream` — decides. This trades true token streaming for
+    # output safety on every verified route, deliberately.
+    risk = risk_level_of(state)
+    may_defer = not get_policy().requires_verification(risk)
+
+    if state.get("_want_stream") and may_defer:
         state["_stream_messages"] = messages
-        state["_stream_model"]    = FAST_MODEL
+        state["_stream_model"]    = model_id_for(ModelRole.GENERAL_SYNTHESIS)
         response = ""
     else:
+        if state.get("_want_stream"):
+            logger.info(
+                "GraphRAG: streaming deferral refused at risk=%s — verification required",
+                risk.value,
+            )
+        state["_stream_messages"] = []
+        state["_stream_model"]    = ""
         response = _call_llm_from_messages(messages)
 
     # Step 7: Mem0 post-hook (skip when no response yet — streaming fills it later)
@@ -245,6 +256,7 @@ def _call_llm_from_messages(messages: list[dict[str, Any]]) -> str:
     try:
         return groq_llm.chat(
             messages=messages,
+            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.1,
             max_tokens=768,
         ).strip()

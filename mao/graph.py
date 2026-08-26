@@ -4,20 +4,58 @@ mao/graph.py
 Assembles the LangGraph StateGraph connecting all MAO agents.
 
 Graph topology:
-  START → router_node → [conditional dispatch] → agent_node → END
 
-  The conditional edge reads state["intent"] and routes to one of:
-    summarizer_node, graphrag_node, tool_node, sql_node,
-    multimodal_node, critic_node
+    START
+      |
+      v
+    chitchat_gate ------------------------------------.
+      |  (not chitchat)                (chitchat)      |
+      v                                                |
+    decomposer  ->  classifier  ->  router_node        |
+                                        |              |
+                                        v              |
+                                    risk_gate <--------'
+                                        |
+                        [conditional dispatch on state["intent"]]
+                                        |
+      .-------------------+-------------+-------------+-------------.
+      v                   v             v             v             v
+  summarizer_node   graphrag_node   tool_node   multimodal_node   ...
+  critic_node       clinical_node   chitchat_node
+      |                   |             |             |             |
+      '-------------------+------ verification -------+-------------'
+                                        |
+                                        v
+                              domain_supervisor
+                                        |
+                                        v
+                                     council
+                                   /         \\
+                        senior_supervisor    blocked
+                                   \\         /
+                                       END
 
-  After any agent node the graph terminates (END).
-  For multi-turn conversation, the API layer reinvokes the graph
-  on each request with updated chat_history.
+Invariants this topology exists to enforce:
 
-Why terminate at END instead of looping back through router:
-  - Keeps graph deterministic and debuggable
-  - Multi-turn state is managed by the API layer (cleaner separation)
-  - LangGraph checkpointing can resume from any node if needed
+  1. `risk_gate` is the ONLY edge into an agent node. Every request therefore
+     carries `state["risk_level"]` — computed from the safety policy — before
+     any agent runs. Agents read it to decide what they may skip; nothing may
+     reach an agent without it.
+
+  2. `verification` is the ONLY edge from an agent node into the supervision
+     chain. No agent can reach `domain_supervisor` without being verified
+     first, whether the request was streamed or not (P0-1).
+
+  3. Chitchat is detected exactly once, at `chitchat_gate` (P2-14). The gate
+     short-circuits the decomposer/classifier/router pipeline but still passes
+     through `risk_gate`, so invariant 1 holds on that path too.
+
+  4. There is no SQL route (P0-3): LLM-authored SQL against the operational
+     database was removed rather than sandboxed.
+
+After `senior_supervisor` or `blocked` the graph terminates. Multi-turn state is
+managed by the API layer, which reinvokes the graph per request with updated
+chat_history — that keeps the graph deterministic and debuggable.
 
 Usage:
     from mao.graph import build_graph
@@ -33,7 +71,6 @@ import logging
 from langgraph.graph import END, START, StateGraph
 
 from mao.agents.chitchat_agent import chitchat_node
-from mao.agents.router import _is_chitchat as _router_is_chitchat
 from mao.agents.clinical_agent import clinical_node
 from mao.agents.critic_agent import critic_node
 from mao.agents.domain_classifier import classifier_node
@@ -42,12 +79,12 @@ from mao.agents.graphrag_agent import graphrag_node
 from mao.agents.llm_council import council_node
 from mao.agents.multimodal_agent import multimodal_node
 from mao.agents.query_decomposer import decomposer_node
-from mao.agents.router import route_to_agent, router_node
+from mao.agents.router import is_chitchat, route_to_agent, router_node
 from mao.agents.senior_supervisor import senior_supervisor_node
-from mao.agents.sql_agent import sql_node
 from mao.agents.summarizer_agent import summarizer_node
 from mao.agents.tool_agent import tool_node
-from mao.core.state import MAOState
+from mao.core.state import INTENT_CHITCHAT, MAOState
+from mao.safety.policy import get_policy
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +92,13 @@ logger = logging.getLogger(__name__)
 # Node names — kept as constants to avoid typo bugs
 # ---------------------------------------------------------------------------
 
+NODE_GATE       = "chitchat_gate"
 NODE_ROUTER     = "router_node"
+NODE_RISK       = "risk_gate"
+NODE_VERIFY     = "verification"
 NODE_SUMMARIZER = "summarizer_node"
 NODE_GRAPHRAG   = "graphrag_node"
 NODE_TOOL       = "tool_node"
-NODE_SQL        = "sql_node"
 NODE_MULTIMODAL = "multimodal_node"
 NODE_CRITIC     = "critic_node"
 NODE_CLINICAL   = "clinical_node"
@@ -69,24 +108,72 @@ _ALL_AGENT_NODES = [
     NODE_SUMMARIZER,
     NODE_GRAPHRAG,
     NODE_TOOL,
-    NODE_SQL,
     NODE_MULTIMODAL,
     NODE_CRITIC,
     NODE_CLINICAL,
     NODE_CHITCHAT,
 ]
 
+# Metadata keys that mean the request carries patient data.
+_ATTACHMENT_KEYS = ("image_b64", "image_url", "report_b64", "report_path")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline nodes owned by the graph itself
+# ---------------------------------------------------------------------------
 
 def chitchat_gate_node(state: dict) -> dict:
-    """Zero-cost entry gate — marks chitchat intent before the pipeline runs."""
-    if _router_is_chitchat(state.get("user_query", "")):
-        return {**state, "intent": "chitchat"}
+    """Zero-cost entry gate — the single chitchat detection site (P2-14).
+
+    Marking the intent here lets the conditional edge skip the decomposer,
+    the domain classifier, and the router LLM call entirely.
+    """
+    if is_chitchat(state.get("user_query", "")):
+        return {**state, "intent": INTENT_CHITCHAT}
     return state
 
 
 def _route_from_gate(state: dict) -> str:
-    """Skip decomposer/classifier/router for chitchat; use full pipeline otherwise."""
-    return "chitchat_node" if state.get("intent") == "chitchat" else "decomposer"
+    """Chitchat goes straight to the risk gate; everything else is decomposed."""
+    return NODE_RISK if state.get("intent") == INTENT_CHITCHAT else "decomposer"
+
+
+def risk_gate_node(state: dict) -> dict:
+    """Write ``state["risk_level"]`` before any agent node can run.
+
+    Classification is the safety policy's job, not the graph's — this node only
+    supplies the two inputs (routed intent, presence of an attachment) and
+    stores the verdict as a plain string so it survives JSON serialisation at
+    the API boundary.
+    """
+    metadata = state.get("metadata") or {}
+    has_attachment = any(metadata.get(key) for key in _ATTACHMENT_KEYS)
+    risk = get_policy().risk_for(
+        state.get("intent", ""), has_attachment=has_attachment
+    )
+    logger.debug(
+        "Risk gate: intent=%s attachment=%s → risk=%s",
+        state.get("intent", ""), has_attachment, risk.value,
+    )
+    return {**state, "risk_level": risk.value}
+
+
+def verification_node(state: dict) -> dict:
+    """Delegates to the shared verification node (mao/safety/verification.py).
+
+    Imported lazily: that module lands on a separate branch and is wired at
+    Phase 1 integration. If it is absent the node is a pass-through so the
+    graph still builds; integration asserts the real implementation is present.
+    """
+    try:
+        from mao.safety.verification import verification_node as _impl
+    except ImportError:
+        logger.warning(
+            "mao.safety.verification is not installed — verification node is a "
+            "pass-through. This is expected only before Phase 1 integration."
+        )
+        return state
+    return _impl(state)
 
 
 def blocked_response_node(state: dict) -> dict:
@@ -106,6 +193,10 @@ def _route_after_council(state: dict) -> str:
     return "senior_supervisor" if verdict.get("passed", True) else "blocked"
 
 
+# ---------------------------------------------------------------------------
+# Assembly
+# ---------------------------------------------------------------------------
+
 def build_graph() -> StateGraph:
     """
     Construct and compile the MAO LangGraph StateGraph.
@@ -115,46 +206,48 @@ def build_graph() -> StateGraph:
     """
     builder = StateGraph(MAOState)
 
-    # --- Register existing nodes ---
-    builder.add_node(NODE_ROUTER,     router_node)
+    # --- Agent nodes ---
     builder.add_node(NODE_SUMMARIZER, summarizer_node)
     builder.add_node(NODE_GRAPHRAG,   graphrag_node)
     builder.add_node(NODE_TOOL,       tool_node)
-    builder.add_node(NODE_SQL,        sql_node)
     builder.add_node(NODE_MULTIMODAL, multimodal_node)
     builder.add_node(NODE_CRITIC,     critic_node)
     builder.add_node(NODE_CLINICAL,   clinical_node)
     builder.add_node(NODE_CHITCHAT,   chitchat_node)
 
-    # --- Register new pipeline nodes ---
-    builder.add_node("decomposer",        decomposer_node)
-    builder.add_node("classifier",        classifier_node)
+    # --- Pre-agent pipeline ---
+    builder.add_node(NODE_GATE,   chitchat_gate_node)
+    builder.add_node("decomposer", decomposer_node)
+    builder.add_node("classifier", classifier_node)
+    builder.add_node(NODE_ROUTER, router_node)
+    builder.add_node(NODE_RISK,   risk_gate_node)
+
+    # --- Post-agent supervision pipeline ---
+    builder.add_node(NODE_VERIFY,         verification_node)
     builder.add_node("domain_supervisor", domain_supervisor_node)
     builder.add_node("council",           council_node)
     builder.add_node("senior_supervisor", senior_supervisor_node)
     builder.add_node("blocked",           blocked_response_node)
 
-    # --- Entry point: chitchat_gate → (chitchat shortcut | full pipeline) ---
-    builder.add_node("chitchat_gate", chitchat_gate_node)
-    builder.add_edge(START, "chitchat_gate")
+    # --- Entry: chitchat_gate → (risk_gate shortcut | full pipeline) ---
+    builder.add_edge(START, NODE_GATE)
     builder.add_conditional_edges(
-        "chitchat_gate",
+        NODE_GATE,
         _route_from_gate,
-        {"chitchat_node": NODE_CHITCHAT, "decomposer": "decomposer"},
+        {NODE_RISK: NODE_RISK, "decomposer": "decomposer"},
     )
     builder.add_edge("decomposer", "classifier")
     builder.add_edge("classifier", NODE_ROUTER)
 
-    # --- Conditional dispatch from router ---
+    # --- The router's verdict is priced by the policy before dispatch ---
+    builder.add_edge(NODE_ROUTER, NODE_RISK)
     builder.add_conditional_edges(
-        NODE_ROUTER,
+        NODE_RISK,
         route_to_agent,
         {
             NODE_SUMMARIZER: NODE_SUMMARIZER,
             NODE_GRAPHRAG:   NODE_GRAPHRAG,
-            "fallback":      NODE_GRAPHRAG,   # fallback intent routes to graphrag
             NODE_TOOL:       NODE_TOOL,
-            NODE_SQL:        NODE_SQL,
             NODE_MULTIMODAL: NODE_MULTIMODAL,
             NODE_CRITIC:     NODE_CRITIC,
             NODE_CLINICAL:   NODE_CLINICAL,
@@ -162,11 +255,11 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # --- All agent nodes route to domain_supervisor (not END) ---
+    # --- Every agent is verified before it reaches supervision (P0-1) ---
     for node_name in _ALL_AGENT_NODES:
-        builder.add_edge(node_name, "domain_supervisor")
+        builder.add_edge(node_name, NODE_VERIFY)
+    builder.add_edge(NODE_VERIFY, "domain_supervisor")
 
-    # --- Post-agent supervision pipeline ---
     builder.add_edge("domain_supervisor", "council")
     builder.add_conditional_edges(
         "council",
@@ -210,8 +303,12 @@ def print_graph_structure() -> None:
         print(graph.get_graph().draw_mermaid())
     except Exception:  # noqa: BLE001
         # draw_mermaid not available in all LangGraph versions
-        print(f"Nodes: {[NODE_ROUTER] + _ALL_AGENT_NODES}")
-        print("Edges: router_node → [conditional] → agent_node → END")
+        print(f"Nodes: {sorted(graph.nodes)}")
+        print(
+            "Edges: chitchat_gate → [decomposer → classifier → router_node] → "
+            "risk_gate → [conditional] → agent → verification → "
+            "domain_supervisor → council → (senior_supervisor | blocked) → END"
+        )
 
 
 if __name__ == "__main__":
@@ -226,3 +323,4 @@ if __name__ == "__main__":
     print("\nResponse:", result.get("response", "")[:200])
     print("Agent used:", result.get("agent_used"))
     print("Intent:", result.get("intent"))
+    print("Risk:", result.get("risk_level"))

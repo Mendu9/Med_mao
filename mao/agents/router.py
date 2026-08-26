@@ -2,77 +2,32 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-from typing import Any
 
-from mao.core.config import cfg
 from mao.core import llm as groq_llm
 from mao.core.state import (
     ALL_INTENTS,
-    INTENT_CHITCHAT,
     INTENT_CLINICAL,
     INTENT_FALLBACK,
     INTENT_GRAPHRAG,
     MAOState,
 )
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt, search_memories
+from mao.prompts import get_prompt
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Classification prompt
-# ---------------------------------------------------------------------------
-
-_ROUTER_SYSTEM = """\
-You are an intent classification router for a multi-agent AI system.
-Classify the user query into EXACTLY ONE of these intent labels:
-
-  summarize   - User wants a summary of a document or topic they provide
-  graphrag    - User asks a factual/knowledge/science question (who, what, where, when, why,
-                how does X work, explain X, what is X, what causes X, what are the symptoms of X)
-                — including biomedical science questions about proteins, genes, mechanisms,
-                pathways, disease biology, neuropathology, stroke, cardiovascular, dementia
-  tool        - User needs live web search, a calculator, or a Wikipedia lookup
-  sql         - User asks about structured/tabular data, statistics, or database queries
-  multimodal  - User provides or asks about an image, audio, or non-text media
-  critic      - User wants feedback, review, or evaluation of text/code/plan
-  clinical    - User provides an MRI scan, brain image, or medical report FOR ANALYSIS;
-                asks about a SPECIFIC PATIENT'S scan results, Alzheimer's stage prediction
-                for a patient, clinical decision support for brain imaging, or wants a
-                structured medical report card generated from patient data
-  chitchat    - Greetings, pleasantries, acknowledgements, off-topic conversation
-                (hi, hello, thanks, yes, no, ok)
-  fallback    - Query does not fit any above category
-
-Rules:
-  - Respond with ONLY the label word, nothing else.
-  - When unsure between graphrag and tool, prefer graphrag.
-  - Use clinical ONLY when the user is asking about a specific patient case, medical image,
-    or report — NOT for general biomedical science questions (those are graphrag).
-  - Examples of graphrag (NOT clinical): "what are tau tangles?", "explain amyloid cascade",
-    "what does APOE4 do?", "how does neuroinflammation work?",
-    "what causes brain stroke?", "what is ischemic stroke?", "what are stroke risk factors?",
-    "how does dementia progress?", "what is the blood-brain barrier?"
-  - Examples of clinical (NOT graphrag): "analyse this MRI", "what stage is this patient?",
-    "summarise this medical report", "does this scan show Alzheimer's?"
-  - When unsure between graphrag and summarize, check if the user provides
-    a passage to summarize (summarize) or just asks a question (graphrag).
-"""
-
-_ROUTER_USER_TEMPLATE = """\
-{memory_context}
-
-Chat history (last 3 turns):
-{history}
-
-User query: {query}
-
-Intent label:"""
-
-# ---------------------------------------------------------------------------
-# Fast-path chitchat detection (avoids LLM call for trivial queries)
+# Chitchat detection — the ONE deterministic detection site (P2-14).
+#
+# `is_chitchat` is the single predicate. It is evaluated exactly once per
+# request, by the graph's entry gate (mao/graph.py::chitchat_gate_node), which
+# short-circuits the decomposer/classifier/router pipeline entirely. The router
+# deliberately does NOT re-run it: a second detection site is a second place for
+# the rule to drift.
 # ---------------------------------------------------------------------------
 
 _CHITCHAT_PATTERN = re.compile(
@@ -81,7 +36,7 @@ _CHITCHAT_PATTERN = re.compile(
 )
 
 
-def _is_chitchat(query: str) -> bool:
+def is_chitchat(query: str) -> bool:
     """Return True only if the query exactly matches a greeting/chitchat pattern."""
     return bool(_CHITCHAT_PATTERN.match(query.strip()))
 
@@ -107,26 +62,25 @@ def router_node(state: MAOState) -> MAOState:
         state["memory_context"] = ""
         return state
 
-    # --- Fast-path: trivial chitchat → skip LLM entirely ---
-    if _is_chitchat(user_query):
-        logger.info("Router: chitchat fast-path '%s' → chitchat (no LLM needed)", user_query[:40])
-        state["intent"] = INTENT_CHITCHAT
-        state["memory_context"] = ""
-        return state
+    # Chitchat is NOT re-detected here — see the module note above (P2-14).
 
     # --- Mem0 pre-hook (always runs before LLM) ---
     memory_context = search_memories(user_query, user_id)
     state["memory_context"] = memory_context
 
-    # --- Build classification prompt ---
+    # --- Build classification prompt from the registry ---
     history_text = _format_history(state.get("chat_history", [])[-3:])
-    user_prompt = _ROUTER_USER_TEMPLATE.format(
+    user_prompt = get_prompt("router.user_turn").render(
         memory_context=f"User context:\n{memory_context}" if memory_context else "",
         history=history_text or "(none)",
         query=user_query,
     )
 
-    system_prompt = build_system_prompt(_ROUTER_SYSTEM, memory_context="")  # no mem inject for router system
+    # No memory injection into the router system prompt — the router classifies,
+    # it does not answer.
+    system_prompt = build_system_prompt(
+        get_prompt("router.classify").template, memory_context=""
+    )
 
     intent = _classify(system_prompt, user_prompt)
     logger.info("Router classified '%s' → intent=%s", user_query[:60], intent)
@@ -143,11 +97,13 @@ def route_to_agent(state: MAOState) -> str:
     This function is passed to graph.add_conditional_edges().
     """
     intent = state.get("intent", INTENT_FALLBACK)
+    # No structured-data route: LLM-authored SQL against the operational
+    # database was removed in P0-3. A stale "sql" label now falls back to
+    # graphrag like any other unrecognised intent.
     mapping = {
         "summarize":  "summarizer_node",
         "graphrag":   "graphrag_node",
         "tool":       "tool_node",
-        "sql":        "sql_node",
         "multimodal": "multimodal_node",
         "critic":     "critic_node",
         "clinical":   "clinical_node",
@@ -171,6 +127,7 @@ def _classify(system_prompt: str, user_prompt: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
+            model=model_id_for(ModelRole.ROUTER_FAST),
             temperature=0.0,
             max_tokens=10,
         ).strip().lower()
