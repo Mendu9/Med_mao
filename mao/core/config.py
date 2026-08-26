@@ -1,20 +1,29 @@
-"""Central configuration loaded from environment variables."""
+"""Central configuration loaded from environment variables.
+
+Model selection is NOT owned here. `mao.providers.registry` binds capability
+roles to concrete models; the module-level aliases at the bottom of this file
+are thin, backwards-compatible views onto those bindings. Safety thresholds are
+likewise owned by `mao.safety.policy`.
+"""
 from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from dotenv import load_dotenv
 
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
+from mao.safety.policy import get_policy
+
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 
 @dataclass(frozen=True)
 class MAOConfig:
-    # LLM backend — model name used by both Groq and Ollama
+    # Provider credential. Model *ids* come from the ModelRegistry, not from here.
     groq_api_key: str   = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
-    groq_model: str     = field(default_factory=lambda: os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"))
-    groq_judge_model: str = field(default_factory=lambda: os.getenv("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile"))
-    ollama_base_url: str  = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    groq_model: str     = field(default_factory=lambda: model_id_for(ModelRole.GENERAL_SYNTHESIS))
+    groq_judge_model: str = field(default_factory=lambda: model_id_for(ModelRole.SAFETY_JUDGE))
 
     # Embeddings (sentence-transformers, local, no API key)
     # NeuML/pubmedbert-base-embeddings: 768-dim, trained on PubMed, far better biomedical recall
@@ -51,7 +60,6 @@ class MAOConfig:
 
     # Misc
     log_level: str          = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
-    code_exec_timeout: int  = field(default_factory=lambda: int(os.getenv("CODE_EXEC_TIMEOUT", "10")))
 
 
 cfg = MAOConfig()
@@ -62,17 +70,27 @@ TOKEN_BUDGET: int = 32000
 # Query cache TTL (seconds)
 CACHE_TTL: int = 300
 
-# LLM tiers — default to Groq fast model; set FAST_MODEL/CLINICAL_MODEL in .env to override
-FAST_MODEL: str = os.getenv("FAST_MODEL", os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"))
-CLINICAL_MODEL: str = os.getenv("CLINICAL_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+# ---------------------------------------------------------------------------
+# Legacy model aliases.
+#
+# Kept so existing imports keep working, but they are now *views* onto role
+# bindings in mao.providers.registry. Prefer `model_id_for(ModelRole.X)` in new
+# code. Overriding a role uses that role's own env var (MAO_MODEL_<ROLE>);
+# there is no nested getenv chain a generic GROQ_MODEL could hijack (P1-17).
+# ---------------------------------------------------------------------------
+FAST_MODEL: str = model_id_for(ModelRole.GENERAL_SYNTHESIS)
+CLINICAL_MODEL: str = model_id_for(ModelRole.CLINICAL_SYNTHESIS)
 
 # Council
 COUNCIL_MAX_TOKENS: int = 200
 COUNCIL_TIMEOUT_SECONDS: float = 30.0
 
-# NLI
+# NLI — a local cross-encoder, not a provider-routed role
 NLI_MODEL: str = "cross-encoder/nli-deberta-v3-small"
 NLI_ENTAILMENT_THRESHOLD: float = 0.75
 
-# EfficientNetB3 confidence gate
-MRI_CONFIDENCE_GATE: float = 0.60
+# ---------------------------------------------------------------------------
+# Safety thresholds are owned by mao.safety.policy. Re-exported for existing
+# imports only — change them in the policy, never here.
+# ---------------------------------------------------------------------------
+MRI_CONFIDENCE_GATE: float = get_policy().mri_confidence_gate
