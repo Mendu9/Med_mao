@@ -5,20 +5,25 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any
 
 import requests
 from mao.core import llm as groq_llm
 
-from mao.core.config import cfg, MRI_CONFIDENCE_GATE, TOKEN_BUDGET, CLINICAL_MODEL
+from mao.core.config import MRI_CONFIDENCE_GATE, CLINICAL_MODEL
+from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
-from mao.core.token_counter import truncate_to_budget
 from mao.eval.nli_checker import check_all_claims
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
 from mao.rag.retriever import retrieve
 from mao.report.report_card import SourceEntry, build_report_card
 
 logger = logging.getLogger(__name__)
+
+# P0-4: raw attachment payloads arrive in `metadata` and clinical_node spreads
+# `metadata` into the response the API returns. Echoing a base64 MRI or patient
+# report back to the client serves no purpose and widens the blast radius of any
+# response-logging or caching layer downstream.
+_RAW_ATTACHMENT_KEYS = frozenset({"image_b64", "report_b64"})
 
 # ---------------------------------------------------------------------------
 # Medical disclaimer — always appended, never omitted
@@ -130,7 +135,7 @@ def clinical_node(state: MAOState) -> MAOState:
     state["response"]     = response
     state["agent_used"]   = "clinical"
     state["metadata"]     = {
-        **metadata,
+        **{k: v for k, v in metadata.items() if k not in _RAW_ATTACHMENT_KEYS},
         **{k: v for k, v in result_meta.items() if not k.startswith("_")},
         "uncertainty_flag": uncertainty_flag,  # API reads this from metadata (main.py:305,444)
     }
@@ -267,13 +272,19 @@ def _handle_pdf_report(
     """Extract PDF text → summarize → structured extraction → research → web → synthesize."""
 
     # Step 1: Get PDF text
-    report_text = _extract_pdf_text(metadata)
-    if not report_text:
+    raw_report_text = _extract_pdf_text(metadata)
+    if not raw_report_text:
         return (
             "Could not extract text from the provided PDF. "
             "Please ensure the file is a readable PDF.",
             {"mode": "pdf_report", "error": "pdf_extraction_failed"},
         )
+
+    # P0-4: de-identify BEFORE anything leaves the process. Every downstream use
+    # of the report — summarisation, structured extraction, the retrieval seed,
+    # the final synthesis prompt — reads the scrubbed text, so there is no path
+    # from an uploaded report to a third party carrying direct identifiers.
+    report_text = scrub_pii(raw_report_text)
 
     # Step 2: Structured extraction
     extracted = _extract_structured_fields(report_text)
