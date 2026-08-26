@@ -12,6 +12,18 @@ _sync_client: Any | None = None
 _redis_unavailable: bool = False  # True after first failed connect or missing package
 
 
+def reset_redis() -> None:
+    """Drop the cached client and clear the unavailable latch.
+
+    `_redis_unavailable` deliberately latches so a down Redis is not retried on
+    every request; this is the seam that lets a caller (or a test) decide to try
+    again.
+    """
+    global _sync_client, _redis_unavailable
+    _sync_client = None
+    _redis_unavailable = False
+
+
 def get_redis() -> Any | None:
     global _sync_client, _redis_unavailable
     if _sync_client is not None:

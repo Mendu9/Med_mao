@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Column, DateTime,
+    Boolean, CheckConstraint, Column, DateTime,
     Float, ForeignKey, Integer, JSON, SmallInteger, String, Text,
 )
 from sqlalchemy.orm import DeclarativeBase
