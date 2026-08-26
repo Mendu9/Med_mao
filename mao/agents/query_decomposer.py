@@ -1,18 +1,68 @@
+"""Splits genuinely multi-part questions into independent sub-questions.
+
+P2-15: decomposition is *conditional*. Most biomedical queries are single-part,
+and an unconditional decomposer spent one extraction-model call on every single
+request for a list of length one. A cheap deterministic pre-check
+(:func:`needs_decomposition`) now gates the model call, so a single-part query
+costs nothing.
+"""
+from __future__ import annotations
+
 import json
 import logging
+import re
 import time
-from mao.core.config import FAST_MODEL
+
 from mao.core.pii_scrubber import scrub_pii
+from mao.prompts import get_prompt
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = (
-    "You are a medical query parser. Given a user query, decompose it into a JSON list "
-    "of self-contained sub-questions. If the query is already a single question, return a "
-    "list with one item. Output ONLY valid JSON, no prose. Example: "
-    '[\"What is amyloid?\", \"How does tau cause neurodegeneration?\"]'
+# ---------------------------------------------------------------------------
+# Deterministic multi-part pre-check (no model call)
+# ---------------------------------------------------------------------------
+
+_INTERROGATIVE = (
+    r"what|how|why|when|where|which|who|whom|whose|"
+    r"does|do|did|is|are|was|were|can|could|should|would|will"
 )
 
+# A connector immediately followed by a second interrogative:
+#   "What is amyloid AND HOW does tau ...", "Explain APOE4; ALSO WHAT ..."
+_CONNECTED_QUESTION = re.compile(
+    rf"(?:\band\b|\bor\b|\balso\b|\bplus\b|\bas well as\b|;)\s+(?:{_INTERROGATIVE})\b",
+    re.IGNORECASE,
+)
+
+# Explicit comparison requests always have at least two retrievable subjects.
+_COMPARISON = re.compile(
+    r"\bcompare\b|\bdifference(?:s)? between\b|\bversus\b|\bvs\.?\b|\bcontrast\b",
+    re.IGNORECASE,
+)
+
+
+def needs_decomposition(query: str) -> bool:
+    """True when *query* is genuinely multi-part and worth a model call.
+
+    Deliberately conservative: a false negative costs one extra retrieval pass
+    over the whole query, while a false positive costs a model call on every
+    such request.
+    """
+    text = (query or "").strip()
+    if not text:
+        return False
+    if text.count("?") > 1:
+        return True
+    if _COMPARISON.search(text):
+        return True
+    return bool(_CONNECTED_QUESTION.search(text))
+
+
+# ---------------------------------------------------------------------------
+# Model-backed decomposition
+# ---------------------------------------------------------------------------
 
 def _chat_with_retry(messages: list[dict], *, max_retries: int = 2, **kwargs) -> str:
     """Retry wrapper around ``chat()``.
@@ -25,7 +75,7 @@ def _chat_with_retry(messages: list[dict], *, max_retries: int = 2, **kwargs) ->
 
     for attempt in range(max_retries + 1):
         try:
-            return chat(messages, **kwargs)
+            return chat(messages=messages, **kwargs)
         except Exception as exc:  # noqa: BLE001
             if attempt == max_retries:
                 raise
@@ -52,24 +102,42 @@ def _strip_fences(text: str) -> str:
     return stripped
 
 
+def _parse_sub_queries(payload: object) -> list[str] | None:
+    """Accept the registered ``{"sub_queries": [...]}`` contract, or a bare list."""
+    if isinstance(payload, dict):
+        payload = payload.get("sub_queries")
+    if isinstance(payload, list) and all(isinstance(p, str) for p in payload):
+        cleaned = [p.strip() for p in payload if p.strip()]
+        return cleaned or None
+    return None
+
+
 def _llm_decompose(query: str) -> list[str]:
+    spec = get_prompt("decomposer.split")
     raw = _chat_with_retry(
-        messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": query}],
-        model=FAST_MODEL,
+        messages=[
+            {"role": "system", "content": spec.template},
+            {"role": "user", "content": query},
+        ],
+        model=model_id_for(ModelRole.EXTRACTION_FAST),
         max_tokens=300,
         temperature=0.0,
     ).strip()
-    cleaned = _strip_fences(raw)
     try:
-        parts = json.loads(cleaned)
-        if isinstance(parts, list) and all(isinstance(p, str) for p in parts):
-            return [p.strip() for p in parts if p.strip()]
+        parsed = _parse_sub_queries(json.loads(_strip_fences(raw)))
     except json.JSONDecodeError:
         logger.warning("Decomposer returned non-JSON: %s", raw)
-    return [query]
+        return [query]
+    return parsed or [query]
+
 
 def decompose_query(query: str) -> list[str]:
+    """Return the sub-questions of *query*, spending a model call only if needed."""
+    if not needs_decomposition(query):
+        logger.debug("Decomposer: single-part query, no model call")
+        return [query]
     return _llm_decompose(query)
+
 
 def decomposer_node(state: dict) -> dict:
     clean_query = scrub_pii(state.get("user_query", ""))

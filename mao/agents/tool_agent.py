@@ -7,15 +7,14 @@ import logging
 import re
 from typing import Any
 
-import requests
-from mao.core import llm as groq_llm
 import wikipediaapi
 
-from mao.core.web_search import web_search as _web_search_provider
-
-from mao.core.config import cfg
+from mao.core import llm as groq_llm
 from mao.core.state import MAOState
+from mao.core.web_search import web_search as _web_search_provider
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +181,7 @@ def _call_llm(messages: list[dict[str, str]]) -> str:
     try:
         return groq_llm.chat(
             messages=messages,
+            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.0,
             max_tokens=512,
         ).strip()
