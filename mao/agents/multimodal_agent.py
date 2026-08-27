@@ -1,4 +1,11 @@
-"""Multimodal agent: image understanding via Groq Vision (llama-3.2-11b) and audio transcription via Whisper."""
+"""Multimodal agent: image understanding via the vision role, audio transcription via Whisper.
+
+P1-18: the vision model is resolved from the provider registry at call time
+(``ModelRole.VISION``). This module previously hard-coded a preview vision model
+id in three places; the provider has since retired that id, so every image
+request would have failed with a 400. No literal model id may appear here — the
+registry records retired ids precisely so they can never be resolved.
+"""
 
 from __future__ import annotations
 
@@ -7,25 +14,16 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import requests
 
-from mao.core.config import cfg
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.prompts import get_prompt
+from mao.providers.gateway import model_id_for
+from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
-
-# Groq vision model (passed directly in _handle_image)
-_VISION_MODEL = "llama-3.2-11b-vision-preview"
-
-_VISION_SYSTEM = """\
-You are a precise visual analyst. Describe images accurately and in detail.
-Include: objects present, text visible, colors, spatial layout, any charts or
-diagrams (with their data), and any context you can infer.
-Answer the user's specific question about the image if one is provided.
-"""
 
 _AUDIO_SYSTEM = """\
 You are reviewing a transcript of an audio recording.
@@ -108,9 +106,13 @@ def _handle_image(
     if not image_b64:
         return "No image data provided.", {"error": "no_image"}
 
-    system_prompt = build_system_prompt(_VISION_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(
+        get_prompt("clinical.vision").template, memory_context
+    )
 
-    # Groq llama-3.2-11b-vision supports image_url content blocks
+    # Resolved at call time so a retired id can never reach the provider (P1-18).
+    vision_model = model_id_for(ModelRole.VISION)
+
     try:
         from mao.core import llm as groq_llm
         answer = groq_llm.chat(
@@ -123,9 +125,9 @@ def _handle_image(
             ],
             temperature=0.1,
             max_tokens=512,
-            model="llama-3.2-11b-vision-preview",
+            model=vision_model,
         ).strip()
-        return answer, {"vision_model": "llama-3.2-11b-vision-preview"}
+        return answer, {"vision_model": vision_model}
     except Exception as exc:
         logger.error("Vision call failed: %s", exc)
         return f"Image analysis failed: {exc}", {"error": str(exc)}
