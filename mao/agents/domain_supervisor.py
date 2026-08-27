@@ -1,57 +1,89 @@
+"""Domain supervisor — flags claims the retrieved sources do not support.
+
+P0-2  This node used to overwrite `state["response"]` with an LLM-generated
+      `grounded_summary`. Two things went wrong at once: the mandatory clinical
+      disclaimer appended by `clinical_agent` was discarded, and a response that
+      had been through the pipeline was replaced by one that had not. The
+      supervisor now observes and reports; it never edits the answer. Prompt
+      `domain_supervisor.reconcile` v2 no longer even asks for a rewrite.
+
+P0-1  It also skipped itself whenever `_want_stream` was set, so a streamed
+      answer was never checked for grounding. Transport is not a safety input.
+"""
 from __future__ import annotations
 
 import json
 import logging
 import re
-from mao.core.config import CLINICAL_MODEL
+
+from mao.prompts import get_prompt
+from mao.providers import gateway
+from mao.providers.registry import ModelRole
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = """You are a Domain Supervisor. Given retrieved RAG chunks and web search results,
-you must reconcile them and check source grounding.
-Output JSON with keys: "grounded_summary" (str), "ungrounded_claims" (list[str]), "sources_used" (list[str])"""
+_PROMPT_NAME = "domain_supervisor.reconcile"
+_MAX_TOKENS = 500
+
+
+def _parse_ungrounded_claims(raw: str) -> list[str]:
+    """Pull `ungrounded_claims` out of the model's JSON. Never raises."""
+    try:
+        cleaned = _JSON_FENCE_RE.sub("", (raw or "").strip())
+        # Strip to the outermost braces in case of leading/trailing prose.
+        brace_start = cleaned.find("{")
+        brace_end = cleaned.rfind("}")
+        if brace_start == -1 or brace_end <= brace_start:
+            return []
+        parsed = json.loads(cleaned[brace_start : brace_end + 1])
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    claims = parsed.get("ungrounded_claims", [])
+    if not isinstance(claims, list):
+        return []
+    return [str(c) for c in claims]
+
 
 def domain_supervisor_node(state: dict) -> dict:
-    from mao.core.llm import chat
-    answer = state.get("response", state.get("answer", ""))
+    answer = state.get("response", state.get("answer", "")) or ""
 
-    # Skip supervision when streaming path deferred the LLM call — response is empty
-    if state.get("_want_stream") and not answer:
+    # Nothing to reconcile. Judged on its own merits — deliberately NOT
+    # conditioned on `_want_stream` (P0-1).
+    if not answer.strip():
         return {**state, "ungrounded_claims": []}
 
-    rag_chunks = state.get("retrieved_docs", [])
-    web_results = state.get("web_results", [])
+    rag_chunks = state.get("retrieved_docs", []) or []
+    web_results = state.get("web_results", []) or []
 
+    spec = get_prompt(_PROMPT_NAME)
     context = "\n".join([
         "RAG CHUNKS:", *[str(c) for c in rag_chunks[:4]],
         "WEB RESULTS:", *[str(w) for w in web_results[:3]],
         "DRAFT ANSWER:", answer,
     ])
 
-    raw = chat(
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": context},
-        ],
-        model=CLINICAL_MODEL,
-        max_tokens=500,
-        temperature=0.0,
-    )
-
     try:
-        cleaned = _JSON_FENCE_RE.sub("", raw.strip())
-        # Also strip to the outermost braces in case of leading/trailing text
-        brace_start = cleaned.find("{")
-        brace_end   = cleaned.rfind("}")
-        if brace_start != -1 and brace_end > brace_start:
-            cleaned = cleaned[brace_start : brace_end + 1]
-        parsed = json.loads(cleaned)
-        grounded = parsed.get("grounded_summary") or answer
-        ungrounded = parsed.get("ungrounded_claims", [])
-    except json.JSONDecodeError:
-        grounded = answer
-        ungrounded = []
+        completion = gateway.complete(
+            role=ModelRole.SAFETY_JUDGE,
+            messages=[
+                {"role": "system", "content": spec.template},
+                {"role": "user", "content": context},
+            ],
+            temperature=0.0,
+            max_tokens=_MAX_TOKENS,
+        )
+    except Exception as exc:  # noqa: BLE001 - grounding is advisory; never fail the request
+        logger.error("Domain supervisor call failed: %s", exc)
+        return {**state, "ungrounded_claims": []}
 
-    return {**state, "response": grounded, "ungrounded_claims": ungrounded}
+    # NOTE: `state["response"]` is deliberately not assigned anywhere in this
+    # function. Reintroducing it reintroduces P0-2.
+    return {
+        **state,
+        "ungrounded_claims": _parse_ungrounded_claims(completion.text),
+        "grounding_prompt_ref": spec.trace_ref,
+    }
