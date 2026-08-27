@@ -1,0 +1,38 @@
+# MAO — opt-in extras. NOT installed by any deployment target by default.
+#
+# Install with:  pip install -r requirements.txt -r requirements-optional.txt
+#
+# Everything here is behind a lazy, try/except-guarded import: the app starts,
+# serves and degrades with a clear message when these are absent. They are kept
+# out of requirements.txt because each one costs far more install time, image
+# size or RAM than the feature it unlocks is worth on a free-tier host.
+
+# --- MRI prediction (mao/models/mri_predictor.py) --------------------------
+# ~2 GB of wheels. Without these get_predictor().predict() returns
+# {"error": "tensorflow and huggingface_hub are required ..."} and the clinical
+# agent's MRI tab reports the model as unavailable.
+# opencv-python-headless (not opencv-python): no Qt/GUI deps in a container.
+tensorflow>=2.16,<3.0
+tf-keras>=2.16,<3.0
+opencv-python-headless>=4.9.0
+
+# --- Audio transcription (mao/agents/multimodal_agent.py) ------------------
+# Also needs the ffmpeg system package (see packages.txt / the Dockerfile).
+openai-whisper>=20231117
+
+# --- Local ChromaDB vector backend -----------------------------------------
+# Only needed when VECTOR_BACKEND=chromadb; the deployed default is qdrant.
+# Also required by the corpus ingestion scripts under mao/data/.
+chromadb>=0.5,<2.0
+
+# --- Corpus ingestion / dataset building (mao/data/*) ----------------------
+# Batch tooling, never touched on the serving path.
+datasets>=2.20.0
+biopython>=1.83
+lxml>=5.0
+
+# --- Legacy Gradio UI (app/frontend.py) ------------------------------------
+# The shipped UI is Streamlit (app/streamlit_app.py). app/frontend.py is an
+# alternative standalone front end kept for reference; it is not wired into
+# any entrypoint under deploy/.
+gradio>=5.29.0

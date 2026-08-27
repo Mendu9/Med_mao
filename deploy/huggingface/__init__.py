@@ -1,0 +1,1 @@
+"""HuggingFace Spaces deployment target."""

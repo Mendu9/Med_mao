@@ -59,9 +59,9 @@ Thumbs.db
 *.log
 logs/
 
-# Local scripts not for deployment
-scripts/start_hf.sh
+# NOTE: deployment glue is SOURCE and is tracked under deploy/<target>/.
+# The former `scripts/start_hf.sh` and `Dockerfile.hf` entries were excluded
+# here, which meant Dockerfile.hf COPYd a file that did not exist in a clean
+# clone and could not build (P1-15). Both now live in deploy/huggingface/.
 
-# HF-specific Dockerfile (managed in hf-spaces branch)
-Dockerfile.hf
 README_HF.md
