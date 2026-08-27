@@ -656,27 +656,16 @@ async def get_usage() -> dict[str, Any]:
 
 
 @app.get("/graph")
-async def graph_topology() -> dict[str, Any]:
-    """Return graph topology for debugging/documentation."""
-    return {
-        "nodes": [
-            "router_node",
-            "summarizer_node",
-            "graphrag_node",
-            "tool_node",
-            "sql_node",
-            "multimodal_node",
-            "code_node",
-            "critic_node",
-            "clinical_node",
-        ],
-        "entry": "router_node",
-        "routing": "conditional on state.intent",
-        "intents": [
-            "summarize", "graphrag", "tool", "sql",
-            "multimodal", "code", "critic", "clinical", "fallback",
-        ],
-    }
+async def graph_topology_endpoint() -> dict[str, Any]:
+    """Return the topology of the graph that actually runs.
+
+    Derived, never hand-maintained: the previous literal advertised `code_node`
+    and `sql_node` long after both were deleted, omitted eight real nodes, and
+    named the wrong entry point — and the UI consumes this (P1-6).
+    """
+    from mao.api.topology import graph_topology
+
+    return graph_topology()
 
 
 # ---------------------------------------------------------------------------
@@ -774,15 +763,24 @@ async def _check_vector_store() -> str:
 
 
 async def _check_postgres() -> str:
+    """Probe Postgres over the shared session factory.
+
+    This used to reach into `mao.agents.sql_agent` for a second, separately
+    configured engine. That module was removed with the SQL route (P0-3), and
+    the second engine was part of the three-config-source problem (P1-10).
+    """
     try:
-        from mao.agents.sql_agent import _get_engine
         from sqlalchemy import text
+
+        from mao.db import get_db_session, init_db, is_initialised
+
         loop = asyncio.get_running_loop()
 
         def _ping():
-            engine = _get_engine()
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
+            if not is_initialised():
+                init_db()
+            with get_db_session() as db:
+                db.execute(text("SELECT 1"))
 
         await loop.run_in_executor(None, _ping)
         return "ok"
