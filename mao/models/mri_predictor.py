@@ -27,7 +27,6 @@ from __future__ import annotations
 import base64
 import logging
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +56,27 @@ _DISCLAIMER = (
 
 _HF_REPO_ID  = "Saiarun/b3"
 _HF_FILENAME = "EfficientNetB3_best.keras"
-_CACHE_DIR   = Path(__file__).resolve().parents[3] / "hf_cache"
+
+# mri_predictor.py lives at <repo>/mao/models/, so parents[2] is the repo root.
+# parents[3] was an off-by-one that wrote the model cache into the directory
+# ABOVE the repo — outside version control, outside any container volume, and
+# ignoring HF_HOME, which HF Spaces sets to /tmp/hf_cache (P2-8).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def cache_dir() -> Path:
+    """Directory for the downloaded Keras weights.
+
+    Honours ``HF_HOME`` when set (HF Spaces, containers with a mounted cache);
+    otherwise falls back to ``<repo>/hf_cache``, which .gitignore already covers.
+    """
+    hf_home = os.getenv("HF_HOME", "").strip()
+    if hf_home:
+        return Path(hf_home)
+    return _REPO_ROOT / "hf_cache"
+
+
+_CACHE_DIR = cache_dir()
 
 # Singleton
 _predictor: "MRIPredictor | None" = None
@@ -100,7 +119,7 @@ class MRIPredictor:
         model_path = hf_hub_download(
             repo_id=_HF_REPO_ID,
             filename=_HF_FILENAME,
-            cache_dir=str(_CACHE_DIR),
+            cache_dir=str(cache_dir()),  # resolved per load so HF_HOME is honoured
         )
         logger.info("Loading model from %s", model_path)
         self._model = load_model(model_path, compile=False)
