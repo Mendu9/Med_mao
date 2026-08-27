@@ -91,3 +91,27 @@ _policy = SafetyPolicy()
 def get_policy() -> SafetyPolicy:
     """The process-wide active safety policy."""
     return _policy
+
+
+def resolve_risk(state: object) -> RiskLevel:
+    """Read a request's risk level out of graph state.
+
+    The single resolver. Everything that needs to know a request's risk — the
+    graph, the verification node, the output guardrails, the API — calls this,
+    so there is exactly one interpretation of a malformed or missing value.
+
+    Fails safe to STANDARD. LOW is the only level permitted to skip output
+    verification, so it must be reachable only by an explicit, exactly-matching
+    write from the risk gate — never by a typo, a None, or a wrong type.
+    """
+    if not isinstance(state, dict):
+        return RiskLevel.STANDARD
+    raw = state.get("risk_level")
+    if isinstance(raw, RiskLevel):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return RiskLevel(raw)
+        except ValueError:
+            return RiskLevel.STANDARD
+    return RiskLevel.STANDARD
