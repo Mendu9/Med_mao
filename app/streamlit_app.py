@@ -33,19 +33,9 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 API_URL: str = os.getenv("MAO_API_URL", "http://localhost:8080")
 
-# Intent -> badge color mapping
-_INTENT_COLORS: dict[str, str] = {
-    "graphrag":   "blue",
-    "clinical":   "red",
-    "code":       "green",
-    "tool":       "orange",
-    "sql":        "violet",
-    "summarize":  "gray",
-    "multimodal": "blue",
-    "critic":     "orange",
-    "chitchat":   "green",
-    "fallback":   "gray",
-}
+# Intent badge colours are derived from the backend's canonical intent list —
+# see app/intent_badges.py. The UI does not keep its own copy.
+from app.intent_badges import colour_for as _intent_colour
 
 # Node-type color palette is owned by graph_explorer.py (_NODE_TYPE_PALETTE).
 # streamlit_app.py no longer duplicates it.
@@ -238,8 +228,7 @@ def _render_response_meta(meta: dict[str, Any]) -> None:
     parts: list[str] = []
     intent = meta.get("intent", "")
     if intent:
-        color = _INTENT_COLORS.get(intent, "gray")
-        parts.append(f":{color}[{intent}]")
+        parts.append(f":{_intent_colour(intent)}[{intent}]")
     agent = meta.get("agent_used", "")
     if agent:
         parts.append(f"`{agent}`")
