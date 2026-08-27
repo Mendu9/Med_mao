@@ -22,6 +22,7 @@ from mao.memory.mem0_handler import build_system_prompt, save_memory, search_mem
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
+from mao.safety.policy import ATTACHMENT_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,15 @@ def multimodal_node(state: MAOState) -> MAOState:
 
     state["response"]   = response
     state["agent_used"] = "multimodal"
-    state["metadata"]   = {**metadata, **result_meta, "modality": modality}
+    # Echo the caller's metadata back MINUS the raw attachment payloads. Graph
+    # state is persisted, traced and logged; carrying a base64 scan or voice
+    # sample through all of that spreads patient data far beyond the one call
+    # that needed it.
+    state["metadata"]   = {
+        **{k: v for k, v in metadata.items() if k not in ATTACHMENT_KEYS},
+        **result_meta,
+        "modality": modality,
+    }
     return state
 
 

@@ -12,7 +12,12 @@ license: mit
 
 # MAO — Medical Multi-Agent Orchestrator
 
-A locally-running clinical AI system that routes biomedical queries to specialized agents. Zero external API costs — everything runs locally via Ollama.
+An evidence-grounded clinical AI system that routes biomedical queries to specialised agents.
+Synthesis runs on hosted Groq models addressed by capability role; embeddings, reranking and
+NLI run locally.
+
+> **Note:** parts of this README below the architecture section still describe an older
+> Ollama-based topology and are being reconciled. Code is authoritative.
 
 ---
 
@@ -36,9 +41,9 @@ POST /chat  (FastAPI :8080)
 │     │                                                                        │
 │     └──[state["intent"]]──────────────────────────────────────────────┐     │
 │                                                                        │     │
-│   graphrag  summarize   tool    sql   critic  multimodal  clinical    │     │
-│      │          │        │       │       │         │          │       │     │
-│      ▼          ▼        ▼       ▼       ▼         ▼          ▼       │     │
+│   graphrag  summarize   tool   critic  multimodal  clinical           │     │
+│      │          │        │       │         │          │              │     │
+│      ▼          ▼        ▼       ▼         ▼          ▼              │     │
 │  [all agents: search_memories → process → save_memory]                │     │
 │      │                                                                 │     │
 │      └──────────────────────────────────────────────────────────► END │     │
@@ -102,8 +107,7 @@ project/
 │   │   ├── graphrag_agent.py       ← factual Q&A: full GraphRAG pipeline
 │   │   ├── summarizer_agent.py     ← map-reduce summarization
 │   │   ├── tool_agent.py           ← ReAct loop: DuckDuckGo + Wikipedia API + calculator
-│   │   ├── sql_agent.py            ← NL → SQL → execute (Postgres) → NL answer
-│   │   ├── critic_agent.py         ← medical-grounded rubric review with 1-10 score
+│   │   ├── critic_agent.py         ← evidence-oriented critique of a draft answer
 │   │   ├── clinical_agent.py       ← MRI analysis + Alzheimer's stage prediction
 │   │   └── multimodal_agent.py     ← image via llava + audio transcription via Whisper
 │   │
@@ -127,14 +131,13 @@ project/
 
 | Agent | Intent | Model | What it does |
 |-------|--------|-------|-------------|
-| **router** | *(entry)* | mistral | Classifies intent; loads Mem0 memory for all downstream agents |
-| **graphrag** | `graphrag`, `fallback` | llama3.1:8b | Answers biomedical questions — 9-step GraphRAG over research papers + Wikipedia |
-| **summarizer** | `summarize` | mistral | Condenses pasted text or KB content; map-reduce for long texts |
-| **tool** | `tool` | mistral | ReAct loop: DuckDuckGo web search, Wikipedia API, safe calculator |
-| **sql** | `sql` | mistral | Text → SQL → Postgres → natural language answer; SELECT-only guard |
-| **critic** | `critic` | llama3.1:8b | Medical-grounded rubric review with an Overall score X/10 |
-| **clinical** | `clinical` | llama3.1:8b | MRI scan analysis + Alzheimer's stage prediction + structured report |
-| **multimodal** | `multimodal` | llava / Whisper | Image description via llava; audio transcription via Whisper |
+| **router** | *(entry)* | `ROUTER_FAST` | Classifies intent; loads Mem0 memory for all downstream agents |
+| **graphrag** | `graphrag`, `fallback` | `GENERAL_SYNTHESIS` | Answers biomedical questions — 9-step GraphRAG over research papers + Wikipedia |
+| **summarizer** | `summarize` | `GENERAL_SYNTHESIS` | Condenses pasted text or KB content; map-reduce for long texts |
+| **tool** | `tool` | `GENERAL_SYNTHESIS` | ReAct loop: DuckDuckGo web search, Wikipedia API, safe calculator |
+| **critic** | `critic` | `GENERAL_SYNTHESIS` | Evidence-oriented critique: unsupported claims, missing evidence, overstated certainty |
+| **clinical** | `clinical` | `CLINICAL_SYNTHESIS` | MRI scan analysis + Alzheimer's stage prediction + structured report |
+| **multimodal** | `multimodal` | `VISION` | Image description; audio transcription via Whisper |
 
 ### Intent trigger examples
 
@@ -144,7 +147,6 @@ graphrag:    "What causes tau tangles in Alzheimer's disease?"
              "What are the risk factors for ischemic stroke?"
 summarize:   "Summarize this: [paste article text]"
 tool:        "What's the latest research on APOE4?"
-sql:         "How many research papers do we have per disease category?"
 critic:      "Review this clinical note: [paste]"
 clinical:    query = "Analyse this MRI" + metadata.image_b64 = "<base64>"
 multimodal:  query = "What do you see?" + metadata.image_b64 = "<base64>"
@@ -156,12 +158,15 @@ multimodal:  query = "What do you see?" + metadata.image_b64 = "<base64>"
 
 | Model | Provider | Purpose | Approx. RAM |
 |-------|----------|---------|------------|
-| `mistral` | Ollama | Routing, SQL, tools, summarization | ~5 GB |
-| `llama3.1:8b` | Ollama | Factual QA, critique, clinical | ~5 GB |
-| `nomic-embed-text` | Ollama | Text embeddings (768-dim) | ~300 MB |
-| `llava` | Ollama | Image understanding | ~4 GB |
+| `ROUTER_FAST` / `GENERAL_SYNTHESIS` | Groq | Routing, extraction, general synthesis | hosted |
+| `CLINICAL_SYNTHESIS` / `SAFETY_JUDGE` | Groq | Clinical synthesis, safety council, judge | hosted |
+| `VISION` | Groq | Image understanding | hosted |
+| `NeuML/pubmedbert-base-embeddings` | local | Text embeddings (768-dim) | ~400 MB |
 | `BAAI/bge-reranker-v2-m3` | HuggingFace (local) | Reranking | ~600 MB |
 | `whisper-base` | OpenAI Whisper (local) | Audio transcription | ~150 MB |
+
+Business logic requests a **role**, never a literal model id. Roles are bound to concrete
+models in `mao/providers/registry.py` and overridden per role via `MAO_MODEL_<ROLE>`.
 
 ---
 
@@ -169,9 +174,8 @@ multimodal:  query = "What do you see?" + metadata.image_b64 = "<base64>"
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Ollama | 11434 | LLM + embedding inference |
 | ChromaDB | 8000 | Vector store + Mem0 backend |
-| PostgreSQL | 5432 | Structured data (SQL agent) |
+| PostgreSQL | 5432 | Chat sessions, feedback, audit trail |
 | MAO API | 8080 | FastAPI application |
 
 ---

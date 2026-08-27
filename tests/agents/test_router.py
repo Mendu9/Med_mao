@@ -69,14 +69,14 @@ def test_router_node_does_not_re_detect_chitchat() -> None:
     """The router must not carry a second deterministic chitchat detector."""
     with patch.object(router_mod, "is_chitchat") as detector, \
          patch.object(router_mod, "search_memories", return_value=""), \
-         patch.object(router_mod, "_classify", return_value="graphrag"):
+         patch.object(router_mod, "_classify", return_value=("graphrag", True)):
         router_node(_state("hi"))
     detector.assert_not_called()
 
 
 def test_router_still_classifies_a_greeting_via_the_llm() -> None:
     with patch.object(router_mod, "search_memories", return_value=""), \
-         patch.object(router_mod, "_classify", return_value="chitchat") as classify:
+         patch.object(router_mod, "_classify", return_value=("chitchat", True)) as classify:
         state = router_node(_state("hi"))
     assert classify.call_count == 1
     assert state["intent"] == "chitchat"
@@ -102,10 +102,10 @@ def test_attachment_routes_to_clinical_without_an_llm_call() -> None:
 def test_router_prompts_come_from_the_registry() -> None:
     captured: dict[str, str] = {}
 
-    def _fake_classify(system_prompt: str, user_prompt: str) -> str:
+    def _fake_classify(system_prompt: str, user_prompt: str) -> tuple[str, bool]:
         captured["system"] = system_prompt
         captured["user"] = user_prompt
-        return "graphrag"
+        return "graphrag", True
 
     with patch.object(router_mod, "search_memories", return_value=""), \
          patch.object(router_mod, "_classify", side_effect=_fake_classify):

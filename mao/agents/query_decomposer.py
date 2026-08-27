@@ -26,13 +26,64 @@ logger = logging.getLogger(__name__)
 
 _INTERROGATIVE = (
     r"what|how|why|when|where|which|who|whom|whose|"
-    r"does|do|did|is|are|was|were|can|could|should|would|will"
+    r"does|do|did|can|could|should|would|will"
 )
 
-# A connector immediately followed by a second interrogative:
-#   "What is amyloid AND HOW does tau ...", "Explain APOE4; ALSO WHAT ..."
+# Imperatives that introduce a second request: "…and EXPLAIN the protocol",
+# "…; INCLUDE the contraindications". Real multi-part clinical questions use
+# these far more often than a second interrogative.
+_IMPERATIVE = (
+    r"list|explain|describe|include|give|tell|summari[sz]e|provide|outline|"
+    r"detail|compare|discuss|state|name|identify"
+)
+
+_CONNECTOR = r"(?:\band\b|\bor\b|\balso\b|\bplus\b|\bas well as\b|\balong with\b|;)"
+
+# A connector followed by a second interrogative OR a second imperative.
+#   "What is amyloid AND HOW does tau ..."      (interrogative)
+#   "List the treatments AND THEIR side effects" (possessive continuation)
+#   "Describe lecanemab AND EXPLAIN the protocol" (imperative)
 _CONNECTED_QUESTION = re.compile(
-    rf"(?:\band\b|\bor\b|\balso\b|\bplus\b|\bas well as\b|;)\s+(?:{_INTERROGATIVE})\b",
+    rf"{_CONNECTOR}\s+(?:{_INTERROGATIVE}|{_IMPERATIVE}|their|its|the\s+recommended)\b",
+    re.IGNORECASE,
+)
+
+# "along with" / "as well as" introduce a second subject regardless of what
+# follows, so they are sufficient on their own.
+_ADDITIVE = re.compile(r"\balong with\b|\bas well as\b", re.IGNORECASE)
+
+# A serial list before a connector: "aducanumab, memantine, and donepezil".
+_SERIAL_LIST = re.compile(r",\s*\w[\w\-]*\s*,?\s+(?:and|or)\b", re.IGNORECASE)
+
+# A choice between two named options: "memantine OR donepezil".
+_ALTERNATIVE = re.compile(r"\b\w[\w\-]{3,}\s+or\s+\w[\w\-]{3,}\b", re.IGNORECASE)
+
+# A new sentence that opens with an imperative is a second request:
+#   "What is the thrombolysis window? INCLUDE the contraindications."
+_SECOND_SENTENCE_IMPERATIVE = re.compile(
+    rf"[.?!]\s+(?:{_IMPERATIVE})\b", re.IGNORECASE
+)
+
+# Fixed collocations that are one concept despite the connector. Without this
+# exclusion the coordinated-noun-phrase rule below would decompose them.
+_FIXED_PAIRS = re.compile(
+    r"\b(?:signs and symptoms|safety and efficacy|risks? and benefits?|"
+    r"diagnosis and treatment|health and social care|terms and conditions|"
+    r"morbidity and mortality)\b",
+    re.IGNORECASE,
+)
+
+# A connector joining two multi-word noun phrases, each naming its own subject:
+#   "vascular dementia AND LEWY BODY dementia"
+#   "amyloid PET imaging AND TAU PET imaging"
+_COORDINATED_NOUN_PHRASE = re.compile(
+    r"\b(?:and|or)\s+(?:[a-z][\w\-]*\s+){1,3}[a-z][\w\-]*\b", re.IGNORECASE
+)
+
+# Narrative clinical history, not a second request: "diagnosed with MCI AND IS
+# now on donepezil". These read as multi-part to a naive connector rule.
+_NARRATIVE_CONJUNCTION = re.compile(
+    r"\b(?:and|or)\s+(?:is|are|was|were|has|have|had|then|now|subsequently)\b",
     re.IGNORECASE,
 )
 
@@ -46,18 +97,39 @@ _COMPARISON = re.compile(
 def needs_decomposition(query: str) -> bool:
     """True when *query* is genuinely multi-part and worth a model call.
 
-    Deliberately conservative: a false negative costs one extra retrieval pass
-    over the whole query, while a false positive costs a model call on every
-    such request.
+    A false negative is more expensive than it first appears. Besides costing a
+    single coarse retrieval pass, it collapses ``sub_queries`` to ``[query]``,
+    and `senior_supervisor_node` then scores completeness against that one
+    question — so an answer covering only half of a two-part clinical question
+    is still marked complete. The rule therefore leans towards decomposing.
     """
     text = (query or "").strip()
     if not text:
         return False
+
+    # Narrative history ("diagnosed with MCI and is now on donepezil") reads as
+    # a conjunction but asks one question. Checked first so it can veto.
+    narrative = _NARRATIVE_CONJUNCTION.search(text)
+
     if text.count("?") > 1:
         return True
     if _COMPARISON.search(text):
         return True
-    return bool(_CONNECTED_QUESTION.search(text))
+    if _ADDITIVE.search(text):
+        return True
+    if _SECOND_SENTENCE_IMPERATIVE.search(text):
+        return True
+    if narrative:
+        return False
+    if _SERIAL_LIST.search(text):
+        return True
+    if _CONNECTED_QUESTION.search(text):
+        return True
+    if _ALTERNATIVE.search(text):
+        return True
+    if _FIXED_PAIRS.search(text):
+        return False
+    return bool(_COORDINATED_NOUN_PHRASE.search(text))
 
 
 # ---------------------------------------------------------------------------

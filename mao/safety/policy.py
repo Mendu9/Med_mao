@@ -30,6 +30,38 @@ _LOW_RISK_INTENTS = frozenset({"chitchat"})
 # Intents that carry direct patient-facing clinical weight.
 _HIGH_RISK_INTENTS = frozenset({"clinical", "multimodal"})
 
+# Request metadata keys whose presence means the request carries patient data.
+#
+# One definition, consumed by the graph's risk gate, the router's deterministic
+# attachment rule, and the agents that read attachments. It previously existed
+# as separate per-module tuples, and the copies had already diverged: the graph
+# and router listed only image/report keys, so an uploaded voice sample — a
+# recognised Alzheimer's biomarker modality — was classified STANDARD and could
+# reach an agent without the controls patient data requires.
+ATTACHMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "image_b64",
+        "image_url",
+        "report_b64",
+        "report_path",
+        "audio_b64",
+        "audio_path",
+    }
+)
+
+
+def has_attachment(metadata: object) -> bool:
+    """Whether request metadata carries patient data.
+
+    Tolerates a missing or malformed metadata object by answering False — the
+    caller escalates on True, so an unparseable payload must not silently
+    *lower* risk relative to an absent one. Callers that cannot read metadata at
+    all should escalate on their own.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    return any(metadata.get(key) for key in ATTACHMENT_KEYS)
+
 
 @dataclass(frozen=True)
 class SafetyPolicy:

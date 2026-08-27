@@ -17,6 +17,7 @@ from mao.memory.mem0_handler import build_system_prompt, search_memories
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
+from mao.safety.policy import has_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,11 @@ def router_node(state: MAOState) -> MAOState:
     user_id: str    = state["user_id"]
     metadata: dict  = state.get("metadata", {})
 
-    # --- Deterministic routing: image or PDF present → always clinical ---
-    if (metadata.get("image_b64") or metadata.get("image_url")
-            or metadata.get("report_path") or metadata.get("report_b64")):
-        logger.info("Router: image/report detected → clinical (no LLM needed)")
+    # --- Deterministic routing: any attachment → always clinical ---
+    # Key list is owned by the safety policy so the router, the risk gate, and
+    # the agents cannot drift apart about what counts as patient data.
+    if has_attachment(metadata):
+        logger.info("Router: attachment detected → clinical (no LLM needed)")
         state["intent"] = INTENT_CLINICAL
         state["memory_context"] = ""
         return state
@@ -82,10 +84,13 @@ def router_node(state: MAOState) -> MAOState:
         get_prompt("router.classify").template, memory_context=""
     )
 
-    intent = _classify(system_prompt, user_prompt)
-    logger.info("Router classified '%s' → intent=%s", user_query[:60], intent)
+    intent, ok = _classify(system_prompt, user_prompt)
+    logger.info("Router classified '%s' → intent=%s (ok=%s)", user_query[:60], intent, ok)
 
     state["intent"] = intent
+    # Surfaced so the risk gate can escalate rather than silently accept the
+    # cheapest route. A provider outage must not declassify a clinical request.
+    state["router_failed"] = not ok
     return state
 
 
@@ -119,8 +124,14 @@ def route_to_agent(state: MAOState) -> str:
 # LLM call
 # ---------------------------------------------------------------------------
 
-def _classify(system_prompt: str, user_prompt: str) -> str:
-    """Classify intent via Groq."""
+def _classify(system_prompt: str, user_prompt: str) -> tuple[str, bool]:
+    """Classify intent. Returns (intent, classification_succeeded).
+
+    The second element distinguishes "the model answered and I understood it"
+    from "I fell back". A caller that cannot tell the difference has no way to
+    know a request was never really classified — which is how a provider outage
+    quietly downgraded clinical requests to the cheapest route.
+    """
     try:
         raw = groq_llm.chat(
             messages=[
@@ -134,12 +145,13 @@ def _classify(system_prompt: str, user_prompt: str) -> str:
         for token in raw.split():
             clean = token.strip(".,!?:;\"'")
             if clean in ALL_INTENTS:
-                return clean
+                return clean, True
+        # The model replied but said nothing we recognise — we did not classify.
         logger.warning("Router returned unrecognised label '%s', using fallback", raw)
-        return INTENT_FALLBACK
+        return INTENT_FALLBACK, False
     except Exception as exc:
         logger.error("Router LLM call failed: %s", exc)
-        return INTENT_GRAPHRAG
+        return INTENT_GRAPHRAG, False
 
 
 # ---------------------------------------------------------------------------

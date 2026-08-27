@@ -84,7 +84,14 @@ from mao.agents.senior_supervisor import senior_supervisor_node
 from mao.agents.summarizer_agent import summarizer_node
 from mao.agents.tool_agent import tool_node
 from mao.core.state import INTENT_CHITCHAT, MAOState
-from mao.safety.policy import get_policy
+from mao.safety.policy import RiskLevel, get_policy, has_attachment
+
+# Imported at module scope on purpose. Verification is a safety control: if it
+# cannot load, the correct behaviour is to refuse to build the graph, not to
+# serve unverified answers. A lazy import inside the node could not tell
+# "not integrated yet" from "installed but its own dependencies are broken on
+# this host" — and on a CPU-constrained deployment the second case is real.
+from mao.safety.verification import verification_node
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +121,6 @@ _ALL_AGENT_NODES = [
     NODE_CHITCHAT,
 ]
 
-# Metadata keys that mean the request carries patient data.
-_ATTACHMENT_KEYS = ("image_b64", "image_url", "report_b64", "report_path")
-
-
 # ---------------------------------------------------------------------------
 # Pipeline nodes owned by the graph itself
 # ---------------------------------------------------------------------------
@@ -127,7 +130,15 @@ def chitchat_gate_node(state: dict) -> dict:
 
     Marking the intent here lets the conditional edge skip the decomposer,
     the domain classifier, and the router LLM call entirely.
+
+    An attachment vetoes the shortcut. `is_chitchat` matches bare tokens like
+    "ok", "no" and "yes", which are just as likely to be a clinician answering a
+    follow-up question while attaching a scan. Short-circuiting those to the
+    canned greeting discarded the attachment silently — no error, no log, and a
+    reply that never mentions the scan the user just uploaded.
     """
+    if has_attachment(state.get("metadata")):
+        return state
     if is_chitchat(state.get("user_query", "")):
         return {**state, "intent": INTENT_CHITCHAT}
     return state
@@ -146,38 +157,26 @@ def risk_gate_node(state: dict) -> dict:
     stores the verdict as a plain string so it survives JSON serialisation at
     the API boundary.
     """
-    metadata = state.get("metadata") or {}
-    has_attachment = any(metadata.get(key) for key in _ATTACHMENT_KEYS)
-    risk = get_policy().risk_for(
-        state.get("intent", ""), has_attachment=has_attachment
-    )
+    attachment = has_attachment(state.get("metadata"))
+    risk = get_policy().risk_for(state.get("intent", ""), has_attachment=attachment)
+
+    # A router that could not classify leaves us blind, and the cheapest route
+    # (graphrag) is also the one that carries no clinical disclaimer. Treat an
+    # unclassified request as HIGH so it keeps the controls a clinical request
+    # would have had, rather than silently declassifying it.
+    if state.get("router_failed"):
+        risk = RiskLevel.HIGH
+        logger.warning("Risk gate: router classification failed → escalating to HIGH")
+
     logger.debug(
         "Risk gate: intent=%s attachment=%s → risk=%s",
-        state.get("intent", ""), has_attachment, risk.value,
+        state.get("intent", ""), attachment, risk.value,
     )
     return {**state, "risk_level": risk.value}
 
 
-def verification_node(state: dict) -> dict:
-    """Delegates to the shared verification node (mao/safety/verification.py).
-
-    Imported lazily: that module lands on a separate branch and is wired at
-    Phase 1 integration. If it is absent the node is a pass-through so the
-    graph still builds; integration asserts the real implementation is present.
-    """
-    try:
-        from mao.safety.verification import verification_node as _impl
-    except ImportError:
-        logger.warning(
-            "mao.safety.verification is not installed — verification node is a "
-            "pass-through. This is expected only before Phase 1 integration."
-        )
-        return state
-    return _impl(state)
-
-
 def blocked_response_node(state: dict) -> dict:
-    verdict = state.get("council_verdict", {})
+    verdict = state.get("council_verdict") or {}
     blocked_by = verdict.get("blocked_by", "council")
     return {
         **state,
@@ -189,8 +188,16 @@ def blocked_response_node(state: dict) -> dict:
 
 
 def _route_after_council(state: dict) -> str:
-    verdict = state.get("council_verdict", {})
-    return "senior_supervisor" if verdict.get("passed", True) else "blocked"
+    """Route on the council's verdict, defaulting closed.
+
+    Only an explicit ``passed is True`` proceeds. A missing, malformed, or
+    non-boolean verdict routes to `blocked`: `run_council` already fails closed
+    on infrastructure errors, and an optimistic default here would quietly undo
+    that by treating a half-written verdict as approval.
+    """
+    verdict = state.get("council_verdict") or {}
+    passed = verdict.get("passed") if isinstance(verdict, dict) else None
+    return "senior_supervisor" if passed is True else "blocked"
 
 
 # ---------------------------------------------------------------------------
