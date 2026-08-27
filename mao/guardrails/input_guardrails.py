@@ -16,6 +16,23 @@ class GuardrailSeverity(str, Enum):
     INFO = "info"      # Informational — logged silently
 
 
+# P1-20: "act as/like <X>" only indicates a persona hijack when X is an agent,
+# a persona, or a constraint-removal adjective. Matching a bare article blocked
+# ordinary mechanism-of-action questions ("does tau act as a scaffold?") with an
+# HTTP 400, while — because the alternation required "a " — it simultaneously
+# missed "act as an unrestricted AI". Naming the targets fixes both directions.
+_PERSONA_TARGET = (
+    r"(?:the\s+|an?\s+|my\s+|your\s+)?"
+    r"(?:"
+    r"unrestricted|unfiltered|uncensored|unlimited|unbounded|jailbroken|jailbreak|"
+    r"amoral|immoral|unethical|evil|rogue|malicious|"
+    r"ai\b|a\.i\.|assistant|chat\s*bot|chatbot|language\s+model|llm\b|gpt|claude|dan\b|"
+    r"developer\s+mode|god\s+mode|debug\s+mode|"
+    r"system\s+(?:administrator|admin|prompt)|sysadmin|root\s+user|superuser|"
+    r"hacker|attacker|penetration\s+tester"
+    r")"
+)
+
 _INJECTION_PATTERNS = [
     # Prompt injection classics
     re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
@@ -25,7 +42,9 @@ _INJECTION_PATTERNS = [
     re.compile(r"you\s+are\s+now\s+", re.IGNORECASE),
     re.compile(r"\bDAN\s+mode\b", re.IGNORECASE),
     re.compile(r"pretend\s+(you\s+are|to\s+be)\s+", re.IGNORECASE),
-    re.compile(r"act\s+as\s+(if\s+you\s+are|a\s+)", re.IGNORECASE),
+    # "act as if you are ..." has no clinical reading — keep it unqualified.
+    re.compile(r"act\s+as\s+if\s+you\s+are\b", re.IGNORECASE),
+    re.compile(rf"act\s+(?:as|like)\s+{_PERSONA_TARGET}", re.IGNORECASE),
     re.compile(r"roleplay\s+as\s+", re.IGNORECASE),
     # Delimiter injection
     re.compile(r"\[\[SYSTEM\]\]", re.IGNORECASE),
@@ -43,8 +62,6 @@ _INJECTION_PATTERNS = [
     re.compile(r"\bINSERT\s+INTO\b", re.IGNORECASE),
     re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE),
     re.compile(r"\bUPDATE\s+\w+\s+SET\b", re.IGNORECASE),
-    # Persona bypass variants
-    re.compile(r"act\s+like\s+", re.IGNORECASE),
 ]
 
 _MAX_TOKENS = 500
@@ -55,7 +72,17 @@ _OFF_TOPIC_PATTERNS = [
     re.compile(r"\bwrite\s+(a\s+)?(python|javascript|java|c\+\+|typescript|rust|go|sql)\b", re.IGNORECASE),
     re.compile(r"\b(implement|create|build)\s+(a\s+)?(function|class|script|program|app|api)\b", re.IGNORECASE),
     re.compile(r"\bcode\s+(for|to)\s+", re.IGNORECASE),
-    re.compile(r"\bhow\s+do\s+i\s+(install|deploy|configure|setup|run)\b", re.IGNORECASE),
+    # P1-20: "install/deploy/configure/setup" are software verbs in any reading,
+    # but "run" is also how clinicians talk about administering an instrument
+    # ("how do I run a MoCA assessment"). Qualify "run" with a technical object.
+    re.compile(r"\bhow\s+do\s+i\s+(install|deploy|configure|setup|set\s+up)\b", re.IGNORECASE),
+    re.compile(
+        r"\bhow\s+do\s+i\s+run\s+(?:this|that|the|a|an|my)?\s*"
+        r"(script|program|server|command|container|image|build|pipeline|migration|"
+        r"binary|executable|notebook|job|daemon|service|query|unit\s+tests?|"
+        r"docker|kubernetes|npm|pip|conda|python|node|java|bash|shell|sql|code|app|application)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bdebugg?(ing)?\s+(my\s+)?(code|script|program)\b", re.IGNORECASE),
     re.compile(r"\b(git|docker|kubernetes|npm|pip|conda)\s+\w+", re.IGNORECASE),
     re.compile(r"\bwhat\s+is\s+(the\s+)?syntax\s+for\b", re.IGNORECASE),
