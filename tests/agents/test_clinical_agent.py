@@ -87,9 +87,8 @@ def _minimal_state(metadata: dict) -> dict:
 @patch("mao.agents.clinical_agent._extract_structured_fields", return_value={})
 @patch("mao.agents.clinical_agent._summarize_report", return_value="Report summary.")
 @patch("mao.agents.clinical_agent._web_search_clinical", return_value="No web results.")
-@patch("mao.agents.clinical_agent.check_all_claims", return_value=[])
 def test_clinical_node_routes_to_pdf_mode(
-    mock_nli, mock_web, mock_summary, mock_extract,
+    mock_web, mock_summary, mock_extract,
     mock_llm, mock_retrieve, mock_save, mock_search,
 ):
     """When report_b64 is present, clinical_node uses pdf_report mode."""
@@ -108,9 +107,8 @@ def test_clinical_node_routes_to_pdf_mode(
 @patch("mao.agents.clinical_agent.save_memory")
 @patch("mao.agents.clinical_agent.retrieve", return_value=[])
 @patch("mao.agents.clinical_agent._call_llm", return_value="Clinical text answer.")
-@patch("mao.agents.clinical_agent.check_all_claims", return_value=[])
 def test_clinical_node_routes_to_text_mode(
-    mock_nli, mock_llm, mock_retrieve, mock_save, mock_search,
+    mock_llm, mock_retrieve, mock_save, mock_search,
 ):
     """No image or report in metadata → text_question mode."""
     from mao.agents.clinical_agent import clinical_node
@@ -129,9 +127,8 @@ def test_clinical_node_routes_to_text_mode(
 @patch("mao.agents.clinical_agent._extract_structured_fields", return_value={})
 @patch("mao.agents.clinical_agent._summarize_report", return_value="")
 @patch("mao.agents.clinical_agent._web_search_clinical", return_value="")
-@patch("mao.agents.clinical_agent.check_all_claims", return_value=[])
 def test_clinical_node_invalid_pdf_no_crash(
-    mock_nli, mock_web, mock_summary, mock_extract,
+    mock_web, mock_summary, mock_extract,
     mock_llm, mock_retrieve, mock_save, mock_search,
 ):
     """Invalid PDF bytes → graceful response, no exception raised."""
@@ -231,6 +228,41 @@ def test_send_query_routes_image_as_image_b64(tmp_path):
     meta = captured.get("metadata", {})
     assert "image_b64" in meta, "PNG must be sent as image_b64"
     assert "report_b64" not in meta, "PNG must NOT be sent as report_b64"
+
+
+# ---------------------------------------------------------------------------
+# P1-2 — NLI is computed in exactly one place, and it is not here
+# ---------------------------------------------------------------------------
+
+def test_clinical_node_does_not_run_its_own_nli_check():
+    """NLI moved to the agent-independent verification node. Computing it here
+    too would mean two owners of one signal, and the gate would still be inert
+    for every agent that is not clinical."""
+    from mao.agents.clinical_agent import clinical_node
+
+    with patch("mao.eval.nli_checker.check_all_claims") as mock_nli, \
+         patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
+         patch("mao.agents.clinical_agent._call_llm", return_value="Clinical answer."), \
+         patch("mao.agents.clinical_agent.save_memory"), \
+         patch("mao.agents.clinical_agent.search_memories", return_value=""):
+        out = clinical_node(_minimal_state({}))
+
+    mock_nli.assert_not_called()
+    assert "nli_flags" not in out, "verification_node owns nli_flags"
+
+
+def test_clinical_disclaimer_comes_from_the_shared_constant():
+    """output_guardrails re-asserts this exact disclaimer; one definition only."""
+    from mao.agents.clinical_agent import clinical_node
+    from mao.safety.verification import DISCLAIMER_MARKER
+
+    with patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
+         patch("mao.agents.clinical_agent._call_llm", return_value="Clinical answer."), \
+         patch("mao.agents.clinical_agent.save_memory"), \
+         patch("mao.agents.clinical_agent.search_memories", return_value=""):
+        out = clinical_node(_minimal_state({}))
+
+    assert DISCLAIMER_MARKER in out["response"]
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +391,6 @@ def test_low_confidence_mri_sets_uncertainty_flag_in_metadata():
 
     with patch("mao.agents.clinical_agent._handle_mri_image",
                return_value=("MRI shows mild changes.", result_meta)), \
-         patch("mao.agents.clinical_agent.check_all_claims", return_value=[]), \
          patch("mao.agents.clinical_agent.save_memory"), \
          patch("mao.agents.clinical_agent.search_memories", return_value="ctx"):
         out = clinical_node(state)
