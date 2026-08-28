@@ -8,6 +8,12 @@ Before this directory existed there were four divergent entrypoints with no
 statement of which one was real: `app.py`, `start.sh`, `Dockerfile` and an
 untracked `Dockerfile.hf`. The table below is now the single answer.
 
+Superseded copies of the HuggingFace glue (`Dockerfile.hf` and
+`scripts/start_hf.sh`) may still be present, untracked, in a working tree that
+predates this directory. They are git-ignored and are **not** used by any target
+in the table; the live files are the ones under `deploy/huggingface/`. Delete the
+local copies whenever you like — nothing references them.
+
 ## Which entrypoint is authoritative
 
 | Target | Entrypoint | Processes | Ports | Notes |

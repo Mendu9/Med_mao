@@ -8,11 +8,10 @@ import logging
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -25,11 +24,14 @@ from mao.api.cache_key import CacheKeyInputs, build_chat_cache_key
 from mao.api.streaming import may_stream_raw_tokens
 from mao.api.tracing import emit_trace
 from mao.core.state import make_initial_state
-from mao.db import get_db_session, init_db
-from mao.db.repository import get_report_card, save_chat_session, save_feedback
+from mao.db import init_db
+from mao.db.repository import save_chat_session
 from mao.graph import get_graph
-from mao.providers import usage
+from mao.api.executor import get_executor, restart_executor, shutdown_executor
 from mao.api.finalize import finalize_response
+from mao.api.invocation import run_graph
+from mao.api.routes import ALL_ROUTERS
+from mao.api import sse
 from mao.guardrails import apply_input_guardrails
 from mao.monitoring.metrics import (
     record_request,
@@ -39,10 +41,8 @@ from mao.monitoring.metrics import (
 logger = logging.getLogger(__name__)
 # configure_logging is called inside lifespan startup (after uvicorn installs its handlers)
 
-# Thread pool for synchronous LangGraph calls — recreated on each lifespan startup
-# so that process-level restarts (HF Spaces daemon thread) get a fresh executor.
-_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=8)
-
+# The thread pool lives in `mao.api.executor` so the route modules can share it
+# without importing this one.
 # Keep strong references to fire-and-forget asyncio tasks to prevent GC cancellation.
 _bg_tasks: set[asyncio.Task] = set()
 
@@ -54,10 +54,8 @@ _bg_tasks: set[asyncio.Task] = set()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm graph + models before accepting requests; clean up on shutdown."""
-    global _executor
-    # Recreate executor if it was shut down by a previous uvicorn lifecycle
-    if _executor._shutdown:
-        _executor = ThreadPoolExecutor(max_workers=8)
+    # A previous uvicorn lifecycle may have shut the pool down.
+    restart_executor()
     configure_logging(level=cfg.log_level)  # after uvicorn installs its own handlers
     logger.info("MAO API starting up — downloading/loading models...")
     loop = asyncio.get_running_loop()
@@ -96,13 +94,13 @@ async def lifespan(app: FastAPI):
         get_graph()
 
     # AWAIT so uvicorn holds off accepting requests until done
-    await loop.run_in_executor(_executor, _warm_all)
+    await loop.run_in_executor(get_executor(), _warm_all)
     logger.info("MAO API ready — accepting requests.")
 
     yield  # application runs here
 
     # Shutdown
-    _executor.shutdown(wait=False)
+    shutdown_executor()
     logger.info("MAO API shutting down.")
 
 
@@ -177,25 +175,15 @@ class ChatResponse(BaseModel):
     )
 
 
-class IngestRequest(BaseModel):
-    topics: list[str] = Field(
-        default=["Machine learning", "Natural language processing", "Knowledge graph"],
-        description="Wikipedia article titles to ingest",
-    )
-    max_articles: int = Field(default=10, ge=1, le=100)
+# ---------------------------------------------------------------------------
+# Mounted routers
+#
+# Ingestion, health, records and evaluation each own their own module. This file
+# keeps only the request path — chat and streaming — plus app wiring.
+# ---------------------------------------------------------------------------
 
-
-class IngestResponse(BaseModel):
-    status: str
-    articles_ingested: int
-    message: str
-
-
-class HealthResponse(BaseModel):
-    status: str
-    groq: str
-    vector_store: str
-    postgres: str
+for _router in ALL_ROUTERS:
+    app.include_router(_router)
 
 
 # ---------------------------------------------------------------------------
@@ -272,22 +260,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     state["metadata"] = request.metadata
 
     # Run graph in thread pool to keep async loop unblocked
-    try:
-        loop = asyncio.get_running_loop()
-        graph = get_graph()
-        result = await loop.run_in_executor(_executor, _invoke_with_usage, graph, state)
-    except Exception as exc:
-        exc_str = str(exc)
-        logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
-        if "Connection error" in exc_str or "connect" in exc_str.lower():
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "The AI service (Groq) is temporarily unreachable. "
-                    "Check your internet connection or GROQ_API_KEY and try again."
-                ),
-            ) from exc
-        raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
+    result = await run_graph(state, request_id)
 
     result = await finalize_response(result, request_id)
 
@@ -312,7 +285,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     # Persist chat session (fire-and-forget, never blocks response)
     loop = asyncio.get_running_loop()
     loop.run_in_executor(
-        _executor, _persist_session, safe_query, request.user_id, result, request_id
+        get_executor(), _persist_session, safe_query, request.user_id, result, request_id
     )
 
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
@@ -334,7 +307,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         except Exception as exc:
             logger.debug("Session cache write failed: %s", exc)
 
-    loop.run_in_executor(_executor, _cache_session)
+    loop.run_in_executor(get_executor(), _cache_session)
 
     # Fire RAGAS hallucination scoring as a background task (non-blocking)
     contexts = [s.get("snippet", "") for s in metadata.get("sources", []) if s.get("snippet")]
@@ -366,7 +339,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
 
 
 @app.post("/chat/stream")
-async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingResponse:  # noqa: C901
+async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingResponse:
     """
     SSE streaming chat endpoint — true token-by-token streaming from Groq.
 
@@ -414,22 +387,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     # The agents that support streaming (graphrag/clinical/summarizer) store their
     # LLM prompt in state["_stream_messages"] and their model in state["_stream_model"]
     # instead of making the final LLM call themselves, so we can stream it below.
-    try:
-        loop = asyncio.get_running_loop()
-        graph = get_graph()
-        result = await loop.run_in_executor(_executor, _invoke_with_usage, graph, state)
-    except Exception as exc:
-        exc_str = str(exc)
-        logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
-        if "Connection error" in exc_str or "connect" in exc_str.lower():
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "The AI service (Groq) is temporarily unreachable. "
-                    "Check your internet connection or GROQ_API_KEY and try again."
-                ),
-            ) from exc
-        raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
+    result = await run_graph(state, request_id)
 
     result = await finalize_response(result, request_id)
 
@@ -452,20 +410,11 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     emit_trace(trace_id=request_id, result=result, latency_ms=latency_ms)
     _loop = asyncio.get_running_loop()
     _loop.run_in_executor(
-        _executor, _persist_session, safe_query, request.user_id, result, request_id
+        get_executor(), _persist_session, safe_query, request.user_id, result, request_id
     )
 
-    # Build SSE metadata payload (sent once after all tokens)
-    def _meta_payload(final_latency: float) -> str:
-        payload = {
-            "intent": result.get("intent", ""),
-            "agent_used": agent_used,
-            "latency_ms": round(final_latency, 1),
-            "sources": result.get("metadata", {}).get("sources", []),
-            "web_sources": result.get("metadata", {}).get("web_sources", []),
-            "uncertainty_flag": result.get("metadata", {}).get("uncertainty_flag", False),
-        }
-        return f"data: __meta__:{json.dumps(payload)}\n\n"
+    def _trailer() -> str:
+        return sse.meta_payload(result, agent_used, sse.elapsed_ms(start_time))
 
     # ----------------------------------------------------------------
     # Raw token streaming — permitted ONLY where the safety policy exempts the
@@ -474,252 +423,33 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     # output guardrails; streaming them for a route that requires verification
     # is exactly the audited P0-1 bypass. `may_stream_raw_tokens` fails closed.
     # ----------------------------------------------------------------
-    stream_messages: list[dict] | None = (
-        result.get("_stream_messages") if may_stream_raw_tokens(result) else None
-    )
-    stream_model: str | None = result.get("_stream_model")
-
-    def _sse_encode(token: str) -> str:
-        """Encode a token as a safe SSE data line.
-
-        JSON-encodes the token so newlines, colons, and other SSE-special
-        characters cannot corrupt the frame or be misinterpreted by EventSource.
-        Client must JSON.parse each data payload.
-        """
-        return f"data: {json.dumps(token)}\n\n"
+    stream_messages = result.get("_stream_messages") if may_stream_raw_tokens(result) else None
+    headers = {"Cache-Control": "no-cache", "X-Request-ID": request_id}
 
     if stream_messages:
-        from mao.core.llm import chat_stream as _chat_stream
         from mao.core.config import FAST_MODEL
+        from mao.core.llm import chat_stream
 
-        _model = stream_model or FAST_MODEL
-        _running_loop = asyncio.get_running_loop()
-
-        async def _true_token_generator():
-            # Bridge sync generator to async via queue — yields tokens as they arrive
-            # rather than buffering the entire response first.
-            # Unbounded queue: producer uses run_coroutine_threadsafe(queue.put(...))
-            # which back-pressures the producer thread instead of crashing with QueueFull.
-            queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-            def _produce():
-                try:
-                    for tok in _chat_stream(stream_messages, model=_model):
-                        if tok:
-                            fut = asyncio.run_coroutine_threadsafe(queue.put(tok), _running_loop)
-                            fut.result()  # block producer until consumer has space
-                except Exception as exc:
-                    logger.error("Groq stream failed request_id=%s: %s", request_id, exc)
-                finally:
-                    asyncio.run_coroutine_threadsafe(queue.put(None), _running_loop).result()
-
-            _executor.submit(_produce)
-
-            while True:
-                tok = await queue.get()
-                if tok is None:
-                    break
-                yield _sse_encode(tok)
-                await asyncio.sleep(0)
-
-            final_ms = (time.perf_counter() - start_time) * 1000
-            yield _meta_payload(final_ms)
-            yield "data: [DONE]\n\n"
-
+        model = result.get("_stream_model") or FAST_MODEL
         return StreamingResponse(
-            _true_token_generator(),
+            sse.raw_token_stream(
+                produce_tokens=lambda: chat_stream(stream_messages, model=model),
+                submit=get_executor().submit,
+                trailer=_trailer,
+                request_id=request_id,
+            ),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Request-ID": request_id},
+            headers=headers,
         )
 
-    # ----------------------------------------------------------------
-    # Verified path — the default. Streams the text that came out of the
-    # verification chain and `apply_output_guardrails`, chunked for the client.
-    # Slower to first token than raw streaming, deliberately: streaming and
-    # non-streaming must carry equivalent safety guarantees.
-    # ----------------------------------------------------------------
-    response_text: str = result.get("response", "")
-
-    async def _word_token_generator():
-        for word in response_text.split(" "):
-            if word:
-                yield _sse_encode(word + " ")
-                await asyncio.sleep(0)
-        final_ms = (time.perf_counter() - start_time) * 1000
-        yield _meta_payload(final_ms)
-        yield "data: [DONE]\n\n"
-
+    # The default path: stream the text that came out of the verification chain
+    # and the output guardrails. Slower to first token, deliberately.
     return StreamingResponse(
-        _word_token_generator(),
+        sse.chunked_text_stream(text=result.get("response", ""), trailer=_trailer),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Request-ID": request_id},
+        headers=headers,
     )
 
-
-@app.post("/ingest", response_model=IngestResponse)
-async def ingest(request: IngestRequest, background_tasks: BackgroundTasks) -> IngestResponse:
-    """
-    Trigger Wikipedia ingestion in the background.
-
-    Returns immediately; ingestion runs asynchronously.
-    Check /health for vector store status to monitor progress.
-    """
-    background_tasks.add_task(
-        _run_ingestion,
-        topics=request.topics,
-        max_articles=request.max_articles,
-    )
-    return IngestResponse(
-        status="started",
-        articles_ingested=0,
-        message=f"Ingestion started for {len(request.topics)} topics in background.",
-    )
-
-
-class AlzheimersIngestRequest(BaseModel):
-    data_dir: str | None = Field(
-        default=None,
-        description="Path to PDF directory. Defaults to ad/rag/data/",
-    )
-    chunk_size: int = Field(default=512, ge=128, le=2048)
-    chunk_overlap: int = Field(default=50, ge=0, le=256)
-
-
-@app.post("/ingest/alzheimers", response_model=IngestResponse)
-async def ingest_alzheimers(
-    request: AlzheimersIngestRequest,
-    background_tasks: BackgroundTasks,
-) -> IngestResponse:
-    """
-    Trigger ingestion of Alzheimer's research PDFs into ChromaDB.
-
-    PDFs are loaded from ad/rag/data/ (or a custom path), chunked,
-    embedded with nomic-embed-text, and stored in ChromaDB alongside
-    the Wikipedia knowledge base. No router changes needed — graphrag_agent
-    will automatically retrieve from these documents after ingestion.
-    """
-    background_tasks.add_task(
-        _run_alzheimers_ingestion,
-        data_dir=request.data_dir,
-        chunk_size=request.chunk_size,
-        chunk_overlap=request.chunk_overlap,
-    )
-    return IngestResponse(
-        status="started",
-        articles_ingested=0,
-        message="Alzheimer's PDF ingestion started in background. Check logs for progress.",
-    )
-
-
-@app.post("/ingest/knowledge-bases")
-async def ingest_knowledge_bases(background_tasks: BackgroundTasks):
-    """Trigger download and loading of pre-built biomedical KGs (PrimeKG, HPO, MONDO)."""
-    def _run():
-        try:
-            from mao.data.ingest_knowledge_bases import run as run_kg_ingest
-            stats = run_kg_ingest(skip_download=False, ontology_only=False)
-            logger.info("KG ingestion complete: %s", stats)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("KG ingestion failed: %s", exc)
-    background_tasks.add_task(_run)
-    return {
-        "status": "started",
-        "message": "Knowledge base ingestion started in background. Check logs for progress.",
-    }
-
-
-@app.post("/ingest/pubmed", response_model=IngestResponse)
-async def ingest_pubmed(background_tasks: BackgroundTasks) -> IngestResponse:
-    """Trigger PubMed abstract ingestion as a background task."""
-    def _run():
-        from mao.data.ingest_pubmed import ingest_pubmed_abstracts
-        ingest_pubmed_abstracts()
-    background_tasks.add_task(_run)
-    return IngestResponse(
-        status="started",
-        articles_ingested=0,
-        message="PubMed ingestion started in background. Check logs for progress.",
-    )
-
-
-@app.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    """
-    Check connectivity to all downstream services.
-    Returns {"status": "ok"} only if all three pass.
-    """
-    groq_status          = await _check_groq()
-    vector_store_status  = await _check_vector_store()
-    postgres_status      = await _check_postgres()
-
-    overall = (
-        "ok"
-        if all(s == "ok" for s in [groq_status, vector_store_status, postgres_status])
-        else "degraded"
-    )
-
-    return HealthResponse(
-        status=overall,
-        groq=groq_status,
-        vector_store=vector_store_status,
-        postgres=postgres_status,
-    )
-
-
-@app.get("/usage")
-async def get_usage() -> dict[str, Any]:
-    """
-    Return accumulated Groq token usage and estimated cost for this process.
-
-    Response fields:
-      total_input_tokens   — int
-      total_output_tokens  — int
-      total_tokens         — int
-      estimated_cost_usd   — float (6 decimal places)
-      per_model            — {model: {input_tokens, output_tokens, requests, cost_usd}}
-      rate_limit_info      — last observed Groq rate-limit headers (may be {})
-    """
-    from mao.core.groq_usage import tracker
-    return tracker.get_summary()
-
-
-@app.get("/graph")
-async def graph_topology_endpoint() -> dict[str, Any]:
-    """Return the topology of the graph that actually runs.
-
-    Derived, never hand-maintained: the previous literal advertised `code_node`
-    and `sql_node` long after both were deleted, omitted eight real nodes, and
-    named the wrong entry point — and the UI consumes this (P1-6).
-    """
-    from mao.api.topology import graph_topology
-
-    return graph_topology()
-
-
-# ---------------------------------------------------------------------------
-# Graph invocation
-# ---------------------------------------------------------------------------
-
-def _invoke_with_usage(graph: Any, state: dict[str, Any]) -> dict[str, Any]:
-    """Run the graph and record what its model calls cost.
-
-    The collector is bound *inside* this function because it runs in a
-    ThreadPoolExecutor worker, and `run_in_executor` does not copy contextvars
-    into the worker. Binding here means every gateway call the graph makes —
-    including the council's, which reaches further threads via
-    `asyncio.to_thread`, and that does copy context — lands in this request's
-    totals rather than another request's or nowhere.
-    """
-    with usage.collecting() as totals:
-        result = graph.invoke(state)
-    if isinstance(result, dict):
-        result["llm_usage"] = totals.to_dict()
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Background tasks
-# ---------------------------------------------------------------------------
 
 def _persist_session(
     safe_query: str,
@@ -778,283 +508,6 @@ async def _score_response_async(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Background RAGAS scoring failed: %s", exc)
-
-
-def _run_ingestion(topics: list[str], max_articles: int) -> None:
-    """Synchronous ingestion wrapper — runs in BackgroundTasks thread."""
-    try:
-        from mao.data.ingest_wikipedia import ingest_wikipedia_topics
-        count = ingest_wikipedia_topics(topics, max_articles=max_articles)
-        logger.info("Ingestion complete: %d articles", count)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Background ingestion failed: %s", exc)
-
-
-def _run_alzheimers_ingestion(
-    data_dir: str | None,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> None:
-    """Synchronous Alzheimer's PDF ingestion — runs in BackgroundTasks thread."""
-    try:
-        from mao.data.ingest_alzheimers import ingest_alzheimers_pdfs
-        count = ingest_alzheimers_pdfs(
-            data_dir=data_dir,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-        logger.info("Alzheimer's ingestion complete: %d PDFs", count)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Alzheimer's ingestion failed: %s", exc)
-
-
-# ---------------------------------------------------------------------------
-# Health check helpers
-# ---------------------------------------------------------------------------
-
-async def _check_groq() -> str:
-    try:
-        from mao.core import llm as groq_llm
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: groq_llm.chat([{"role": "user", "content": "ping"}], max_tokens=3),
-        )
-        return "ok"
-    except Exception as exc:
-        return f"error: {exc}"
-
-
-async def _check_vector_store() -> str:
-    try:
-        loop = asyncio.get_running_loop()
-        if cfg.vector_backend == "qdrant":
-            def _ping():
-                from qdrant_client import QdrantClient
-                client = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key, prefer_grpc=False)
-                client.get_collections()
-            await loop.run_in_executor(None, _ping)
-        else:
-            def _ping():  # type: ignore[misc]
-                import chromadb
-                client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
-                client.heartbeat()
-            await loop.run_in_executor(None, _ping)
-        return "ok"
-    except Exception as exc:
-        return f"error: {exc}"
-
-
-async def _check_postgres() -> str:
-    """Probe Postgres over the shared session factory.
-
-    This used to reach into `mao.agents.sql_agent` for a second, separately
-    configured engine. That module was removed with the SQL route (P0-3), and
-    the second engine was part of the three-config-source problem (P1-10).
-    """
-    try:
-        from sqlalchemy import text
-
-        from mao.db import get_db_session, init_db, is_initialised
-
-        loop = asyncio.get_running_loop()
-
-        def _ping():
-            if not is_initialised():
-                init_db()
-            with get_db_session() as db:
-                db.execute(text("SELECT 1"))
-
-        await loop.run_in_executor(None, _ping)
-        return "ok"
-    except Exception as exc:
-        return f"error: {exc}"
-
-
-# ---------------------------------------------------------------------------
-# Feedback
-# ---------------------------------------------------------------------------
-
-class FeedbackRequest(BaseModel):
-    session_id: str
-    thumbs_up: bool
-    comment: str = ""
-
-
-@app.post("/feedback")
-async def post_feedback(req: FeedbackRequest):
-    """Record thumbs up/down against a stored session.
-
-    Goes through the shared repository rather than a second raw asyncpg
-    connection: the old implementation depended on a package in neither
-    requirements file, omitted the NOT NULL user_id, and passed a str against a
-    Uuid foreign key — so every call failed with a 500 (P1-7).
-    """
-    loop = asyncio.get_running_loop()
-    saved = await loop.run_in_executor(
-        _executor,
-        lambda: save_feedback(
-            session_id=req.session_id, thumbs_up=req.thumbs_up, comment=req.comment
-        ),
-    )
-    if not saved:
-        raise HTTPException(status_code=404, detail="Unknown or malformed session_id")
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------------------------
-# PDF Export
-# ---------------------------------------------------------------------------
-
-@app.get("/export/report/{session_id}")
-async def export_report(session_id: str):
-    """Render a stored report card as PDF.
-
-    This could never succeed before: nothing wrote `report_card`, so the column
-    was always NULL and the endpoint was a permanent 404 (P1-8). The repository
-    now persists it on every clinical turn.
-    """
-    from fastapi import Response
-    from mao.report.report_card import build_report_card
-    try:
-        loop = asyncio.get_running_loop()
-        card_data = await loop.run_in_executor(
-            _executor, lambda: get_report_card(session_id)
-        )
-        if not card_data:
-            raise HTTPException(status_code=404, detail="Report not found")
-        card = build_report_card(**card_data)
-        pdf_bytes = card.to_pdf()
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=report_{session_id}.pdf"},
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("PDF export failed: %s", e)
-        raise HTTPException(status_code=500, detail="PDF export failed")
-
-
-# ---------------------------------------------------------------------------
-# Eval Dashboard
-# ---------------------------------------------------------------------------
-
-@app.get("/eval/dashboard")
-async def eval_dashboard():
-    """Return RAGAS metrics and feedback summary using the existing SQLAlchemy session."""
-    try:
-        from sqlalchemy import text
-
-        def _query():
-            with get_db_session() as db:
-                metrics_rows = db.execute(text(
-                    "SELECT faithfulness, answer_relevancy, context_precision, context_recall,"
-                    " latency_ms, agent_used, created_at"
-                    " FROM response_metrics ORDER BY created_at DESC LIMIT 100"
-                )).fetchall()
-                # rating: 1 = helpful, -1 = not helpful
-                feedback_rows = db.execute(text(
-                    "SELECT rating, COUNT(*) AS cnt FROM response_feedback GROUP BY rating"
-                )).fetchall()
-            metrics = [
-                {
-                    "faithfulness": r.faithfulness,
-                    "answer_relevancy": r.answer_relevancy,
-                    "context_precision": r.context_precision,
-                    "context_recall": r.context_recall,
-                    "latency_ms": r.latency_ms,
-                    "agent_used": r.agent_used,
-                }
-                for r in metrics_rows
-            ]
-            # Map to True/False keys so the Streamlit tab can display 👍/👎
-            feedback: dict[str, int] = {}
-            for r in feedback_rows:
-                key = "True" if r.rating == 1 else "False"
-                feedback[key] = int(r.cnt)
-            return {"metrics": metrics, "feedback": feedback}
-
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_executor, _query)
-    except Exception as exc:
-        logger.error("Dashboard query failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Dashboard unavailable: {exc}") from exc
-
-
-@app.get("/eval/retrieval")
-async def eval_retrieval(k: int = 5, regenerate: bool = False, samples: int = 50):
-    """
-    Return retrieval evaluation metrics (MRR, P@K, R@K, F1@K).
-
-    Query params:
-      k          — Top-K cutoff (default 5)
-      regenerate — If true, regenerate golden dataset from ChromaDB first
-      samples    — Number of golden samples (only used when regenerate=true)
-    """
-    def _run():
-        from mao.eval.retrieval_metrics import (
-            generate_golden_dataset,
-            load_golden_dataset,
-            run_retrieval_eval,
-        )
-        from sqlalchemy import text
-
-        if regenerate:
-            generate_golden_dataset(n_samples=samples)
-
-        dataset = load_golden_dataset()
-        if not dataset:
-            return {
-                "status": "no_golden_dataset",
-                "message": (
-                    "No golden dataset found. Call with ?regenerate=true&samples=50 "
-                    "to generate one (~2 min, costs ~50 Groq API calls)."
-                ),
-                "current": None,
-                "history": [],
-            }
-
-        current = run_retrieval_eval(k=k)
-
-        history = []
-        try:
-            with get_db_session() as db:
-                rows = db.execute(text(
-                    "SELECT k, n_samples, mrr, mean_precision_at_k, mean_recall_at_k,"
-                    " mean_f1_at_k, created_at"
-                    " FROM retrieval_eval_results ORDER BY created_at DESC LIMIT 20"
-                )).fetchall()
-                history = [
-                    {
-                        "k": r.k,
-                        "n_samples": r.n_samples,
-                        "mrr": r.mrr,
-                        "mean_precision_at_k": r.mean_precision_at_k,
-                        "mean_recall_at_k": r.mean_recall_at_k,
-                        "mean_f1_at_k": r.mean_f1_at_k,
-                        "created_at": r.created_at.isoformat() if r.created_at else None,
-                    }
-                    for r in rows
-                ]
-        except Exception as exc:
-            logger.warning("Could not load retrieval eval history: %s", exc)
-
-        return {
-            "status": "ok",
-            "golden_dataset_size": len(dataset),
-            "current": {kk: vv for kk, vv in current.items() if kk != "details"},
-            "details": current.get("details", [])[:20],
-            "history": history,
-        }
-
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_executor, _run)
-    except Exception as exc:
-        logger.error("Retrieval eval failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

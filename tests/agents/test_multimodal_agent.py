@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.agents.gateway_stub import _completing, _completion
+from tests.agents.gateway_stub import _completion
 
 from mao.agents import multimodal_agent as mm
 from mao.prompts import get_prompt

@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from tests.agents.gateway_stub import _completing, _completion
+from tests.agents.gateway_stub import _completion
 
 from mao.agents import domain_classifier as dc
 from mao.agents.domain_classifier import classify_domain, classifier_node

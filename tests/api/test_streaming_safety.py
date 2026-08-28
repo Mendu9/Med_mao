@@ -50,6 +50,14 @@ class TestVerifiedTextIsWhatShips:
         import mao.api.main as main
 
         source = inspect.getsource(main.chat_stream_endpoint)
-        # The guardrail result is applied before any streaming decision.
-        assert "apply_output_guardrails" in source
+        # The guardrails run before any streaming decision. They are reached
+        # through `finalize_response`, which applies them and only then persists
+        # memory — the ordering the memory-leak finding required.
+        assert "finalize_response" in source
         assert "may_stream_raw_tokens" in source
+
+        from mao.api import finalize
+
+        finalize_src = inspect.getsource(finalize.finalize_response)
+        assert "apply_output_guardrails" in finalize_src
+        assert finalize_src.index("apply_output_guardrails") < finalize_src.index("remember_node")

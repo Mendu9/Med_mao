@@ -369,9 +369,22 @@ def test_start_hf_script_is_tracked_not_ignored() -> None:
     tracked = _tracked_files()
     assert "deploy/huggingface/start_hf.sh" in tracked
     assert "deploy/huggingface/Dockerfile" in tracked
-    patterns = _gitignore_patterns()
-    assert not [p for p in patterns if "start_hf.sh" in p]
-    assert not [p for p in patterns if "Dockerfile.hf" in p]
+
+
+def test_no_unanchored_pattern_can_swallow_the_deploy_glue() -> None:
+    """A bare `start_hf.sh` line matches at every depth, including under deploy/.
+
+    That is what excluded the deploy source in the first place (P1-15). A
+    root-anchored `/scripts/start_hf.sh` is fine — it hides the superseded copy
+    at the repo root and cannot reach `deploy/huggingface/`. So the rule is
+    about anchoring, not about mentioning the filename.
+    """
+    risky = [
+        p
+        for p in _gitignore_patterns()
+        if ("start_hf.sh" in p or "Dockerfile.hf" in p) and not p.startswith("/")
+    ]
+    assert not risky, f"unanchored deploy-glue patterns: {risky}"
 
 
 def test_gitignore_does_not_exclude_the_deploy_tree() -> None:

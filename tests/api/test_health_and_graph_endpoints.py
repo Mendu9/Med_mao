@@ -29,22 +29,23 @@ class TestHealthCheckIndependence:
         assert not any("sql_agent" in m for m in _imported_modules(main))
 
     def test_postgres_probe_uses_the_shared_database_layer(self) -> None:
-        import mao.api.main as main
+        from mao.api.routes import health
 
-        source = inspect.getsource(main._check_postgres)
+        source = inspect.getsource(health._check_postgres)
         assert "mao.db" in source
 
 
 class TestGraphEndpointIsDerived:
     def test_endpoint_delegates_to_the_topology_module(self) -> None:
-        import mao.api.main as main
+        from mao.api.routes import health
 
-        assert "topology" in inspect.getsource(main.graph_topology_endpoint)
+        assert "topology" in inspect.getsource(health.graph_topology_endpoint)
 
     def test_no_hardcoded_node_or_intent_literals_remain(self) -> None:
         """P1-6 — the endpoint advertised code_node/sql_node long after deletion."""
         import mao.api.main as main
+        from mao.api.routes import health
 
-        source = inspect.getsource(main)
+        source = inspect.getsource(main) + inspect.getsource(health)
         for stale in ('"code_node"', '"sql_node"', '"code"', '"sql"'):
             assert stale not in source, f"stale topology literal {stale} still present"

@@ -63,5 +63,18 @@ logs/
 # The former `scripts/start_hf.sh` and `Dockerfile.hf` entries were excluded
 # here, which meant Dockerfile.hf COPYd a file that did not exist in a clean
 # clone and could not build (P1-15). Both now live in deploy/huggingface/.
+#
+# The superseded copies still sit untracked in this working tree. They are
+# ignored so nobody mistakes them for the live entrypoint, and left on disk
+# because removing a developer's local files is not this repo's call.
+/Dockerfile.hf
+/scripts/start_hf.sh
 
 README_HF.md
+
+# Generated locally by the graph explorer, not source.
+/test_graph.html
+
+# A separate project that happens to be checked out inside this tree. It has its
+# own git repository and is not part of this one.
+/AD/
