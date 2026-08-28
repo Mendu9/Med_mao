@@ -57,7 +57,8 @@ def test_render_graph_explorer_disabled(monkeypatch):
     monkeypatch.setenv("MAO_DISABLE_GRAPH", "1")
     mock_st = MagicMock()
     with patch.dict("sys.modules", {"streamlit": mock_st}):
-        import importlib, app.graph_explorer as ge
+        import importlib
+        import app.graph_explorer as ge
         importlib.reload(ge)
         ge.render_graph_explorer()
     mock_st.warning.assert_called_once()
@@ -78,7 +79,8 @@ def test_render_graph_explorer_empty_graph(monkeypatch):
     mock_st.checkbox.return_value = False
     empty_graph = nx.MultiDiGraph()
     with patch.dict("sys.modules", {"streamlit": mock_st}):
-        import importlib, app.graph_explorer as ge
+        import importlib
+        import app.graph_explorer as ge
         importlib.reload(ge)
         with patch.object(ge, "_load_graph", return_value=empty_graph):
             ge.render_graph_explorer()

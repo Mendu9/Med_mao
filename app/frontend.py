@@ -1,12 +1,12 @@
 import gradio as gr
 import httpx
-import json
 import os
 try:
     from app.graph_explorer import build_graph_explorer_tab
 except ModuleNotFoundError:
     # Running as `python app/frontend.py` — project root not in sys.path yet
-    import sys as _sys, os as _os
+    import sys as _sys
+    import os as _os
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     from app.graph_explorer import build_graph_explorer_tab
 
@@ -108,7 +108,8 @@ def _download_report(session_id: str):
     try:
         resp = httpx.get(f"{API_BASE}/export/report/{session_id}", timeout=30)
         resp.raise_for_status()
-        import tempfile, pathlib
+        import tempfile
+        import pathlib
         tmp = pathlib.Path(tempfile.gettempdir()) / f"report_{session_id}.pdf"
         tmp.write_bytes(resp.content)
         return str(tmp)

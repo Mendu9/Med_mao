@@ -648,7 +648,7 @@ def main() -> None:
             max_per_category=args.max_per_category,
             resume=not args.no_resume,
         )
-        print(f"\nDownload complete:")
+        print("\nDownload complete:")
         print(f"  Total new papers: {result['total_downloaded']}")
         for cat, n in result["by_category"].items():
             print(f"  {cat}: {n}")

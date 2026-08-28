@@ -1,5 +1,4 @@
 import time
-import pytest
 from mao.core.query_cache import QueryCache
 
 def test_miss_returns_none():

@@ -191,7 +191,7 @@ def audit(dataset_path: Path = GOLDEN_DATASET_PATH) -> None:
     print(f"  MISMATCH : {text_mismatch}")
     print(f"  NO TEXT  : {text_missing}  (chunk found but document empty)")
     if mismatch_details:
-        print(f"\n  Mismatch details (first 5):")
+        print("\n  Mismatch details (first 5):")
         for d in mismatch_details[:5]:
             print(f"    chunk_id : {d['chunk_id']}")
             print(f"    question : {d['question']}")

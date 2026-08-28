@@ -1,4 +1,3 @@
-import pytest
 from mao.core.token_counter import count_tokens, truncate_to_budget
 
 def test_count_tokens_basic():

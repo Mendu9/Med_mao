@@ -1,0 +1,30 @@
+# Lint configuration for MAO.
+#
+# The default rule set plus a small, justified set of per-file exemptions. Each
+# exemption below is a deliberate pattern, not a suppressed defect — anything
+# not listed here is expected to be clean.
+
+line-length = 110
+target-version = "py310"
+
+[lint]
+# Ruff's default scope (pycodestyle errors that matter + pyflakes) plus warnings.
+# E501 is deliberately excluded: line length was never enforced in this codebase
+# and retrofitting it would bury real findings under ~90 cosmetic ones.
+select = ["E4", "E7", "E9", "F", "W"]
+
+[lint.per-file-ignores]
+# Streamlit requires st.set_page_config() to be the first Streamlit call, and
+# the repo-root sys.path shim must run before any `mao.*` import resolves.
+"app/streamlit_app.py" = ["E402"]
+
+# Optional-dependency probes: the import IS the availability check.
+"app/graph_explorer.py" = ["F401"]
+"mao/data/download_pmc.py" = ["F401"]
+
+# Heavy model imports are deferred behind runtime guards on purpose.
+"mao/rag/reranker.py" = ["E402"]
+"mao/rag/embedder.py" = ["E402"]
+
+# Re-export surfaces.
+"__init__.py" = ["F401"]

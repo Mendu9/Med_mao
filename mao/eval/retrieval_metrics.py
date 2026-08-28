@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +115,6 @@ def _is_specific_question(question: str, chunk_text: str) -> bool:
     This filter sits on top of _question_uses_chunk_vocabulary and raises the bar
     from "3 shared words" to "2 shared domain words (>4 chars, not stopwords)".
     """
-    q_lower = question.lower()
     # Extract substantive words: length > 4 and not a stopword
     chunk_words = {
         w.lower()
@@ -246,7 +244,6 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
 
     # Oversample 15× — tighter overlap + specificity filters need more candidates
     oversample = min(total, n_samples * 15)
-    step = max(1, total // oversample)
     all_ids_result = col.get(limit=total, include=[])
     all_ids: list[str] = all_ids_result["ids"]
     # Shuffle with a fixed seed for reproducibility but spread across the corpus
@@ -465,7 +462,8 @@ def run_retrieval_eval(
         _cur_ram = _available_ram_mb()
         if _cur_ram < 1500:
             logger.warning("RAM low (%dMB free) after query %d — forcing full GC", _cur_ram, _i)
-            gc.collect(0); gc.collect(1); gc.collect(2)  # all three generations
+            for _gen in (0, 1, 2):  # all three generations
+                gc.collect(_gen)
 
         # Running progress + partial MRR every 5 queries
         if _i % 5 == 0 or _i == n_total:

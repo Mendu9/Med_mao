@@ -1,4 +1,3 @@
-import pytest
 from mao.report.report_card import ReportCard, MedicationEntry, SourceEntry, build_report_card
 
 def _sample_card() -> ReportCard:

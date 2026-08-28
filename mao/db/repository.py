@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from mao.db import get_db_session
 from mao.db.models import ChatSession, ResponseFeedback
@@ -78,7 +78,11 @@ def get_chat_session(session_id: str | uuid.UUID) -> ChatSession | None:
 
 def get_report_card(session_id: str | uuid.UUID) -> dict[str, Any] | None:
     row = get_chat_session(session_id)
-    return row.report_card if row is not None else None
+    if row is None:
+        return None
+    # models.py uses legacy Column() rather than Mapped[], so the attribute
+    # types as Column[Any] to mypy even though it is a plain value at runtime.
+    return cast("dict[str, Any] | None", row.report_card)
 
 
 def save_feedback(*, session_id: str | uuid.UUID, thumbs_up: bool, comment: str = "") -> bool:
@@ -123,4 +127,6 @@ def get_feedback_user_id(session_id: str | uuid.UUID) -> str | None:
             .order_by(ResponseFeedback.id.desc())
             .first()
         )
-        return row.user_id if row is not None else None
+        if row is None:
+            return None
+        return cast("str", row.user_id)

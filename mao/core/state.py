@@ -49,6 +49,12 @@ class MAOState(TypedDict, total=False):
     # --- Safety policy (written by the graph's risk gate before any agent) ---
     risk_level: str
 
+    # True when the router could not classify the request (provider error, or a
+    # label we do not recognise). The risk gate escalates to HIGH on this rather
+    # than accepting the cheapest route, so a provider outage cannot silently
+    # declassify a clinical request.
+    router_failed: bool
+
     # --- Memory (injected by mem0_handler before agent runs) ---
     memory_context: str
 
