@@ -84,7 +84,7 @@ from mao.agents.senior_supervisor import senior_supervisor_node
 from mao.agents.summarizer_agent import summarizer_node
 from mao.agents.tool_agent import tool_node
 from mao.core.state import INTENT_CHITCHAT, MAOState
-from mao.memory.interface import recall_node, remember_node
+from mao.memory.interface import recall_node
 from mao.safety.policy import RiskLevel, get_policy, has_attachment
 
 # Imported at module scope on purpose. Verification is a safety control: if it
@@ -104,7 +104,6 @@ NODE_GATE       = "chitchat_gate"
 NODE_ROUTER     = "router_node"
 NODE_RISK       = "risk_gate"
 NODE_RECALL     = "recall"
-NODE_REMEMBER   = "remember"
 NODE_VERIFY     = "verification"
 NODE_SUMMARIZER = "summarizer_node"
 NODE_GRAPHRAG   = "graphrag_node"
@@ -243,7 +242,6 @@ def build_graph() -> StateGraph:
     builder.add_node("council",           council_node)
     builder.add_node("senior_supervisor", senior_supervisor_node)
     builder.add_node("blocked",           blocked_response_node)
-    builder.add_node(NODE_REMEMBER,       remember_node)
 
     # --- Entry: chitchat_gate → (risk_gate shortcut | full pipeline) ---
     builder.add_edge(START, NODE_GATE)
@@ -288,11 +286,13 @@ def build_graph() -> StateGraph:
             "blocked":           "blocked",
         },
     )
-    # Memory records the answer that SURVIVED supervision. A blocked response
-    # goes straight to END and is never remembered — replaying it as context on
-    # a later turn would reintroduce what the safety chain just rejected.
-    builder.add_edge("senior_supervisor", NODE_REMEMBER)
-    builder.add_edge(NODE_REMEMBER, END)
+    # Memory is NOT written here. The graph cannot see the output guardrails —
+    # they run in the API layer after `graph.invoke` — and the NLI-ratio and
+    # judge-score blocks live only there. Persisting from inside the graph
+    # therefore committed text the guardrails went on to withdraw, and memory is
+    # replayed as prompt context on later turns. `mao/api/finalize.py` owns the
+    # order: guardrails first, then persist what survived them.
+    builder.add_edge("senior_supervisor", END)
     builder.add_edge("blocked", END)
 
     compiled = builder.compile()

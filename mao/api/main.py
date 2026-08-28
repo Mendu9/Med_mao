@@ -28,7 +28,8 @@ from mao.core.state import make_initial_state
 from mao.db import get_db_session, init_db
 from mao.db.repository import get_report_card, save_chat_session, save_feedback
 from mao.graph import get_graph
-from mao.guardrails import apply_input_guardrails, apply_output_guardrails
+from mao.api.finalize import finalize_response
+from mao.guardrails import apply_input_guardrails
 from mao.monitoring.metrics import (
     record_request,
     record_reranker_score,
@@ -287,7 +288,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
             ) from exc
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
 
-    result = await apply_output_guardrails(result, request_id)
+    result = await finalize_response(result, request_id)
 
     latency_ms = (time.perf_counter() - start_time) * 1000
     agent_used = result.get("agent_used", "unknown")
@@ -429,7 +430,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
             ) from exc
         raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
 
-    result = await apply_output_guardrails(result, request_id)
+    result = await finalize_response(result, request_id)
 
     latency_ms = (time.perf_counter() - start_time) * 1000
     agent_used = result.get("agent_used", "unknown")

@@ -67,6 +67,25 @@ def _ensure_clinical_disclaimer(state: dict, session_id: str) -> None:
     )
 
 
+def _block(state: dict, session_id: str, check: str, detail: str = "") -> dict:
+    """Replace the response and record that a block happened.
+
+    `output_blocked` is the signal memory persistence reads. The NLI and judge
+    blocks are guardrail-only controls the graph cannot see, so without an
+    explicit flag the pipeline had no way to know they fired — and blocked
+    clinical text was written to long-term memory and replayed on later turns.
+    """
+    state["response"] = _PATIENT_SAFETY_BLOCK_MESSAGE
+    state["output_blocked"] = True
+    state["output_blocked_by"] = check
+    log_guardrail_event(
+        session_id, check,
+        triggered=True, detail=detail,
+        severity=GuardrailSeverity.BLOCK,
+    )
+    return state
+
+
 async def apply_output_guardrails(state: dict, session_id: str) -> dict:
     """Apply tiered output safety checks.
 
@@ -78,21 +97,23 @@ async def apply_output_guardrails(state: dict, session_id: str) -> dict:
 
     A BLOCKed response is a refusal, not clinical content, so it returns
     immediately without gaining a clinical disclaimer.
+
+    Every exit sets `output_blocked`, so a caller can tell an answer the user may
+    keep from one that was withdrawn.
     """
     policy = get_policy()
+    state["output_blocked"] = False
+    state.pop("output_blocked_by", None)
 
     nli_flags = state.get("nli_flags", []) or []
     if nli_flags:
         unentailed_ratio = sum(1 for f in nli_flags if not f.get("entailed")) / len(nli_flags)
 
         if unentailed_ratio > policy.nli_block_ratio:
-            state["response"] = _PATIENT_SAFETY_BLOCK_MESSAGE
-            log_guardrail_event(
-                session_id, "nli_confidence",
-                triggered=True, detail=f"unentailed_ratio={unentailed_ratio:.2f}",
-                severity=GuardrailSeverity.BLOCK,
+            return _block(
+                state, session_id, "nli_confidence",
+                f"unentailed_ratio={unentailed_ratio:.2f}",
             )
-            return state
 
         elif unentailed_ratio > policy.nli_warn_ratio:
             state["response"] = _append_once(state.get("response", "") or "", _NLI_WARN_TEXT)
@@ -105,25 +126,16 @@ async def apply_output_guardrails(state: dict, session_id: str) -> dict:
     # BLOCK: council safety veto
     verdict = state.get("council_verdict", {}) or {}
     if verdict.get("blocked_by") == "safety":
-        state["response"] = _PATIENT_SAFETY_BLOCK_MESSAGE
-        log_guardrail_event(
-            session_id, "council_safety",
-            triggered=True,
-            severity=GuardrailSeverity.BLOCK,
-        )
-        return state
+        return _block(state, session_id, "council_safety")
 
     judge = state.get("judge_scores", {}) or {}
     safety_score = judge.get("safety", 10)
 
     if safety_score < policy.judge_block_score:
-        state["response"] = _PATIENT_SAFETY_BLOCK_MESSAGE
-        log_guardrail_event(
-            session_id, "judge_safety",
-            triggered=True, detail=f"score={safety_score}; {judge.get('notes', '')}",
-            severity=GuardrailSeverity.BLOCK,
+        return _block(
+            state, session_id, "judge_safety",
+            f"score={safety_score}; {judge.get('notes', '')}",
         )
-        return state
 
     elif safety_score < policy.judge_warn_score:
         state["response"] = _append_once(state.get("response", "") or "", _JUDGE_WARN_TEXT)

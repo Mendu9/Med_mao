@@ -86,19 +86,34 @@ def recall_node(state: dict) -> dict:
 
 
 def remember_node(state: dict) -> dict:
-    """Persist the verified exchange, once, after the supervision chain.
+    """Persist an exchange that cleared every safety control.
 
-    A response the council blocked is deliberately not remembered: replaying it
-    as context on a later turn would reintroduce exactly the content the safety
-    chain rejected.
+    This runs *after* the output guardrails, not inside the graph. The graph can
+    only see the council's verdict; the NLI-ratio and judge-score blocks live in
+    `apply_output_guardrails`, which runs in the API layer after `graph.invoke`
+    returns. Persisting from inside the graph therefore wrote text the guardrails
+    went on to withdraw, and memory is replayed as prompt context on later turns,
+    so rejected clinical content came back around.
+
+    Both guards fail closed. The verdict guard used to be `passed is False`,
+    which meant a missing verdict, a non-dict verdict, or a falsy `passed` were
+    all remembered — the opposite polarity to the graph's own router.
     """
     response = state.get("response") or ""
     if not response.strip():
         return state
 
-    verdict = state.get("council_verdict") or {}
-    if isinstance(verdict, dict) and verdict.get("passed") is False:
-        logger.debug("Not remembering a blocked response (blocked_by=%s)", verdict.get("blocked_by"))
+    if state.get("output_blocked"):
+        logger.debug(
+            "Not remembering a guardrail-blocked response (blocked_by=%s)",
+            state.get("output_blocked_by"),
+        )
+        return state
+
+    verdict = state.get("council_verdict")
+    passed = verdict.get("passed") if isinstance(verdict, dict) else None
+    if passed is not True:
+        logger.debug("Not remembering a response without an affirmative council verdict")
         return state
 
     try:

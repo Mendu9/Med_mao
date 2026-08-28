@@ -87,8 +87,23 @@ class TestRecallHappensOnce:
 
 class TestRememberSavesTheVerifiedAnswer:
     def test_remember_persists_the_final_response(self, store: RecordingStore) -> None:
-        remember_node(_state(response="Donepezil is first-line [1]."))
+        """An affirmative council verdict is now required.
+
+        The guard used to be `passed is False`, which failed *open*: a state with
+        no verdict at all was remembered. It now matches the polarity the graph's
+        own router uses (`passed is True`), so the verdict must be present.
+        """
+        remember_node(
+            _state(
+                response="Donepezil is first-line [1].",
+                council_verdict={"passed": True, "blocked_by": None},
+            )
+        )
         assert store.saved == [("what is tau?", "Donepezil is first-line [1].", "u1")]
+
+    def test_a_response_with_no_verdict_is_not_remembered(self, store: RecordingStore) -> None:
+        remember_node(_state(response="Donepezil is first-line [1]."))
+        assert store.saved == []
 
     def test_nothing_is_saved_when_there_is_no_response(self, store: RecordingStore) -> None:
         remember_node(_state(response=""))
@@ -148,18 +163,35 @@ class TestAgentsNoLongerRepeatTheBoilerplate:
 
 
 class TestGraphWiring:
-    def test_recall_and_remember_are_graph_nodes(self) -> None:
+    def test_recall_is_a_graph_node(self) -> None:
         from mao.graph import build_graph
 
-        nodes = set(build_graph().nodes)
-        assert "recall" in nodes
-        assert "remember" in nodes
+        assert "recall" in set(build_graph().nodes)
 
-    def test_remember_runs_after_supervision_not_inside_an_agent(self) -> None:
-        """Memory must record the verified answer, so it sits after the chain."""
+    def test_remember_is_deliberately_not_a_graph_node(self) -> None:
+        """Persistence sits behind the output guardrails, not inside the graph.
+
+        `remember` was a graph node running after `senior_supervisor`. That is
+        after the *council*, but the NLI-ratio and judge-score blocks live in
+        `apply_output_guardrails`, which runs in the API layer after
+        `graph.invoke` returns — so guardrail-blocked clinical text was written
+        to long-term memory and replayed as context on later turns. The ordering
+        now lives in `mao/api/finalize.py`.
+        """
+        from mao.graph import build_graph
+
+        assert "remember" not in set(build_graph().nodes)
+
+    def test_no_agent_writes_memory_directly(self) -> None:
         from mao.graph import build_graph
 
         edges = build_graph().get_graph().edges
-        into_remember = {e.source for e in edges if e.target == "remember"}
-        assert "senior_supervisor" in into_remember
-        assert not (into_remember & {"graphrag_node", "clinical_node", "summarizer_node"})
+        assert not {e.target for e in edges if e.target == "remember"}
+
+    def test_finalize_applies_the_guardrails_before_persisting(self) -> None:
+        import inspect
+
+        from mao.api import finalize
+
+        source = inspect.getsource(finalize.finalize_response)
+        assert source.index("apply_output_guardrails") < source.index("remember_node")
