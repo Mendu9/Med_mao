@@ -251,8 +251,12 @@ def retrieve(
     n = top_n or default_n
     k = top_k or cfg.reranker_top_k
 
-    # Check semantic cache first (normalized text key — no embedding needed)
-    sem_key = _cache.make_semantic_key(query, domain=domain, top_k=k)
+    # Check semantic cache first (normalized text key — no embedding needed).
+    # Both keys carry domain, top_n, top_k, the index version and the reranker
+    # fingerprint; QueryCache derives them with hashlib, never the builtin
+    # hash(), which is PYTHONHASHSEED-salted and fragmented the cache across
+    # gunicorn workers (P1-19, P2-6).
+    sem_key = _cache.make_semantic_key(query, domain=domain, top_k=k, top_n=n)
     sem_cached = _cache.get(sem_key)
     if sem_cached is not None:
         logger.debug("Semantic cache hit for query domain=%s", domain)
@@ -261,7 +265,7 @@ def retrieve(
     # Also check vector-based cache (falls back when embedding available)
     try:
         query_embedding = embed_query(query)
-        cache_key = _cache.make_key(query_embedding + [hash(domain) % 1_000_000, n, k])
+        cache_key = _cache.make_key(query_embedding, domain=domain, top_n=n, top_k=k)
         cached = _cache.get(cache_key)
         if cached is not None:
             logger.debug("Vector cache hit for query domain=%s", domain)

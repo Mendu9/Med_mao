@@ -1,0 +1,10 @@
+# MAO — test and lint tooling. Never installed into a deployment image.
+#
+# Install with:  pip install -r requirements.txt -r requirements-dev.txt
+
+pytest>=8.0
+pytest-asyncio>=0.23.0
+ruff>=0.5
+
+# End-to-end browser tests (tests/e2e/) — also needs `playwright install`.
+playwright>=1.44

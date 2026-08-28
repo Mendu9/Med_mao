@@ -1,6 +1,9 @@
-# MAO — docker-compose (minimal: Postgres only)
-# Groq + Pinecone are cloud services — no local containers needed.
-# Postgres is optional (used for RAGAS metrics + SQL agent demo data).
+# MAO — docker-compose (local dev backing services: Postgres only)
+# Groq and Qdrant are cloud services — no local containers needed.
+# Postgres backs RAGAS metrics, the SQL agent demo data and the /health probe.
+#
+# This file starts SERVICES, not the app. For application entrypoints per
+# deployment target see deploy/README.md.
 #
 # Start:  docker compose up -d
 # Stop:   docker compose down

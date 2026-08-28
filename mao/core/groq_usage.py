@@ -4,23 +4,76 @@ mao/core/groq_usage.py
 In-memory Groq API token usage tracker.
 Accumulates input/output token counts per model across the process lifetime.
 Exposes a module-level singleton `tracker` used by llm.py and main.py.
+
+P1-18: pricing is read from the ModelRegistry's `cost_per_1m_input_usd` /
+`cost_per_1m_output_usd`, not from a second literal table. The old table had
+drifted — it still priced `llama-3.1-70b-versatile` and `mixtral-8x7b-32768`,
+both of which the registry records as RETIRED — so every cost figure derived
+from it was wrong for those ids.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
-# Groq pricing (USD per 1M tokens)
-_PRICE_PER_1M: dict[str, dict[str, float]] = {
-    "llama-3.1-8b-instant":     {"input": 0.05,  "output": 0.08},
-    "llama-3.3-70b-versatile":  {"input": 0.59,  "output": 0.79},
-    "llama-3.1-70b-versatile":  {"input": 0.59,  "output": 0.79},
-    "mixtral-8x7b-32768":       {"input": 0.24,  "output": 0.24},
-    "gemma2-9b-it":             {"input": 0.20,  "output": 0.20},
-}
-_DEFAULT_PRICE = {"input": 0.50, "output": 0.80}
+logger = logging.getLogger(__name__)
+
+# Used only when the registry has no usable price for an id: an operator-supplied
+# model, or a retired record kept for refusal purposes (which carries no price).
+# Deliberately pessimistic so unknown spend is over- rather than under-reported.
+_FALLBACK_INPUT_PER_1M = 0.50
+_FALLBACK_OUTPUT_PER_1M = 0.80
+
+_warned_unpriced: set[str] = set()
+
+
+@dataclass(frozen=True)
+class ModelPrice:
+    """Resolved price for one model id, plus where the numbers came from."""
+
+    input_per_1m: float
+    output_per_1m: float
+    source: str  # "registry" | "unknown"
+
+    def cost_for(self, input_tokens: int, output_tokens: int) -> float:
+        return (
+            input_tokens * self.input_per_1m + output_tokens * self.output_per_1m
+        ) / 1_000_000
+
+
+def price_for(model_id: str) -> ModelPrice:
+    """Price a model id from the ModelRegistry, degrading gracefully.
+
+    Imported lazily: `mao.core.llm` imports this module, and the provider
+    gateway imports back into core, so a module-level import would risk a cycle.
+    """
+    record = None
+    try:
+        from mao.providers.gateway import registry
+
+        record = registry().get(model_id)
+    except Exception as exc:  # pragma: no cover - registry construction is total
+        logger.debug("Model registry unavailable for pricing %r: %s", model_id, exc)
+
+    if record is not None:
+        input_price = float(record.cost_per_1m_input_usd)
+        output_price = float(record.cost_per_1m_output_usd)
+        if input_price > 0.0 or output_price > 0.0:
+            return ModelPrice(input_price, output_price, "registry")
+
+    if model_id not in _warned_unpriced:
+        _warned_unpriced.add(model_id)
+        logger.warning(
+            "No registry pricing for model %r — estimating at $%.2f/$%.2f per 1M tokens",
+            model_id,
+            _FALLBACK_INPUT_PER_1M,
+            _FALLBACK_OUTPUT_PER_1M,
+        )
+    return ModelPrice(_FALLBACK_INPUT_PER_1M, _FALLBACK_OUTPUT_PER_1M, "unknown")
 
 
 class _UsageTracker:
@@ -31,8 +84,7 @@ class _UsageTracker:
         )
 
     def record(self, model: str, input_tokens: int, output_tokens: int) -> None:
-        price = _PRICE_PER_1M.get(model, _DEFAULT_PRICE)
-        cost = (input_tokens * price["input"] + output_tokens * price["output"]) / 1_000_000
+        cost = price_for(model).cost_for(input_tokens, output_tokens)
         with self._lock:
             bucket = self._per_model[model]
             bucket["input_tokens"]  += input_tokens
