@@ -311,7 +311,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     # Persist chat session (fire-and-forget, never blocks response)
     loop = asyncio.get_running_loop()
     loop.run_in_executor(
-        _executor, _persist_session, request.query, safe_query, request.user_id, result, request_id
+        _executor, _persist_session, safe_query, request.user_id, result, request_id
     )
 
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
@@ -451,7 +451,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     emit_trace(trace_id=request_id, result=result, latency_ms=latency_ms)
     _loop = asyncio.get_running_loop()
     _loop.run_in_executor(
-        _executor, _persist_session, request.query, safe_query, request.user_id, result, request_id
+        _executor, _persist_session, safe_query, request.user_id, result, request_id
     )
 
     # Build SSE metadata payload (sent once after all tokens)
@@ -700,7 +700,6 @@ async def graph_topology_endpoint() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _persist_session(
-    raw_query: str,
     safe_query: str,
     user_id: str,
     result: dict[str, Any],
@@ -711,12 +710,16 @@ def _persist_session(
     Used by BOTH /chat and /chat/stream. The streaming path previously wrote no
     ChatSession row at all, so streamed clinical answers — the majority of real
     traffic — left no audit record whatsoever (P1-9).
+
+    Takes only the de-identified query. The raw one is deliberately not a
+    parameter, so raw PHI is not carried into a background task, a thread pool,
+    or an exception traceback on its way to a database that has no encryption or
+    retention controls attached to it.
     """
     metadata = result.get("metadata") or {}
     try:
         save_chat_session(
             user_id=user_id,
-            user_query=raw_query,
             pii_scrubbed_query=safe_query,
             response=result.get("response", ""),
             agent_used=result.get("agent_used", "unknown"),

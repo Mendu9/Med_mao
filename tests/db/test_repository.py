@@ -29,7 +29,7 @@ def db(tmp_path):
 class TestChatSessionPersistence:
     def test_saving_returns_the_session_id(self, db) -> None:
         sid = repository.save_chat_session(
-            user_id="u1", user_query="q", pii_scrubbed_query="q", response="r", agent_used="graphrag"
+            user_id="u1", pii_scrubbed_query="q", response="r", agent_used="graphrag"
         )
         assert isinstance(sid, uuid.UUID)
 
@@ -37,7 +37,6 @@ class TestChatSessionPersistence:
         """P1-9 — these four columns existed but nothing ever populated them."""
         sid = repository.save_chat_session(
             user_id="u1",
-            user_query="raw query with 123-45-6789",
             pii_scrubbed_query="raw query with [SSN]",
             response="r",
             agent_used="clinical",
@@ -55,13 +54,20 @@ class TestChatSessionPersistence:
         assert row.report_card == {"stage": "CN"}
         assert row.uncertainty_flag is True
 
-    def test_raw_query_and_scrubbed_query_are_stored_separately(self, db) -> None:
+    def test_only_the_de_identified_query_is_stored(self, db) -> None:
+        """The raw query used to be stored alongside the scrubbed one.
+
+        That put patient-identifying text in plaintext in the operational
+        database with no encryption, access control or retention policy. Both
+        text columns now receive the de-identified value; retaining raw clinical
+        text for audit would need a protected design of its own.
+        """
         sid = repository.save_chat_session(
-            user_id="u1", user_query="raw", pii_scrubbed_query="scrubbed", response="r",
+            user_id="u1", pii_scrubbed_query="scrubbed", response="r",
             agent_used="graphrag",
         )
         row = repository.get_chat_session(sid)
-        assert row.user_query == "raw"
+        assert row.user_query == "scrubbed"
         assert row.pii_scrubbed_query == "scrubbed"
 
 
@@ -69,14 +75,14 @@ class TestReportCardExport:
     def test_a_saved_report_card_is_retrievable(self, db) -> None:
         """P1-8 — export was a permanent 404 because nothing wrote this column."""
         sid = repository.save_chat_session(
-            user_id="u1", user_query="q", pii_scrubbed_query="q", response="r",
+            user_id="u1", pii_scrubbed_query="q", response="r",
             agent_used="clinical", report_card={"stage": "AD", "confidence_score": 0.9},
         )
         assert repository.get_report_card(sid) == {"stage": "AD", "confidence_score": 0.9}
 
     def test_missing_report_card_returns_none(self, db) -> None:
         sid = repository.save_chat_session(
-            user_id="u1", user_query="q", pii_scrubbed_query="q", response="r", agent_used="graphrag"
+            user_id="u1", pii_scrubbed_query="q", response="r", agent_used="graphrag"
         )
         assert repository.get_report_card(sid) is None
 
@@ -88,13 +94,13 @@ class TestFeedback:
     def test_feedback_persists_against_a_real_session(self, db) -> None:
         """P1-7 — the insert omitted user_id (NOT NULL) and used a str FK."""
         sid = repository.save_chat_session(
-            user_id="u1", user_query="q", pii_scrubbed_query="q", response="r", agent_used="graphrag"
+            user_id="u1", pii_scrubbed_query="q", response="r", agent_used="graphrag"
         )
         assert repository.save_feedback(session_id=str(sid), thumbs_up=True, comment="good") is True
 
     def test_feedback_accepts_a_string_session_id(self, db) -> None:
         sid = repository.save_chat_session(
-            user_id="u1", user_query="q", pii_scrubbed_query="q", response="r", agent_used="graphrag"
+            user_id="u1", pii_scrubbed_query="q", response="r", agent_used="graphrag"
         )
         assert repository.save_feedback(session_id=str(sid), thumbs_up=False) is True
 
@@ -106,7 +112,7 @@ class TestFeedback:
 
     def test_feedback_inherits_user_id_from_the_session(self, db) -> None:
         sid = repository.save_chat_session(
-            user_id="alice", user_query="q", pii_scrubbed_query="q", response="r",
+            user_id="alice", pii_scrubbed_query="q", response="r",
             agent_used="graphrag",
         )
         repository.save_feedback(session_id=str(sid), thumbs_up=True)

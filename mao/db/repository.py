@@ -29,7 +29,6 @@ def _as_uuid(value: str | uuid.UUID) -> uuid.UUID | None:
 def save_chat_session(
     *,
     user_id: str,
-    user_query: str,
     pii_scrubbed_query: str,
     response: str,
     agent_used: str,
@@ -39,11 +38,23 @@ def save_chat_session(
     nli_flags: list[dict[str, Any]] | None = None,
     report_card: dict[str, Any] | None = None,
 ) -> uuid.UUID:
-    """Persist one turn with its full clinical audit trail.
+    """Persist one turn with its full clinical audit trail, de-identified.
 
     Writes the four columns the audit found permanently NULL — pii_scrubbed_query,
     council_verdict, nli_flags, report_card (P1-9) — so a streamed clinical answer
     leaves the same record as a non-streamed one, and /export/report can succeed (P1-8).
+
+    There is deliberately no parameter for the raw query. Both text columns
+    receive the de-identified text, so this function cannot be the route by
+    which PHI reaches rest. It previously took the raw query alongside the
+    scrubbed one and stored both, which put patient-identifying text in
+    plaintext in the operational database with no encryption, access control or
+    retention policy attached to it.
+
+    Retaining raw clinical text for audit is a legitimate requirement, but it is
+    a protected design — encryption at rest, restricted access, a stated
+    retention period, and an access audit trail — not a side effect of a chat
+    handler. Until that exists, the safer default applies.
     """
     session_id = uuid.uuid4()
     with get_db_session() as db:
@@ -51,7 +62,7 @@ def save_chat_session(
             ChatSession(
                 session_id=session_id,
                 user_id=user_id,
-                user_query=user_query,
+                user_query=pii_scrubbed_query,
                 pii_scrubbed_query=pii_scrubbed_query,
                 response=response,
                 agent_used=agent_used,
