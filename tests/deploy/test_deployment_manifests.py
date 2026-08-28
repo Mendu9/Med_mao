@@ -18,6 +18,17 @@ REQUIREMENTS = REPO_ROOT / "requirements.txt"
 SKIP_DIRS = {
     ".git", ".venv", "venv", "__pycache__", "node_modules",
     ".pytest_cache", ".ruff_cache", "hf_cache", "chroma_data", "build", "dist",
+    # AD/ is a separate, independently-versioned repository that happens to sit
+    # inside this working tree. Its imports are not this project's dependencies.
+    "AD",
+    # Superseded interpreter kept for recovery, not part of the source tree.
+    ".venv.broken-py312",
+    "site-packages",
+    # .claude/worktrees/agent-* hold complete duplicate copies of an OLDER
+    # codebase (pre-Groq: ollama, duckduckgo_search, pinecone, pyvis). Scanning
+    # them would make this project appear to depend on packages no current
+    # module imports.
+    ".claude",
 }
 FIRST_PARTY = {"mao", "app", "tests", "ad", "conftest", "setup", "deploy", "scripts"}
 
@@ -402,5 +413,18 @@ def test_root_app_py_delegates_to_the_deploy_target() -> None:
 
 
 def test_no_duplicate_two_process_launcher_at_the_root() -> None:
-    """start.sh and scripts/start_hf.sh were two divergent copies of one script (P1-16)."""
-    assert not (REPO_ROOT / "scripts" / "start_hf.sh").exists()
+    """start.sh and scripts/start_hf.sh were two divergent copies of one script (P1-16).
+
+    Asserted against *tracked* state, not the filesystem. The old copy was
+    gitignored and untracked, so a fresh clone never had it; a stale leftover in
+    one developer's working tree is not a repository defect, and a filesystem
+    assertion would make this test pass or fail by accident of local history.
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "scripts/start_hf.sh", "start.sh"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+    ).stdout.split()
+    assert tracked == [], f"duplicate launcher still tracked: {tracked}"
+    assert (REPO_ROOT / "deploy" / "huggingface" / "start_hf.sh").exists()
