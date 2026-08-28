@@ -56,7 +56,7 @@ def multimodal_node(state: MAOState) -> MAOState:
     if modality == "image":
         response, result_meta = _handle_image(user_query, metadata, memory_context)
     elif modality == "audio":
-        response, result_meta = _handle_audio(user_query, metadata, memory_context)
+        response, result_meta = handle_audio(user_query, metadata, memory_context)
     else:
         response = (
             "To use the multimodal agent, please provide an image (base64 or URL) "
@@ -141,7 +141,7 @@ def _handle_image(
 # Audio handler
 # ---------------------------------------------------------------------------
 
-def _handle_audio(
+def handle_audio(  # public: `clinical_agent` shares this one implementation
     user_query: str,
     metadata: dict,
     memory_context: str,

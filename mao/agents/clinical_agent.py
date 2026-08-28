@@ -9,21 +9,18 @@ import logging
 import requests
 from mao.core import llm as groq_llm
 
+from mao.agents.multimodal_agent import handle_audio
 from mao.core.config import MRI_CONFIDENCE_GATE, CLINICAL_MODEL
 from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
+from mao.prompts import get_prompt
 from mao.rag.retriever import retrieve
 from mao.report.report_card import SourceEntry, build_report_card
+from mao.safety.policy import ATTACHMENT_KEYS
 from mao.safety.verification import CLINICAL_DISCLAIMER
 
 logger = logging.getLogger(__name__)
-
-# P0-4: raw attachment payloads arrive in `metadata` and clinical_node spreads
-# `metadata` into the response the API returns. Echoing a base64 MRI or patient
-# report back to the client serves no purpose and widens the blast radius of any
-# response-logging or caching layer downstream.
-_RAW_ATTACHMENT_KEYS = frozenset({"image_b64", "report_b64"})
 
 # Medical disclaimer — always appended, never omitted. Defined in
 # mao.safety.verification so output_guardrails can re-assert it without
@@ -32,33 +29,21 @@ _DISCLAIMER = CLINICAL_DISCLAIMER
 
 # ---------------------------------------------------------------------------
 # System prompts
+#
+# Read from the registry on every call, never copied into module constants.
+# This agent used to carry inline prompt text, and the registered
+# `clinical.extraction` spec had already diverged from it: the registry copy
+# carries a de-identification instruction the inline copy lacked. The prompt
+# test asserted registration, not consumption, so the registry stayed green
+# while the highest-risk agent in the system ran unversioned, untraceable text.
 # ---------------------------------------------------------------------------
 
-_CLINICAL_SYSTEM = """\
-You are a clinical AI assistant specializing in Alzheimer's disease and neuroimaging.
-You provide evidence-based decision support for healthcare professionals and patients.
+def _clinical_system() -> str:
+    return get_prompt("clinical.synthesis").template
 
-Core rules:
-  - Always base your response on the provided context (research papers, prediction results, web sources)
-  - Cite sources by their filename and chunk ID when referencing research papers
-  - Never fabricate medical facts or invent statistics
-  - Structure your response with clear section headers
-  - The medical disclaimer will be appended automatically — do not add your own
-  - Use plain, accessible language alongside clinical terminology
-"""
 
-_EXTRACTION_SYSTEM = """\
-You are a medical data extraction assistant.
-Extract structured information from the medical report below.
-Respond ONLY with valid JSON matching this schema (use null for missing fields):
-{
-  "diagnosis": "string or null",
-  "biomarkers": {"marker_name": "value_with_unit"},
-  "medications": ["list of current medications"],
-  "recommended_tests": ["list of recommended tests"],
-  "key_findings": ["list of key clinical findings"]
-}
-"""
+def _extraction_system() -> str:
+    return get_prompt("clinical.extraction").template
 
 # ---------------------------------------------------------------------------
 # Main node
@@ -73,13 +58,25 @@ def clinical_node(state: MAOState) -> MAOState:
 
 
     # --- Detect sub-mode ---
+    #
+    # The router sends *every* attachment here, so every attachment type needs a
+    # branch. Audio had none: an uploaded voice sample was accepted, priced HIGH
+    # risk, and then fell through to the plain-text path, which answered the
+    # caption and never mentioned that the recording had been discarded. Voice is
+    # a recognised Alzheimer's biomarker modality, so silently dropping it is a
+    # clinical failure, not a missing nicety.
     has_image  = bool(metadata.get("image_b64") or metadata.get("image_url"))
     has_report = bool(metadata.get("report_b64") or metadata.get("report_path"))
+    has_audio  = bool(metadata.get("audio_b64") or metadata.get("audio_path"))
 
     if has_image:
         response, result_meta = _handle_mri_image(user_query, metadata, memory_context, domain=domain)
     elif has_report:
         response, result_meta = _handle_pdf_report(user_query, metadata, memory_context, domain=domain)
+    elif has_audio:
+        # One shared transcription implementation, owned by multimodal_agent.
+        response, result_meta = handle_audio(user_query, metadata, memory_context)
+        result_meta = {**result_meta, "mode": result_meta.get("mode", "audio")}
     else:
         response, result_meta = _handle_text_question(user_query, memory_context, domain=domain)
 
@@ -113,8 +110,13 @@ def clinical_node(state: MAOState) -> MAOState:
 
     state["response"]     = response
     state["agent_used"]   = "clinical"
+    # Echo the caller's metadata back MINUS every attachment identifier. This
+    # used to strip only the two base64 keys, so `report_path`, `image_url`,
+    # `audio_b64` and `audio_path` survived into the returned and cached
+    # metadata — and a filename like `/uploads/JohnSmith_MRN12345.pdf` carries
+    # PHI just as surely as the file does. The key list is the policy's.
     state["metadata"]     = {
-        **{k: v for k, v in metadata.items() if k not in _RAW_ATTACHMENT_KEYS},
+        **{k: v for k, v in metadata.items() if k not in ATTACHMENT_KEYS},
         **{k: v for k, v in result_meta.items() if not k.startswith("_")},
         "uncertainty_flag": uncertainty_flag,  # API reads this from metadata (main.py:305,444)
     }
@@ -178,7 +180,7 @@ def _handle_mri_image(
     )
 
     # Step 4: Synthesize
-    system_prompt = build_system_prompt(_CLINICAL_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(_clinical_system(), memory_context)
     user_prompt = (
         f"User question: {user_query}\n\n"
         f"## MRI Prediction Result\n{pred_block}\n\n"
@@ -287,7 +289,7 @@ def _handle_pdf_report(
     web_block = _web_search_clinical(search_query)
 
     # Step 6: Synthesize
-    system_prompt = build_system_prompt(_CLINICAL_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(_clinical_system(), memory_context)
 
     extracted_text = json.dumps(extracted, indent=2) if extracted else "(extraction failed)"
     user_prompt = (
@@ -416,7 +418,7 @@ def _handle_text_question(
 
     research_block = _format_sources(ranked_chunks)
 
-    system_prompt = build_system_prompt(_CLINICAL_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(_clinical_system(), memory_context)
     user_prompt = (
         f"## Relevant Research\n{research_block}\n\n"
         f"User question: {user_query}\n\n"
