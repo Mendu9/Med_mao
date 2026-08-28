@@ -17,15 +17,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from mao.prompts import registry_version
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
-from mao.safety.policy import get_policy
+from mao.safety.policy import ATTACHMENT_KEYS, get_policy
 
 # Bumped by ingestion; overridable so re-indexing invalidates cached answers.
 DEFAULT_INDEX_VERSION = "v1"
-
-# Attachment keys whose *content* changes the answer.
-_ATTACHMENT_KEYS = ("image_b64", "image_url", "report_b64", "report_path")
 
 
 def _digest(*parts: str) -> str:
@@ -44,6 +42,10 @@ def _default_model_version() -> str:
     return model_id_for(ModelRole.GENERAL_SYNTHESIS)
 
 
+def _default_prompt_version() -> str:
+    return registry_version()
+
+
 @dataclass(frozen=True)
 class CacheKeyInputs:
     """Everything that may change a chat answer."""
@@ -56,6 +58,7 @@ class CacheKeyInputs:
 
     policy_version: str = field(default_factory=lambda: get_policy().policy_version)
     model_version: str = field(default_factory=_default_model_version)
+    prompt_version: str = field(default_factory=_default_prompt_version)
     index_version: str = field(default_factory=_default_index_version)
 
     def history_digest(self) -> str:
@@ -65,8 +68,16 @@ class CacheKeyInputs:
         )
 
     def attachment_digest(self) -> str:
-        """Digest of attachment content, not just its presence."""
-        present = {k: self.metadata.get(k) for k in _ATTACHMENT_KEYS if self.metadata.get(k)}
+        """Digest of attachment content, not just its presence.
+
+        The key list is the safety policy's, never a local copy. This module
+        previously kept its own four-key tuple omitting audio, so a voice
+        sample was invisible here: `/chat` consults the cache before
+        `graph.invoke`, so an audio request could be answered from cache with
+        the risk gate, verification, the council and the disclaimer all skipped,
+        and two patients' recordings collided on one key.
+        """
+        present = {k: self.metadata.get(k) for k in ATTACHMENT_KEYS if self.metadata.get(k)}
         if not present:
             return "none"
         return _digest(json.dumps(present, sort_keys=True))
@@ -82,5 +93,6 @@ def build_chat_cache_key(inputs: CacheKeyInputs) -> str:
         inputs.attachment_digest(),
         inputs.policy_version,
         inputs.model_version,
+        inputs.prompt_version,
         inputs.index_version,
     )

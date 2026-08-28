@@ -16,11 +16,20 @@ P1-2  `nli_flags` was written only by `clinical_agent`. Every other agent
 signals exist for every response regardless of which agent ran. It observes and
 scores; it never edits the response.
 
-Failure posture: the LLM judge fails *open* (safety 10) with the error recorded
-in `notes`, because a provider outage must not blanket-block all clinical
-traffic. That is not a hole: during an outage the LLM council's safety member
-returns a FAIL verdict, which `output_guardrails` treats as a hard block. The
-council is the fail-closed control; the judge is a second opinion.
+Failure posture, and the distinction that matters:
+
+*Unavailable* — the provider raised. The judge fails **open** (safety 10) with
+the error in `notes`, because an outage must not blanket-block clinical
+traffic. This is only defensible because the council is a genuine fail-closed
+backstop: `llm_council.parse_member_verdict` requires an affirmative
+`VERDICT: PASS`, so a member that cannot answer blocks. (Before that fix the
+council passed anything not containing the literal string "FAIL", and this
+docstring's justification was simply false — both controls failed open at once.)
+
+*Answered, but not to contract* — the judge replied with something other than
+`{"safety": int, ...}`. That is not an outage, it is a judge whose verdict we
+cannot read, so `safety` fails **closed** at 0 and the guardrails block. A judge
+that identifies harm as the word "unsafe" used to be scored 10/10.
 """
 from __future__ import annotations
 
@@ -32,9 +41,21 @@ from mao.eval.nli_checker import check_all_claims
 from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
-from mao.safety.policy import RiskLevel, get_policy
+from mao.safety.policy import get_policy, resolve_risk
 
 logger = logging.getLogger(__name__)
+
+# Re-exported so existing importers keep working. This module deliberately does
+# not define its own resolver: it used to, with lenient semantics ("Low" -> LOW),
+# and `output_guardrails` imported that one while `api/streaming.py` used the
+# strict policy one — the two halves of the P0-1 guarantee disagreed on the only
+# risk level allowed to skip verification.
+__all__ = [
+    "CLINICAL_DISCLAIMER",
+    "DISCLAIMER_MARKER",
+    "resolve_risk",
+    "verification_node",
+]
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -63,32 +84,6 @@ before any clinical action is taken.
 
 # Stable substring used to detect the disclaimer regardless of formatting drift.
 DISCLAIMER_MARKER = "AI Decision Support Only"
-
-
-# ---------------------------------------------------------------------------
-# Risk resolution
-# ---------------------------------------------------------------------------
-
-def resolve_risk(state: dict) -> RiskLevel:
-    """Read `state["risk_level"]`, falling back to the policy's classification.
-
-    Shared with `output_guardrails` so risk is interpreted in exactly one way.
-    """
-    raw = state.get("risk_level")
-    if isinstance(raw, RiskLevel):
-        return raw
-    if isinstance(raw, str):
-        try:
-            return RiskLevel(raw.strip().lower())
-        except ValueError:
-            logger.warning("Unrecognised risk_level %r — reclassifying from intent", raw)
-
-    metadata = state.get("metadata") or {}
-    has_attachment = bool(
-        isinstance(metadata, dict)
-        and any(metadata.get(k) for k in ("image_b64", "image_url", "report_b64", "report_path"))
-    )
-    return get_policy().risk_for(str(state.get("intent", "")), has_attachment=has_attachment)
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +134,20 @@ def _run_nli(response: str, docs) -> list[dict]:
 # LLM judge
 # ---------------------------------------------------------------------------
 
-def _score(value, default: int = 10) -> int:
-    """Coerce a model-supplied score into an int clamped to 0-10."""
+# A judge that answered but broke its output contract has not cleared the
+# response — its score is unreadable, not high. `safety` therefore fails closed.
+_UNREADABLE_SAFETY = 0
+# `groundedness` drives no block branch; a missing value is neutral, not a veto.
+_UNREADABLE_GROUNDEDNESS = 10
+
+
+def _score(value, default: int) -> int:
+    """Coerce a model-supplied score into an int clamped to 0-10.
+
+    `default` is explicit at every call site because the safe direction differs
+    per field: an unreadable safety score must block, an unreadable groundedness
+    score must not.
+    """
     try:
         return max(0, min(10, int(float(value))))
     except (TypeError, ValueError):
@@ -149,6 +156,11 @@ def _score(value, default: int = 10) -> int:
 
 def _judge_scores(notes: str, safety: int = 10, groundedness: int = 10) -> dict:
     return {"safety": safety, "groundedness": groundedness, "notes": notes}
+
+
+def _unreadable_judge(notes: str) -> dict:
+    """The judge answered, but not in a form we can act on. Fail closed."""
+    return _judge_scores(notes, safety=_UNREADABLE_SAFETY)
 
 
 def _parse_judge(raw: str) -> dict:
@@ -162,14 +174,29 @@ def _parse_judge(raw: str) -> dict:
         if not isinstance(parsed, dict):
             raise ValueError("judge output is not an object")
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.warning("Judge output unparseable (%s)", exc)
-        return _judge_scores(f"judge output unparseable: {exc}")
+        logger.warning("Judge output unparseable (%s) — failing closed", exc)
+        return _unreadable_judge(f"judge output unparseable: {exc}")
+
+    safety = _score(parsed.get("safety"), default=_UNREADABLE_SAFETY)
+    if safety == _UNREADABLE_SAFETY and not _is_numeric(parsed.get("safety")):
+        logger.warning(
+            "Judge returned a non-numeric safety score %r — failing closed",
+            parsed.get("safety"),
+        )
 
     return _judge_scores(
         notes=str(parsed.get("notes", "")),
-        safety=_score(parsed.get("safety")),
-        groundedness=_score(parsed.get("groundedness")),
+        safety=safety,
+        groundedness=_score(parsed.get("groundedness"), default=_UNREADABLE_GROUNDEDNESS),
     )
+
+
+def _is_numeric(value: object) -> bool:
+    try:
+        float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _run_judge(response: str, premise: str) -> dict:

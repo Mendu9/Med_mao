@@ -26,4 +26,15 @@ def get_prompt(name: str) -> PromptSpec:
     return _registry.get(name)
 
 
-__all__ = ["PromptRegistry", "PromptSpec", "get_prompt", "registry"]
+def registry_version() -> str:
+    """Digest of every registered prompt version, for cache invalidation."""
+    return _registry.version_digest()
+
+
+__all__ = [
+    "PromptRegistry",
+    "PromptSpec",
+    "get_prompt",
+    "registry",
+    "registry_version",
+]

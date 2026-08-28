@@ -10,6 +10,7 @@ unlike `str.format`, which would treat them as fields.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 
@@ -65,3 +66,14 @@ class PromptRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._specs)
+
+    def version_digest(self) -> str:
+        """A short digest over every registered prompt's name@version.
+
+        Editing a prompt changes the answer the system gives, so anything that
+        caches an answer has to treat the prompt set as part of its key. One
+        digest over all of them means a caller cannot forget to invalidate for
+        the specific prompt it happened to use.
+        """
+        joined = "|".join(sorted(spec.trace_ref for spec in self._specs.values()))
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]

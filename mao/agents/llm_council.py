@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from mao.core.config import COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS
 from mao.prompts import get_prompt
@@ -44,6 +45,34 @@ def _members_for(context: str) -> tuple[str, ...]:
     if str(context).strip():
         return tuple(_MEMBER_PROMPTS)
     return _CONTEXT_FREE_MEMBERS
+
+
+# Every council prompt declares the same output contract: "VERDICT: PASS" or
+# "VERDICT: FAIL" followed by one sentence.
+_VERDICT_RE = re.compile(r"VERDICT\s*[:\-]?\s*(PASS|FAIL)", re.IGNORECASE)
+
+
+def parse_member_verdict(text: object) -> bool:
+    """Whether one member's reply is an affirmative PASS.
+
+    Adjudication used to be `"FAIL" in text`, which made *absence of a word* the
+    approval condition: an empty completion, a content-filter refusal, hedging
+    prose and even "VERDICT: UNSAFE" all passed. That is the wrong default for
+    the control that `mao/safety/verification.py` cites as its fail-closed
+    backstop — under a degraded (rather than crashed) provider both layers
+    passed unsafe content at once.
+
+    A judge has approved a response only if it said so in the declared format.
+    Anything else — including anything unparseable — is a failure to review, and
+    a failure to review is a FAIL.
+    """
+    if not isinstance(text, str):
+        return False
+    found = [m.upper() for m in _VERDICT_RE.findall(text)]
+    if not found:
+        return False
+    # A judge that says both has not approved anything.
+    return "FAIL" not in found
 
 
 async def _async_call_agent(member: str, response: str, context: str) -> tuple[str, str]:
@@ -101,14 +130,20 @@ async def run_council_async(response: str, context: str) -> dict:
 
     meta = {"members": list(members), "prompt_refs": _prompt_refs(members)}
 
-    if "FAIL" in verdicts.get(_SAFETY, ""):
-        return {**verdicts, **meta, "passed": False, "blocked_by": _SAFETY}
-    if "FAIL" in verdicts.get(_HALLUCINATION, ""):
-        return {**verdicts, **meta, "passed": False, "blocked_by": _HALLUCINATION}
+    # Each member must have affirmatively approved. Report the highest-severity
+    # blocker first so `blocked_by` names the reason a clinician would care about.
+    approved = {m: parse_member_verdict(verdicts.get(m)) for m in members}
 
-    # Clinical pipeline: require unanimous PASS — any single FAIL blocks.
-    fail_count = sum(1 for v in verdicts.values() if "FAIL" in v)
-    return {**verdicts, **meta, "passed": fail_count == 0, "blocked_by": None}
+    for member in (_SAFETY, _HALLUCINATION):
+        if member in approved and not approved[member]:
+            return {**verdicts, **meta, "passed": False, "blocked_by": member}
+
+    blocker = next((m for m in members if not approved[m]), None)
+    if blocker is not None:
+        return {**verdicts, **meta, "passed": False, "blocked_by": blocker}
+
+    # Clinical pipeline: unanimous affirmative PASS, or nothing goes out.
+    return {**verdicts, **meta, "passed": True, "blocked_by": None}
 
 
 def run_council(response: str, context: str) -> dict:

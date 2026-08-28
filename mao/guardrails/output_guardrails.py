@@ -14,8 +14,8 @@ import logging
 from enum import Enum
 
 from mao.guardrails.db_helper import log_guardrail_event
-from mao.safety.policy import get_policy
-from mao.safety.verification import CLINICAL_DISCLAIMER, DISCLAIMER_MARKER, resolve_risk
+from mao.safety.policy import get_policy, resolve_risk
+from mao.safety.verification import CLINICAL_DISCLAIMER, DISCLAIMER_MARKER
 
 logger = logging.getLogger(__name__)
 

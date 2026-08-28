@@ -129,15 +129,27 @@ def resolve_risk(state: object) -> RiskLevel:
     """Read a request's risk level out of graph state.
 
     The single resolver. Everything that needs to know a request's risk — the
-    graph, the verification node, the output guardrails, the API — calls this,
-    so there is exactly one interpretation of a malformed or missing value.
+    graph, the verification node, the output guardrails, the API, the streaming
+    gate — calls this, so there is exactly one interpretation of a malformed or
+    missing value. A second implementation used to live in
+    `mao/safety/verification.py`, and the two disagreed about what LOW means.
 
-    Fails safe to STANDARD. LOW is the only level permitted to skip output
-    verification, so it must be reachable only by an explicit, exactly-matching
-    write from the risk gate — never by a typo, a None, or a wrong type.
+    Two rules, and the distinction between them is the whole point:
+
+    1. An explicit `risk_level` is honoured only on an *exact* match. LOW is the
+       only level permitted to skip output verification and the clinical
+       disclaimer, so it must never be reachable by a typo, a stray space, a
+       None, or a wrong type. `"Low"` and `" LOW "` are not LOW.
+
+    2. When no usable `risk_level` is present, classify from intent and
+       attachments rather than assuming a floor. Defaulting a clinical request
+       to STANDARD silently drops its mandatory disclaimer; `risk_for` escalates
+       it to HIGH instead. This can only return LOW for an intent that is
+       genuinely low-risk, which is a classification, not a typo.
     """
     if not isinstance(state, dict):
         return RiskLevel.STANDARD
+
     raw = state.get("risk_level")
     if isinstance(raw, RiskLevel):
         return raw
@@ -145,5 +157,9 @@ def resolve_risk(state: object) -> RiskLevel:
         try:
             return RiskLevel(raw)
         except ValueError:
-            return RiskLevel.STANDARD
-    return RiskLevel.STANDARD
+            pass
+
+    return _policy.risk_for(
+        str(state.get("intent") or ""),
+        has_attachment=has_attachment(state.get("metadata")),
+    )
