@@ -37,8 +37,6 @@ def _state(**over) -> dict:
 @pytest.fixture()
 def stubbed():
     with patch.object(ga, "retrieve", return_value=[_Chunk()]) as retrieve, \
-         patch.object(ga, "search_memories", return_value="ctx"), \
-         patch.object(ga, "save_memory"), \
          patch("mao.core.llm.chat", return_value="GENERATED ANSWER") as chat:
         yield {"retrieve": retrieve, "chat": chat}
 

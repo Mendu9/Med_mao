@@ -13,7 +13,7 @@ from mao.core.state import (
     INTENT_GRAPHRAG,
     MAOState,
 )
-from mao.memory.mem0_handler import build_system_prompt, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
@@ -52,7 +52,6 @@ def router_node(state: MAOState) -> MAOState:
     Image/file presence → clinical without LLM call (deterministic).
     """
     user_query: str = state["user_query"]
-    user_id: str    = state["user_id"]
     metadata: dict  = state.get("metadata", {})
 
     # --- Deterministic routing: any attachment → always clinical ---
@@ -66,9 +65,9 @@ def router_node(state: MAOState) -> MAOState:
 
     # Chitchat is NOT re-detected here — see the module note above (P2-14).
 
-    # --- Mem0 pre-hook (always runs before LLM) ---
-    memory_context = search_memories(user_query, user_id)
-    state["memory_context"] = memory_context
+    # Memory was recalled once by the graph's `recall` node, which runs before
+    # this one. The router reads it; it does not fetch it.
+    memory_context: str = state.get("memory_context", "")
 
     # --- Build classification prompt from the registry ---
     history_text = _format_history(state.get("chat_history", [])[-3:])

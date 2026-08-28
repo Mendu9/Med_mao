@@ -9,7 +9,7 @@ from typing import Any
 from mao.core import llm as groq_llm
 from mao.core.state import MAOState, risk_level_of
 from mao.core.web_search import web_search as _web_search
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
@@ -48,19 +48,13 @@ def graphrag_node(state: MAOState) -> MAOState:
     """
     LangGraph node: GraphRAG retrieval + optional web-search fallback + LLM synthesis.
 
-    Follows the mandatory Mem0 pattern:
-      1. search_memories BEFORE LLM
-      2. inject into system prompt
-      3. save_memory AFTER LLM responds
+    Memory is not this node's concern. The graph recalls it once before dispatch
+    and persists the verified answer once after supervision; this node only
+    reads `state["memory_context"]` to inject into the system prompt.
     """
     user_query: str = state["user_query"]
-    user_id: str    = state["user_id"]
     memory_context: str = state.get("memory_context", "")
 
-    # Step 1: Mem0 (refresh if empty)
-    if not memory_context:
-        memory_context = search_memories(user_query, user_id)
-        state["memory_context"] = memory_context
 
     # Step 2: GraphRAG retrieval pipeline
     # If the decomposer produced multiple sub-queries, retrieve in parallel.
@@ -214,10 +208,9 @@ def graphrag_node(state: MAOState) -> MAOState:
         state["_stream_model"]    = ""
         response = _call_llm_from_messages(messages)
 
-    # Step 7: Mem0 post-hook (skip when no response yet — streaming fills it later)
-    if response:
-        save_memory(user_query, response, user_id)
-
+    # Memory is persisted once by the graph's `remember` node, after the
+    # supervision chain — so what gets remembered is the verified answer, not
+    # this draft.
     state["response"]   = response
     state["agent_used"] = "graphrag"
     state["retrieved_docs"] = [

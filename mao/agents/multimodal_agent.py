@@ -18,7 +18,7 @@ from pathlib import Path
 import requests
 
 from mao.core.state import MAOState
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
@@ -37,13 +37,9 @@ def multimodal_node(state: MAOState) -> MAOState:
     LangGraph node: route to image or audio handler based on metadata.
     """
     user_query: str = state["user_query"]
-    user_id: str    = state["user_id"]
     memory_context: str = state.get("memory_context", "")
     metadata: dict  = state.get("metadata", {})
 
-    if not memory_context:
-        memory_context = search_memories(user_query, user_id)
-        state["memory_context"] = memory_context
 
     modality = metadata.get("modality", "")
 
@@ -68,7 +64,6 @@ def multimodal_node(state: MAOState) -> MAOState:
         )
         result_meta = {"modality": "none"}
 
-    save_memory(user_query, response, user_id)
 
     state["response"]   = response
     state["agent_used"] = "multimodal"

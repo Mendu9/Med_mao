@@ -12,7 +12,7 @@ import wikipediaapi
 from mao.core import llm as groq_llm
 from mao.core.state import MAOState
 from mao.core.web_search import web_search as _web_search_provider
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
 
@@ -49,12 +49,8 @@ def tool_node(state: MAOState) -> MAOState:
     LangGraph node: ReAct tool-calling loop using mistral.
     """
     user_query: str = state["user_query"]
-    user_id: str    = state["user_id"]
     memory_context: str = state.get("memory_context", "")
 
-    if not memory_context:
-        memory_context = search_memories(user_query, user_id)
-        state["memory_context"] = memory_context
 
     system_prompt = build_system_prompt(
         f"{_TOOL_AGENT_SYSTEM}\n\n{_TOOLS_DESCRIPTION}",
@@ -100,7 +96,6 @@ def tool_node(state: MAOState) -> MAOState:
     if not final_answer:
         final_answer = "I was unable to find a complete answer with the available tools."
 
-    save_memory(user_query, final_answer, user_id)
 
     state["response"]   = final_answer
     state["agent_used"] = "tool"

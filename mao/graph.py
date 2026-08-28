@@ -84,6 +84,7 @@ from mao.agents.senior_supervisor import senior_supervisor_node
 from mao.agents.summarizer_agent import summarizer_node
 from mao.agents.tool_agent import tool_node
 from mao.core.state import INTENT_CHITCHAT, MAOState
+from mao.memory.interface import recall_node, remember_node
 from mao.safety.policy import RiskLevel, get_policy, has_attachment
 
 # Imported at module scope on purpose. Verification is a safety control: if it
@@ -102,6 +103,8 @@ logger = logging.getLogger(__name__)
 NODE_GATE       = "chitchat_gate"
 NODE_ROUTER     = "router_node"
 NODE_RISK       = "risk_gate"
+NODE_RECALL     = "recall"
+NODE_REMEMBER   = "remember"
 NODE_VERIFY     = "verification"
 NODE_SUMMARIZER = "summarizer_node"
 NODE_GRAPHRAG   = "graphrag_node"
@@ -145,8 +148,12 @@ def chitchat_gate_node(state: dict) -> dict:
 
 
 def _route_from_gate(state: dict) -> str:
-    """Chitchat goes straight to the risk gate; everything else is decomposed."""
-    return NODE_RISK if state.get("intent") == INTENT_CHITCHAT else "decomposer"
+    """Chitchat goes straight to the risk gate; everything else recalls first.
+
+    Chitchat skips recall deliberately: a greeting needs no user history, and
+    the shortcut exists precisely to avoid paying for work the answer cannot use.
+    """
+    return NODE_RISK if state.get("intent") == INTENT_CHITCHAT else NODE_RECALL
 
 
 def risk_gate_node(state: dict) -> dict:
@@ -228,6 +235,7 @@ def build_graph() -> StateGraph:
     builder.add_node("classifier", classifier_node)
     builder.add_node(NODE_ROUTER, router_node)
     builder.add_node(NODE_RISK,   risk_gate_node)
+    builder.add_node(NODE_RECALL, recall_node)
 
     # --- Post-agent supervision pipeline ---
     builder.add_node(NODE_VERIFY,         verification_node)
@@ -235,14 +243,18 @@ def build_graph() -> StateGraph:
     builder.add_node("council",           council_node)
     builder.add_node("senior_supervisor", senior_supervisor_node)
     builder.add_node("blocked",           blocked_response_node)
+    builder.add_node(NODE_REMEMBER,       remember_node)
 
     # --- Entry: chitchat_gate → (risk_gate shortcut | full pipeline) ---
     builder.add_edge(START, NODE_GATE)
     builder.add_conditional_edges(
         NODE_GATE,
         _route_from_gate,
-        {NODE_RISK: NODE_RISK, "decomposer": "decomposer"},
+        {NODE_RISK: NODE_RISK, NODE_RECALL: NODE_RECALL},
     )
+    # Memory is recalled once, here — before the router (which classifies using
+    # it) and before any agent. No agent re-fetches it.
+    builder.add_edge(NODE_RECALL, "decomposer")
     builder.add_edge("decomposer", "classifier")
     builder.add_edge("classifier", NODE_ROUTER)
 
@@ -276,7 +288,11 @@ def build_graph() -> StateGraph:
             "blocked":           "blocked",
         },
     )
-    builder.add_edge("senior_supervisor", END)
+    # Memory records the answer that SURVIVED supervision. A blocked response
+    # goes straight to END and is never remembered — replaying it as context on
+    # a later turn would reintroduce what the safety chain just rejected.
+    builder.add_edge("senior_supervisor", NODE_REMEMBER)
+    builder.add_edge(NODE_REMEMBER, END)
     builder.add_edge("blocked", END)
 
     compiled = builder.compile()

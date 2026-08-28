@@ -80,8 +80,6 @@ def _minimal_state(metadata: dict) -> dict:
     }
 
 
-@patch("mao.agents.clinical_agent.search_memories", return_value="")
-@patch("mao.agents.clinical_agent.save_memory")
 @patch("mao.agents.clinical_agent.retrieve", return_value=[])
 @patch("mao.agents.clinical_agent._call_llm", return_value="Test LLM response.")
 @patch("mao.agents.clinical_agent._extract_structured_fields", return_value={})
@@ -89,7 +87,7 @@ def _minimal_state(metadata: dict) -> dict:
 @patch("mao.agents.clinical_agent._web_search_clinical", return_value="No web results.")
 def test_clinical_node_routes_to_pdf_mode(
     mock_web, mock_summary, mock_extract,
-    mock_llm, mock_retrieve, mock_save, mock_search,
+    mock_llm, mock_retrieve,
 ):
     """When report_b64 is present, clinical_node uses pdf_report mode."""
     from mao.agents.clinical_agent import clinical_node
@@ -103,12 +101,10 @@ def test_clinical_node_routes_to_pdf_mode(
     assert "IMPORTANT" in result["response"]  # disclaimer appended
 
 
-@patch("mao.agents.clinical_agent.search_memories", return_value="")
-@patch("mao.agents.clinical_agent.save_memory")
 @patch("mao.agents.clinical_agent.retrieve", return_value=[])
 @patch("mao.agents.clinical_agent._call_llm", return_value="Clinical text answer.")
 def test_clinical_node_routes_to_text_mode(
-    mock_llm, mock_retrieve, mock_save, mock_search,
+    mock_llm, mock_retrieve,
 ):
     """No image or report in metadata → text_question mode."""
     from mao.agents.clinical_agent import clinical_node
@@ -120,8 +116,6 @@ def test_clinical_node_routes_to_text_mode(
     assert result["metadata"].get("mode") == "text_question"
 
 
-@patch("mao.agents.clinical_agent.search_memories", return_value="")
-@patch("mao.agents.clinical_agent.save_memory")
 @patch("mao.agents.clinical_agent.retrieve", return_value=[])
 @patch("mao.agents.clinical_agent._call_llm", return_value="Fallback LLM response.")
 @patch("mao.agents.clinical_agent._extract_structured_fields", return_value={})
@@ -129,7 +123,7 @@ def test_clinical_node_routes_to_text_mode(
 @patch("mao.agents.clinical_agent._web_search_clinical", return_value="")
 def test_clinical_node_invalid_pdf_no_crash(
     mock_web, mock_summary, mock_extract,
-    mock_llm, mock_retrieve, mock_save, mock_search,
+    mock_llm, mock_retrieve,
 ):
     """Invalid PDF bytes → graceful response, no exception raised."""
     from mao.agents.clinical_agent import clinical_node
@@ -242,9 +236,7 @@ def test_clinical_node_does_not_run_its_own_nli_check():
 
     with patch("mao.eval.nli_checker.check_all_claims") as mock_nli, \
          patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
-         patch("mao.agents.clinical_agent._call_llm", return_value="Clinical answer."), \
-         patch("mao.agents.clinical_agent.save_memory"), \
-         patch("mao.agents.clinical_agent.search_memories", return_value=""):
+         patch("mao.agents.clinical_agent._call_llm", return_value="Clinical answer."):
         out = clinical_node(_minimal_state({}))
 
     mock_nli.assert_not_called()
@@ -257,9 +249,7 @@ def test_clinical_disclaimer_comes_from_the_shared_constant():
     from mao.safety.verification import DISCLAIMER_MARKER
 
     with patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
-         patch("mao.agents.clinical_agent._call_llm", return_value="Clinical answer."), \
-         patch("mao.agents.clinical_agent.save_memory"), \
-         patch("mao.agents.clinical_agent.search_memories", return_value=""):
+         patch("mao.agents.clinical_agent._call_llm", return_value="Clinical answer."):
         out = clinical_node(_minimal_state({}))
 
     assert DISCLAIMER_MARKER in out["response"]
@@ -344,9 +334,7 @@ def test_clinical_node_does_not_echo_raw_attachment_payloads(raw_key: str):
     with patch("mao.agents.clinical_agent._handle_mri_image",
                return_value=("MRI answer.", {"mode": "mri_image", "_ranked_chunks": []})), \
          patch("mao.agents.clinical_agent._handle_pdf_report",
-               return_value=("PDF answer.", {"mode": "pdf_report", "_ranked_chunks": []})), \
-         patch("mao.agents.clinical_agent.save_memory"), \
-         patch("mao.agents.clinical_agent.search_memories", return_value=""):
+               return_value=("PDF answer.", {"mode": "pdf_report", "_ranked_chunks": []})):
         out = clinical_node(state)
 
     assert raw_key not in out["metadata"], (
@@ -390,9 +378,7 @@ def test_low_confidence_mri_sets_uncertainty_flag_in_metadata():
     }
 
     with patch("mao.agents.clinical_agent._handle_mri_image",
-               return_value=("MRI shows mild changes.", result_meta)), \
-         patch("mao.agents.clinical_agent.save_memory"), \
-         patch("mao.agents.clinical_agent.search_memories", return_value="ctx"):
+               return_value=("MRI shows mild changes.", result_meta)):
         out = clinical_node(state)
 
     assert out["metadata"].get("uncertainty_flag") is True, (

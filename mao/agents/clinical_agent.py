@@ -12,7 +12,7 @@ from mao.core import llm as groq_llm
 from mao.core.config import MRI_CONFIDENCE_GATE, CLINICAL_MODEL
 from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.rag.retriever import retrieve
 from mao.report.report_card import SourceEntry, build_report_card
 from mao.safety.verification import CLINICAL_DISCLAIMER
@@ -67,14 +67,10 @@ Respond ONLY with valid JSON matching this schema (use null for missing fields):
 def clinical_node(state: MAOState) -> MAOState:
     """LangGraph node: clinical decision support."""
     user_query: str = state.get("pii_scrubbed_query") or state["user_query"]
-    user_id: str    = state["user_id"]
     domain: str     = state.get("domain", "alzheimer")
     metadata: dict  = state.get("metadata", {})
     memory_context: str = state.get("memory_context", "")
 
-    if not memory_context:
-        memory_context = search_memories(user_query, user_id)
-        state["memory_context"] = memory_context
 
     # --- Detect sub-mode ---
     has_image  = bool(metadata.get("image_b64") or metadata.get("image_url"))
@@ -114,7 +110,6 @@ def clinical_node(state: MAOState) -> MAOState:
     )
 
     response = response + _DISCLAIMER
-    save_memory(user_query, response, user_id)
 
     state["response"]     = response
     state["agent_used"]   = "clinical"

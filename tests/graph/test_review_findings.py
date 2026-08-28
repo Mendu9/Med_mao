@@ -195,7 +195,7 @@ class TestM5RouterFailureDoesNotDeclassify:
         from mao.agents import router
 
         monkeypatch.setattr(router, "_classify", lambda *a, **k: ("graphrag", False))
-        monkeypatch.setattr(router, "search_memories", lambda *a, **k: "")
+
         out = router.router_node(
             {"user_query": "what stage is this patient?", "user_id": "u", "metadata": {}}
         )

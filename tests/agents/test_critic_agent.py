@@ -23,9 +23,7 @@ def test_module_source_never_mentions_a_code_intent() -> None:
 
 
 def test_review_prompt_comes_from_the_registry() -> None:
-    with patch("mao.core.llm.chat", return_value="Overall score: 7/10") as chat, \
-         patch.object(ca, "search_memories", return_value=""), \
-         patch.object(ca, "save_memory"):
+    with patch("mao.core.llm.chat", return_value="Overall score: 7/10") as chat:
         state = ca.critic_node(
             {"user_query": "Review this claim: tau causes AD.", "user_id": "u1"}
         )

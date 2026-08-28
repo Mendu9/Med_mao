@@ -7,7 +7,7 @@ import logging
 from mao.core import llm as groq_llm
 
 from mao.core.state import MAOState
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
@@ -40,12 +40,8 @@ def summarizer_node(state: MAOState) -> MAOState:
     LangGraph node: summarize inline text or retrieved knowledge-base content.
     """
     user_query: str = state["user_query"]
-    user_id: str    = state["user_id"]
     memory_context: str = state.get("memory_context", "")
 
-    if not memory_context:
-        memory_context = search_memories(user_query, user_id)
-        state["memory_context"] = memory_context
 
     # --- Detect inline text vs. KB-retrieval mode ---
     inline_text = _extract_inline_text(user_query)
@@ -66,7 +62,6 @@ def summarizer_node(state: MAOState) -> MAOState:
 
     if not source_text:
         response = "I couldn't find any text to summarize. Please provide text directly or ask a more specific question."
-        save_memory(user_query, response, user_id)
         state.update({"response": response, "agent_used": "summarizer", "metadata": {"mode": mode}})
         return state
 
@@ -80,7 +75,6 @@ def summarizer_node(state: MAOState) -> MAOState:
     else:
         response = _single_pass_summarize(source_text, user_query, system_prompt)
 
-    save_memory(user_query, response, user_id)
 
     state["response"]   = response
     state["agent_used"] = "summarizer"

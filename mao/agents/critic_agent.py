@@ -38,7 +38,7 @@ from typing import Any
 from mao.core import llm as groq_llm
 
 from mao.core.state import MAOState
-from mao.memory.mem0_handler import build_system_prompt, save_memory, search_memories
+from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
@@ -51,12 +51,8 @@ def critic_node(state: MAOState) -> MAOState:
     LangGraph node: evidence-oriented critique of a supplied draft or plan.
     """
     user_query: str = state["user_query"]
-    user_id: str    = state["user_id"]
     memory_context: str = state.get("memory_context", "")
 
-    if not memory_context:
-        memory_context = search_memories(user_query, user_id)
-        state["memory_context"] = memory_context
 
     system_prompt = build_system_prompt(
         get_prompt("critic.review").template,
@@ -71,7 +67,6 @@ def critic_node(state: MAOState) -> MAOState:
     response = _call_llm(system_prompt, user_prompt, state.get("chat_history", []))
     score = _extract_score(response)
 
-    save_memory(user_query, response, user_id)
 
     state["response"]   = response
     state["agent_used"] = "critic"

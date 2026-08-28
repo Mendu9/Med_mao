@@ -20,9 +20,7 @@ def _run(metadata: dict) -> dict:
         "metadata": metadata,
         "memory_context": "",
     }
-    with patch("mao.agents.multimodal_agent.search_memories", return_value=""), \
-         patch("mao.agents.multimodal_agent.save_memory"), \
-         patch("mao.core.llm.chat", return_value="A description of the image."):
+    with patch("mao.core.llm.chat", return_value="A description of the image."):
         return multimodal_node(state)
 
 

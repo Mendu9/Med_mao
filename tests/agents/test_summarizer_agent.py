@@ -13,8 +13,6 @@ class _Chunk:
 
 def test_kb_retrieval_receives_the_domain() -> None:
     with patch.object(sa, "retrieve", return_value=[_Chunk()]) as retrieve, \
-         patch.object(sa, "search_memories", return_value=""), \
-         patch.object(sa, "save_memory"), \
          patch("mao.core.llm.chat", return_value="summary"):
         sa.summarizer_node(
             {"user_query": "summarise stroke care", "user_id": "u1", "domain": "stroke"}
@@ -25,8 +23,6 @@ def test_kb_retrieval_receives_the_domain() -> None:
 
 def test_summarizer_prompt_comes_from_the_registry() -> None:
     with patch.object(sa, "retrieve", return_value=[_Chunk()]), \
-         patch.object(sa, "search_memories", return_value=""), \
-         patch.object(sa, "save_memory"), \
          patch("mao.core.llm.chat", return_value="summary") as chat:
         sa.summarizer_node({"user_query": "summarise stroke care", "user_id": "u1"})
 
