@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from mao.core import llm as groq_llm
 
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
 
@@ -159,12 +158,12 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        return groq_llm.chat(
+        return gateway.complete(
+            role=ModelRole.GENERAL_SYNTHESIS,
             messages=messages,
-            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.2,
             max_tokens=768,
-        ).strip()
+        ).text.strip()
     except Exception as exc:  # noqa: BLE001
         logger.error("Summarizer LLM call failed: %s", exc)
         return f"Summarization failed: {exc}"

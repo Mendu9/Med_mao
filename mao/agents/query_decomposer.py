@@ -15,7 +15,7 @@ import time
 
 from mao.core.pii_scrubber import scrub_pii
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -137,17 +137,15 @@ def needs_decomposition(query: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _chat_with_retry(messages: list[dict], *, max_retries: int = 2, **kwargs) -> str:
-    """Retry wrapper around ``chat()``.
+    """Retry wrapper around the model gateway.
 
     Retries up to *max_retries* times with linear back-off (0.5 s, 1.0 s)
     before re-raising the final exception.  Keeps the decomposer resilient to
     transient Ollama / Groq timeouts without hiding hard failures.
     """
-    from mao.core.llm import chat  # local import avoids circular dependency at module load
-
     for attempt in range(max_retries + 1):
         try:
-            return chat(messages=messages, **kwargs)
+            return gateway.complete(messages=messages, **kwargs).text
         except Exception as exc:  # noqa: BLE001
             if attempt == max_retries:
                 raise
@@ -191,7 +189,7 @@ def _llm_decompose(query: str) -> list[str]:
             {"role": "system", "content": spec.template},
             {"role": "user", "content": query},
         ],
-        model=model_id_for(ModelRole.EXTRACTION_FAST),
+        role=ModelRole.EXTRACTION_FAST,
         max_tokens=300,
         temperature=0.0,
     ).strip()

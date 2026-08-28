@@ -6,12 +6,11 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from mao.core import llm as groq_llm
 from mao.core.state import MAOState, risk_level_of
 from mao.core.web_search import web_search as _web_search
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
 from mao.safety.policy import get_policy
@@ -196,7 +195,7 @@ def graphrag_node(state: MAOState) -> MAOState:
 
     if state.get("_want_stream") and may_defer:
         state["_stream_messages"] = messages
-        state["_stream_model"]    = model_id_for(ModelRole.GENERAL_SYNTHESIS)
+        state["_stream_model"]    = gateway.model_id_for(ModelRole.GENERAL_SYNTHESIS)
         response = ""
     else:
         if state.get("_want_stream"):
@@ -247,12 +246,12 @@ def graphrag_node(state: MAOState) -> MAOState:
 
 def _call_llm_from_messages(messages: list[dict[str, Any]]) -> str:
     try:
-        return groq_llm.chat(
+        return gateway.complete(
+            role=ModelRole.GENERAL_SYNTHESIS,
             messages=messages,
-            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.1,
             max_tokens=768,
-        ).strip()
+        ).text.strip()
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG LLM call failed: %s", exc)
         return f"I encountered an error generating a response: {exc}"

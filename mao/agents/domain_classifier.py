@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -13,17 +13,17 @@ _VALID_DOMAINS = {"alzheimer", "stroke", "general"}
 
 
 def _llm_classify(query: str) -> str:
-    from mao.core.llm import chat
-
-    return chat(
+    return gateway.complete(
+        role=ModelRole.EXTRACTION_FAST,
         messages=[
             {"role": "system", "content": get_prompt("domain.classify").template},
             {"role": "user", "content": query},
         ],
-        model=model_id_for(ModelRole.EXTRACTION_FAST),
-        max_tokens=5,
+        # Not 5: a model that emits any preamble returns an empty string at that
+        # budget, and every query then silently classifies as "general".
+        max_tokens=32,
         temperature=0.0,
-    ).strip().lower()
+    ).text.strip().lower()
 
 
 def classify_domain(query: str) -> str:

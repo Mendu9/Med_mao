@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from mao.providers import usage
 from mao.providers.llm.base import ChatProvider
 from mao.providers.registry import ModelRecord, ModelRegistry, ModelRole
 
@@ -111,7 +112,7 @@ def complete(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return Completion(
+    completion = Completion(
         text=raw.text,
         model_id=record.model_id,
         provider=active.name,
@@ -119,3 +120,11 @@ def complete(
         input_tokens=raw.input_tokens,
         output_tokens=raw.output_tokens,
     )
+    # Accounting happens here so no agent has to carry it. A no-op unless the
+    # request bound a collector.
+    usage.record(
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        cost_usd=completion.estimated_cost_usd,
+    )
+    return completion

@@ -20,7 +20,7 @@ import requests
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.safety.policy import ATTACHMENT_KEYS
 
@@ -47,7 +47,10 @@ def multimodal_node(state: MAOState) -> MAOState:
     if not modality:
         if metadata.get("image_b64") or metadata.get("image_url"):
             modality = "image"
-        elif metadata.get("audio_path"):
+        elif metadata.get("audio_path") or metadata.get("audio_b64"):
+            # `audio_b64` was omitted here, so a base64 voice sample with no
+            # path fell through to the "no media supplied" branch — even though
+            # `handle_audio` decodes exactly that key.
             modality = "audio"
         else:
             modality = "text_about_media"
@@ -114,12 +117,9 @@ def _handle_image(
         get_prompt("clinical.vision").template, memory_context
     )
 
-    # Resolved at call time so a retired id can never reach the provider (P1-18).
-    vision_model = model_id_for(ModelRole.VISION)
-
     try:
-        from mao.core import llm as groq_llm
-        answer = groq_llm.chat(
+        completion = gateway.complete(
+            role=ModelRole.VISION,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
@@ -129,9 +129,8 @@ def _handle_image(
             ],
             temperature=0.1,
             max_tokens=512,
-            model=vision_model,
-        ).strip()
-        return answer, {"vision_model": vision_model}
+        )
+        return completion.text.strip(), {"vision_model": completion.model_id}
     except Exception as exc:
         logger.error("Vision call failed: %s", exc)
         return f"Image analysis failed: {exc}", {"error": str(exc)}
@@ -203,15 +202,15 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
         f"User question: {user_query}"
     )
     try:
-        from mao.core import llm as groq_llm
-        answer = groq_llm.chat(
+        answer = gateway.complete(
+            role=ModelRole.GENERAL_SYNTHESIS,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
             temperature=0.1,
             max_tokens=512,
-        ).strip()
+        ).text.strip()
         return answer, {"transcript": transcript[:500], "audio_model": "whisper-base"}
     except Exception as exc:
         return (

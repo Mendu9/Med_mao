@@ -21,19 +21,21 @@ _SECTION_PATTERNS = re.compile(
 )
 
 
-_embed_model = None  # module-level cache — avoids reloading 400 MB on every call
+# No module-level model cache here: `mao.rag.embedder` owns the single instance.
 
 
 def _get_embed_model():
-    """Lazy-load the sentence transformer model for similarity computation."""
-    global _embed_model
-    if _embed_model is not None:
-        return _embed_model
+    """The shared sentence-transformer instance, from `mao.rag.embedder`.
+
+    This module used to build a second sentence-transformer of its own, so the
+    same weights were loaded into memory twice — once here for chunk boundary
+    similarity and once in the embedder for query and document vectors. One
+    owner, one instance.
+    """
     try:
-        from sentence_transformers import SentenceTransformer
-        from mao.core.config import cfg
-        _embed_model = SentenceTransformer(cfg.embed_model)
-        return _embed_model
+        from mao.rag.embedder import get_embedding_model
+
+        return get_embedding_model()
     except Exception:
         return None
 

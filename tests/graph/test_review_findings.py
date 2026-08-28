@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.agents.gateway_stub import _completion
+
 from mao.safety.policy import ATTACHMENT_KEYS, RiskLevel, get_policy, has_attachment
 
 
@@ -169,7 +171,7 @@ class TestM5RouterFailureDoesNotDeclassify:
 
         from mao.agents.router import _classify
 
-        with patch("mao.core.llm.chat", side_effect=RuntimeError("provider down")):
+        with patch("mao.providers.gateway.complete", side_effect=RuntimeError("provider down")):
             intent, ok = _classify("sys", "user")
         assert ok is False
 
@@ -178,7 +180,7 @@ class TestM5RouterFailureDoesNotDeclassify:
 
         from mao.agents.router import _classify
 
-        with patch("mao.core.llm.chat", return_value="banana"):
+        with patch("mao.providers.gateway.complete", return_value=_completion("banana")):
             intent, ok = _classify("sys", "user")
         assert ok is False
 
@@ -187,7 +189,7 @@ class TestM5RouterFailureDoesNotDeclassify:
 
         from mao.agents.router import _classify
 
-        with patch("mao.core.llm.chat", return_value="clinical"):
+        with patch("mao.providers.gateway.complete", return_value=_completion("clinical")):
             intent, ok = _classify("sys", "user")
         assert (intent, ok) == ("clinical", True)
 

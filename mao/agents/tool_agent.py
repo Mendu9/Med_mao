@@ -9,11 +9,10 @@ from typing import Any
 
 import wikipediaapi
 
-from mao.core import llm as groq_llm
 from mao.core.state import MAOState
 from mao.core.web_search import web_search as _web_search_provider
 from mao.memory.mem0_handler import build_system_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -174,12 +173,12 @@ def _dispatch_tool(tool_name: str, tool_input: str) -> str:
 
 def _call_llm(messages: list[dict[str, str]]) -> str:
     try:
-        return groq_llm.chat(
+        return gateway.complete(
+            role=ModelRole.GENERAL_SYNTHESIS,
             messages=messages,
-            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.0,
             max_tokens=512,
-        ).strip()
+        ).text.strip()
     except Exception as exc:  # noqa: BLE001
         logger.error("Tool agent LLM call failed: %s", exc)
         return '{"tool": "final_answer", "input": "LLM error, cannot complete request."}'

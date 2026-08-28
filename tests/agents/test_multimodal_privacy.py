@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from tests.agents.gateway_stub import _completing, _completion
+
 from mao.safety.policy import ATTACHMENT_KEYS
 
 
@@ -20,7 +22,7 @@ def _run(metadata: dict) -> dict:
         "metadata": metadata,
         "memory_context": "",
     }
-    with patch("mao.core.llm.chat", return_value="A description of the image."):
+    with patch("mao.providers.gateway.complete", return_value=_completion("A description of the image.")):
         return multimodal_node(state)
 
 

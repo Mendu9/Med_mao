@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+from tests.agents.gateway_stub import _completing, _completion
+
 import pytest
 
 from mao.agents import query_decomposer as qd
@@ -94,7 +96,7 @@ def test_decomposer_node_skips_the_llm_for_a_single_part_query() -> None:
 
 def test_prompt_comes_from_the_registry() -> None:
     payload = '{"sub_queries": ["What is amyloid?", "How does tau relate to AD?"]}'
-    with patch("mao.core.llm.chat", return_value=payload) as chat:
+    with patch("mao.providers.gateway.complete", return_value=_completion(payload)) as chat:
         result = qd._llm_decompose("What is amyloid and how does tau relate to AD?")
 
     system = chat.call_args.kwargs["messages"][0]["content"]
@@ -103,22 +105,22 @@ def test_prompt_comes_from_the_registry() -> None:
 
 
 def test_bare_json_list_is_still_accepted() -> None:
-    with patch("mao.core.llm.chat", return_value='["a?", "b?"]'):
+    with patch("mao.providers.gateway.complete", return_value=_completion('["a?", "b?"]')):
         assert qd._llm_decompose("a? and b?") == ["a?", "b?"]
 
 
 def test_unparseable_output_falls_back_to_the_original_query() -> None:
-    with patch("mao.core.llm.chat", return_value="not json at all"):
+    with patch("mao.providers.gateway.complete", return_value=_completion("not json at all")):
         assert qd._llm_decompose("a and b?") == ["a and b?"]
 
 
-def test_decomposer_uses_a_role_resolved_model() -> None:
-    from mao.providers.gateway import model_id_for
+def test_decomposer_asks_the_gateway_for_a_capability_role() -> None:
     from mao.providers.registry import ModelRole
 
-    with patch("mao.core.llm.chat", return_value='["a?"]') as chat:
+    with patch("mao.providers.gateway.complete", return_value=_completion('["a?"]')) as chat:
         qd._llm_decompose("a? and b?")
-    assert chat.call_args.kwargs["model"] == model_id_for(ModelRole.EXTRACTION_FAST)
+    assert chat.call_args.kwargs["role"] is ModelRole.EXTRACTION_FAST
+    assert "model" not in chat.call_args.kwargs
 
 
 def test_module_holds_no_inline_prompt_constant() -> None:

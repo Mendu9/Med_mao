@@ -28,6 +28,7 @@ from mao.core.state import make_initial_state
 from mao.db import get_db_session, init_db
 from mao.db.repository import get_report_card, save_chat_session, save_feedback
 from mao.graph import get_graph
+from mao.providers import usage
 from mao.api.finalize import finalize_response
 from mao.guardrails import apply_input_guardrails
 from mao.monitoring.metrics import (
@@ -274,7 +275,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     try:
         loop = asyncio.get_running_loop()
         graph = get_graph()
-        result = await loop.run_in_executor(_executor, graph.invoke, state)
+        result = await loop.run_in_executor(_executor, _invoke_with_usage, graph, state)
     except Exception as exc:
         exc_str = str(exc)
         logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
@@ -416,7 +417,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     try:
         loop = asyncio.get_running_loop()
         graph = get_graph()
-        result = await loop.run_in_executor(_executor, graph.invoke, state)
+        result = await loop.run_in_executor(_executor, _invoke_with_usage, graph, state)
     except Exception as exc:
         exc_str = str(exc)
         logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
@@ -693,6 +694,27 @@ async def graph_topology_endpoint() -> dict[str, Any]:
     from mao.api.topology import graph_topology
 
     return graph_topology()
+
+
+# ---------------------------------------------------------------------------
+# Graph invocation
+# ---------------------------------------------------------------------------
+
+def _invoke_with_usage(graph: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """Run the graph and record what its model calls cost.
+
+    The collector is bound *inside* this function because it runs in a
+    ThreadPoolExecutor worker, and `run_in_executor` does not copy contextvars
+    into the worker. Binding here means every gateway call the graph makes —
+    including the council's, which reaches further threads via
+    `asyncio.to_thread`, and that does copy context — lands in this request's
+    totals rather than another request's or nowhere.
+    """
+    with usage.collecting() as totals:
+        result = graph.invoke(state)
+    if isinstance(result, dict):
+        result["llm_usage"] = totals.to_dict()
+    return result
 
 
 # ---------------------------------------------------------------------------

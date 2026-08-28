@@ -64,6 +64,22 @@ def _retrieval(metadata: dict[str, Any]) -> RetrievalTrace | None:
     )
 
 
+def _prompt_ref(result: dict[str, Any]) -> str:
+    """Where the prompt reference actually is.
+
+    `verification_node` writes it into the nested `state["verification_trace"]`,
+    and this module read it from the top level — so the field the architecture
+    requires for prompt provenance was empty on every trace ever emitted.
+    """
+    top_level = result.get("prompt_ref")
+    if top_level:
+        return str(top_level)
+    nested = result.get("verification_trace") or {}
+    if isinstance(nested, dict):
+        return str(nested.get("prompt_ref") or "")
+    return ""
+
+
 def build_trace(*, trace_id: str, result: dict[str, Any], latency_ms: float) -> TraceSchema:
     """Assemble a TraceSchema from a completed graph result."""
     metadata = result.get("metadata") or {}
@@ -74,6 +90,11 @@ def build_trace(*, trace_id: str, result: dict[str, Any], latency_ms: float) -> 
     judge = result.get("judge_scores") or {}
     quality = {k: float(v) for k, v in judge.items() if isinstance(v, (int, float))}
 
+    # Totals for every model call the request made, summed by the gateway.
+    llm_usage = result.get("llm_usage") or {}
+    if not isinstance(llm_usage, dict):
+        llm_usage = {}
+
     return TraceSchema(
         trace_id=trace_id,
         workflow=intent,
@@ -81,10 +102,13 @@ def build_trace(*, trace_id: str, result: dict[str, Any], latency_ms: float) -> 
         provider=record.provider,
         model_id=record.model_id,
         model_role=role.name,
-        prompt_ref=str(result.get("prompt_ref") or ""),
+        prompt_ref=_prompt_ref(result),
         policy_version=get_policy().policy_version,
         latency_ms=float(latency_ms),
         retrieval=_retrieval(metadata),
+        input_tokens=int(llm_usage.get("input_tokens") or 0),
+        output_tokens=int(llm_usage.get("output_tokens") or 0),
+        estimated_cost_usd=float(llm_usage.get("estimated_cost_usd") or 0.0),
         quality_scores=quality,
         safety_flags=_safety_flags(result, metadata),
     )

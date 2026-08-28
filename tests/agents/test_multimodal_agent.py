@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.agents.gateway_stub import _completing, _completion
+
 from mao.agents import multimodal_agent as mm
 from mao.prompts import get_prompt
 from mao.providers.gateway import model_id_for
@@ -21,19 +23,20 @@ def test_module_holds_no_hardcoded_vision_model_constant() -> None:
     assert not hasattr(mm, "_VISION_MODEL")
 
 
-def test_image_call_uses_the_role_resolved_model() -> None:
-    with patch("mao.core.llm.chat", return_value="a brain MRI") as chat:
+def test_image_call_uses_the_vision_role() -> None:
+    with patch("mao.providers.gateway.complete", return_value=_completion("a brain MRI")) as chat:
         answer, meta = mm._handle_image("what is this?", {"image_b64": "AAA"}, "")
 
     assert answer == "a brain MRI"
-    expected = model_id_for(ModelRole.VISION)
-    assert chat.call_args.kwargs["model"] == expected
-    assert meta["vision_model"] == expected
-    assert expected != RETIRED_VISION_ID
+    assert chat.call_args.kwargs["role"] is ModelRole.VISION
+    assert "model" not in chat.call_args.kwargs
+    # The id reported in metadata is whatever the gateway actually used.
+    assert meta["vision_model"] == "stub-model"
+    assert model_id_for(ModelRole.VISION) != RETIRED_VISION_ID
 
 
 def test_vision_system_prompt_comes_from_the_registry() -> None:
-    with patch("mao.core.llm.chat", return_value="ok") as chat:
+    with patch("mao.providers.gateway.complete", return_value=_completion("ok")) as chat:
         mm._handle_image("what is this?", {"image_b64": "AAA"}, "")
 
     system = chat.call_args.kwargs["messages"][0]["content"]

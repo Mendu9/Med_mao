@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+from tests.agents.gateway_stub import _completing, _completion
+
 from mao.agents import domain_classifier as dc
 from mao.agents.domain_classifier import classify_domain, classifier_node
 from mao.prompts import get_prompt
@@ -38,19 +40,24 @@ def test_classifier_node_updates_state():
 # ---------------------------------------------------------------------------
 
 def test_prompt_comes_from_the_registry() -> None:
-    with patch("mao.core.llm.chat", return_value="stroke") as chat:
+    with patch("mao.providers.gateway.complete", return_value=_completion("stroke")) as chat:
         assert dc._llm_classify("what is ischemic stroke?") == "stroke"
     system = chat.call_args.kwargs["messages"][0]["content"]
     assert system == get_prompt("domain.classify").template
 
 
-def test_classifier_uses_a_role_resolved_model() -> None:
-    from mao.providers.gateway import model_id_for
+def test_classifier_asks_the_gateway_for_a_capability_role() -> None:
+    """The agent names a role; only the registry turns that into a model id.
+
+    Asserting the role rather than the resolved id is the stronger check — it
+    holds even when the registry rebinds the role to a different model.
+    """
     from mao.providers.registry import ModelRole
 
-    with patch("mao.core.llm.chat", return_value="stroke") as chat:
+    with patch("mao.providers.gateway.complete", return_value=_completion("stroke")) as chat:
         dc._llm_classify("what is ischemic stroke?")
-    assert chat.call_args.kwargs["model"] == model_id_for(ModelRole.EXTRACTION_FAST)
+    assert chat.call_args.kwargs["role"] is ModelRole.EXTRACTION_FAST
+    assert "model" not in chat.call_args.kwargs
 
 
 def test_module_holds_no_inline_prompt_constant() -> None:

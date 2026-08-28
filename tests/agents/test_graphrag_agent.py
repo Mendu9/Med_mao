@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from tests.agents.gateway_stub import _completing, _completion
+
 import pytest
 
 from mao.agents import graphrag_agent as ga
@@ -37,7 +39,7 @@ def _state(**over) -> dict:
 @pytest.fixture()
 def stubbed():
     with patch.object(ga, "retrieve", return_value=[_Chunk()]) as retrieve, \
-         patch("mao.core.llm.chat", return_value="GENERATED ANSWER") as chat:
+         patch("mao.providers.gateway.complete", return_value=_completion("GENERATED ANSWER")) as chat:
         yield {"retrieve": retrieve, "chat": chat}
 
 

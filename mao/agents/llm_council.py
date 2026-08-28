@@ -22,6 +22,7 @@ from mao.core.config import COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS
 from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
+from mao.safety.policy import get_policy, resolve_risk
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,26 @@ def council_node(state: dict) -> dict:
                 "passed": True,
                 "blocked_by": None,
                 "skipped": "empty_response",
+            },
+        }
+
+    # Risk-conditioned, like the rest of verification. The architecture asks for
+    # "risk-conditioned verification instead of a full council on every query";
+    # this node used to run unconditionally, so a LOW-risk greeting the policy
+    # explicitly exempts still paid for a SAFETY_JUDGE call.
+    #
+    # `resolve_risk` is the strict shared resolver: only an exact "low" is LOW,
+    # and an absent or malformed value classifies from intent instead. Skipping
+    # is therefore reachable only by a deliberate LOW classification.
+    risk = resolve_risk(state)
+    if not get_policy().requires_verification(risk):
+        logger.debug("Council skipped at %s risk", risk.value)
+        return {
+            **state,
+            "council_verdict": {
+                "passed": True,
+                "blocked_by": None,
+                "skipped": "low_risk",
             },
         }
 

@@ -24,12 +24,22 @@ def _state(query: str = "what are tau tangles?") -> dict:
 # ---------------------------------------------------------------------------
 
 def test_route_to_agent_has_no_sql_target() -> None:
-    assert route_to_agent({"intent": "sql"}) != "sql_node"
+    with pytest.raises(ValueError):
+        route_to_agent({"intent": "sql"})
 
 
-def test_unknown_intent_falls_back_to_graphrag() -> None:
-    assert route_to_agent({"intent": "sql"}) == "graphrag_node"
-    assert route_to_agent({"intent": "nonsense"}) == "graphrag_node"
+def test_an_unrecognised_intent_is_refused_rather_than_absorbed() -> None:
+    """Silently routing the unknown to graphrag sent it to the one node with no
+    clinical disclaimer. `_classify` validates before writing, so an unknown
+    label here means an upstream bug worth surfacing."""
+    for intent in ("sql", "nonsense", "CLINICAL", ""):
+        with pytest.raises(ValueError):
+            route_to_agent({"intent": intent})
+
+
+def test_the_declared_fallback_intent_still_routes() -> None:
+    assert route_to_agent({"intent": "fallback"}) == "graphrag_node"
+    assert route_to_agent({}) == "graphrag_node"
 
 
 def test_router_module_never_names_sql_node() -> None:

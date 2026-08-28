@@ -7,14 +7,15 @@ import json
 import logging
 
 import requests
-from mao.core import llm as groq_llm
 
 from mao.agents.multimodal_agent import handle_audio
-from mao.core.config import MRI_CONFIDENCE_GATE, CLINICAL_MODEL
+from mao.core.config import MRI_CONFIDENCE_GATE
 from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
+from mao.providers import gateway
+from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
 from mao.report.report_card import SourceEntry, build_report_card
 from mao.safety.policy import ATTACHMENT_KEYS
@@ -366,32 +367,36 @@ def _summarize_report(report_text: str, memory_context: str) -> str:
         f"Report:\n{text}"
     )
     try:
-        return groq_llm.chat(
+        return gateway.complete(
+            role=ModelRole.CLINICAL_SYNTHESIS,
             messages=[{"role": "user", "content": prompt}],
-            model=CLINICAL_MODEL,
             temperature=0.0,
             max_tokens=300,
-        ).strip()
+        ).text.strip()
     except Exception as exc:
         logger.error("Report summarization failed: %s", exc)
         return text[:500]
 
 
 def _extract_structured_fields(report_text: str) -> dict:
-    """Extract structured clinical data from report text."""
-    prompt = (
-        "Extract the following fields from this medical report as JSON: "
-        "diagnosis, biomarkers, medications, tests.\n\n"
-        f"Report:\n{report_text[:2000]}\n\n"
-        "Return only valid JSON."
-    )
+    """Extract structured clinical data from report text.
+
+    The system prompt is the registered `clinical.extraction` spec. This used to
+    build its own inline instruction, so the registered version — the one
+    carrying "The report has already been de-identified; do not attempt to infer
+    patient identity." — never reached a model at all, and the prompt test that
+    asserted its registration passed regardless.
+    """
     try:
-        raw = groq_llm.chat(
-            messages=[{"role": "user", "content": prompt}],
-            model=CLINICAL_MODEL,
+        raw = gateway.complete(
+            role=ModelRole.CLINICAL_SYNTHESIS,
+            messages=[
+                {"role": "system", "content": _extraction_system()},
+                {"role": "user", "content": f"Report:\n{report_text[:2000]}"},
+            ],
             temperature=0.0,
             max_tokens=512,
-        ).strip()
+        ).text.strip()
         start = raw.find("{")
         end = raw.rfind("}") + 1
         return json.loads(raw[start:end]) if start >= 0 else {}
@@ -480,17 +485,17 @@ def _web_search_clinical(query: str) -> str:
 
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    """Call Groq for clinical synthesis using the 70B clinical model."""
+    """Clinical synthesis, through the gateway on the clinical role."""
     try:
-        return groq_llm.chat(
+        return gateway.complete(
+            role=ModelRole.CLINICAL_SYNTHESIS,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
-            model=CLINICAL_MODEL,
             temperature=0.1,
             max_tokens=1024,
-        ).strip()
+        ).text.strip()
     except Exception as exc:
         logger.error("Clinical LLM call failed: %s", exc)
         return f"Response generation failed: {exc}"

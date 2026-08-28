@@ -290,7 +290,7 @@ def test_pdf_report_text_is_scrubbed_before_any_provider_call():
         return "{}"
 
     with patch("mao.agents.clinical_agent._extract_pdf_text", return_value=_RAW_REPORT), \
-         patch("mao.core.llm.chat", side_effect=_recording_chat), \
+         patch("mao.providers.gateway.complete", side_effect=_completing(_recording_chat)), \
          patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
          patch("mao.agents.clinical_agent._web_search_clinical", return_value=""):
         _handle_pdf_report("Summarise this report", {"report_b64": "x"}, "")
@@ -313,7 +313,7 @@ def test_pdf_report_text_is_scrubbed_before_retrieval_seed():
         return []
 
     with patch("mao.agents.clinical_agent._extract_pdf_text", return_value=_RAW_REPORT), \
-         patch("mao.core.llm.chat", return_value="{}"), \
+         patch("mao.providers.gateway.complete", return_value=_completion("{}")), \
          patch("mao.agents.clinical_agent.retrieve", side_effect=_recording_retrieve), \
          patch("mao.agents.clinical_agent._web_search_clinical", return_value=""):
         _handle_pdf_report("Summarise this report", {"report_b64": "x"}, "")

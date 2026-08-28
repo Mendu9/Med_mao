@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import re
 
-from mao.core import llm as groq_llm
 from mao.core.state import (
     ALL_INTENTS,
     INTENT_CLINICAL,
@@ -15,11 +14,14 @@ from mao.core.state import (
 )
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.safety.policy import has_attachment
 
 logger = logging.getLogger(__name__)
+
+# Token budget for the one-word intent label, with room for a short preamble.
+_CLASSIFY_MAX_TOKENS = 64
 
 # ---------------------------------------------------------------------------
 # Chitchat detection — the ONE deterministic detection site (P2-14).
@@ -102,8 +104,7 @@ def route_to_agent(state: MAOState) -> str:
     """
     intent = state.get("intent", INTENT_FALLBACK)
     # No structured-data route: LLM-authored SQL against the operational
-    # database was removed in P0-3. A stale "sql" label now falls back to
-    # graphrag like any other unrecognised intent.
+    # database was removed in P0-3.
     mapping = {
         "summarize":  "summarizer_node",
         "graphrag":   "graphrag_node",
@@ -114,7 +115,14 @@ def route_to_agent(state: MAOState) -> str:
         "chitchat":   "chitchat_node",
         "fallback":   "graphrag_node",
     }
-    target = mapping.get(intent, "graphrag_node")
+    if intent not in mapping:
+        # Silently mapping the unknown to graphrag is how "CLINICAL", "clinical "
+        # and None all reached the one route that carries no clinical
+        # disclaimer. `_classify` validates against ALL_INTENTS before writing,
+        # so reaching here means something upstream wrote a value it should not
+        # have — a bug to surface, not to absorb.
+        raise ValueError(f"unroutable intent {intent!r}")
+    target = mapping[intent]
     logger.debug("Routing intent=%s → node=%s", intent, target)
     return target
 
@@ -132,15 +140,19 @@ def _classify(system_prompt: str, user_prompt: str) -> tuple[str, bool]:
     quietly downgraded clinical requests to the cheapest route.
     """
     try:
-        raw = groq_llm.chat(
+        raw = gateway.complete(
+            role=ModelRole.ROUTER_FAST,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
-            model=model_id_for(ModelRole.ROUTER_FAST),
             temperature=0.0,
-            max_tokens=10,
-        ).strip().lower()
+            # Enough headroom for a model that emits a short preamble before the
+            # label. At 10 a reasoning model spends the whole budget thinking and
+            # returns an empty string, which reads as "never classified" — and
+            # that escalates every request to HIGH risk.
+            max_tokens=_CLASSIFY_MAX_TOKENS,
+        ).text.strip().lower()
         for token in raw.split():
             clean = token.strip(".,!?:;\"'")
             if clean in ALL_INTENTS:

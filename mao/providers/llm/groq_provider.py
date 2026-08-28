@@ -21,12 +21,16 @@ class GroqChatProvider:
         temperature: float,
         max_tokens: int,
     ) -> ProviderResponse:
-        from mao.core.llm import chat
+        from mao.core.llm import chat_with_usage
 
-        text = chat(
+        text, input_tokens, output_tokens = chat_with_usage(
             messages=messages,
             model=model_id,
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return ProviderResponse(text=text)
+        return ProviderResponse(
+            text=text,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )

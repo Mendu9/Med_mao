@@ -73,14 +73,20 @@ def _get_async_groq_client():
 
 
 @_traceable(name="groq_chat", run_type="llm")
-def chat(
+def chat_with_usage(
     messages: list[dict],
     *,
     temperature: float = 0.7,
     max_tokens: int = 1024,
     model: str | None = None,
-) -> str:
-    """Call Groq chat. Returns content string."""
+) -> tuple[str, int, int]:
+    """Call Groq chat. Returns (content, input_tokens, output_tokens).
+
+    `chat()` discarded the usage the API already returns, so every
+    `Completion` the gateway built reported zero tokens and zero cost, and the
+    trace fields that exist to record what a request cost were structurally
+    empty. The counts are free — they arrive on the same response.
+    """
     from mao.core.retry import with_groq_retry
     try:
         client = _get_groq_client()
@@ -91,13 +97,16 @@ def chat(
             max_tokens=max_tokens,
         ))
         usage = resp.usage
+        input_tokens = output_tokens = 0
         if usage:
+            input_tokens = usage.prompt_tokens or 0
+            output_tokens = usage.completion_tokens or 0
             _usage_tracker.record(
                 model=model or cfg.groq_model,
-                input_tokens=usage.prompt_tokens or 0,
-                output_tokens=usage.completion_tokens or 0,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
-        return resp.choices[0].message.content or ""
+        return resp.choices[0].message.content or "", input_tokens, output_tokens
         # OLLAMA: resp = ollama.chat(
         # OLLAMA:     model=model or cfg.groq_model,
         # OLLAMA:     messages=messages,
@@ -107,6 +116,24 @@ def chat(
     except Exception as exc:
         logger.error("Groq LLM call failed: %s", exc)
         raise
+
+
+def chat(
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    model: str | None = None,
+) -> str:
+    """Call Groq chat. Returns content string.
+
+    Kept for the non-agent callers (health probe, ingestion helpers). Agents go
+    through `mao.providers.gateway`, which needs the usage counts.
+    """
+    text, _, _ = chat_with_usage(
+        messages, temperature=temperature, max_tokens=max_tokens, model=model
+    )
+    return text
 
 
 async def achat(

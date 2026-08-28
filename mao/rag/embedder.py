@@ -10,13 +10,24 @@ logger = logging.getLogger(__name__)
 _model = None
 
 
-def _get_model():
+def get_embedding_model():
+    """The process-wide sentence-transformer instance.
+
+    Public because it is the single owner: `mao.rag.chunker` needs the same
+    model for boundary similarity, and building its own meant loading the same
+    weights into memory a second time.
+    """
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
         logger.info("Loading embedding model: %s", cfg.embed_model)
         _model = SentenceTransformer(cfg.embed_model)
     return _model
+
+
+def _get_model():
+    """Internal alias retained for existing call sites in this module."""
+    return get_embedding_model()
 
 
 def embed_query(text: str) -> list[float]:

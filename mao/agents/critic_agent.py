@@ -35,12 +35,11 @@ import logging
 import re
 from typing import Any
 
-from mao.core import llm as groq_llm
 
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
-from mao.providers.gateway import model_id_for
+from mao.providers import gateway
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -122,12 +121,12 @@ def _call_llm(
     messages.append({"role": "user", "content": user_prompt})
 
     try:
-        return groq_llm.chat(
+        return gateway.complete(
+            role=ModelRole.GENERAL_SYNTHESIS,
             messages=messages,
-            model=model_id_for(ModelRole.GENERAL_SYNTHESIS),
             temperature=0.2,
             max_tokens=768,
-        ).strip()
+        ).text.strip()
     except Exception as exc:  # noqa: BLE001
         logger.error("Critic LLM call failed: %s", exc)
         return f"Critique generation failed: {exc}"
