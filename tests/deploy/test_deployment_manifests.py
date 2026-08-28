@@ -231,7 +231,9 @@ def test_runtime_imports_are_in_the_authoritative_manifest() -> None:
     "distribution",
     [
         "psycopg2-binary",  # SQLAlchemy DBAPI for postgresql:// — /health depends on it
-        "asyncpg",          # mao/api/main.py::_check_postgres
+        # asyncpg was required only by the raw-connection /feedback and /export
+        # endpoints. Both now go through mao/db/repository.py on the shared
+        # SQLAlchemy engine (P1-7, P1-10), so nothing imports it any more.
         "streamlit",        # app/streamlit_app.py — the HF Space UI
         "nltk",             # mao/rag/chunker.py sentence splitting
         "spacy",            # mao/rag/graph_builder.py NER (retrieval steps 5-7)

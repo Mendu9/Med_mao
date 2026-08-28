@@ -74,7 +74,6 @@ pydantic>=2.7,<3.0
 # --- Database (metrics, SQL agent, /health postgres probe) ---
 sqlalchemy>=2.0,<3.0
 psycopg2-binary>=2.9,<3.0   # SQLAlchemy DBAPI for postgresql:// URLs
-asyncpg>=0.29,<1.0          # mao/api/main.py::_check_postgres
 alembic>=1.13,<2.0
 
 # --- Tools ---

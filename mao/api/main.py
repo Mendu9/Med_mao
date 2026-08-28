@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -13,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
 
-import requests as http_requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -23,13 +21,15 @@ from mao.core.config import cfg
 from mao.core.logging_config import configure_logging, set_trace_id
 from mao.core.rate_limiter import check_rate_limit
 from mao.core.redis_client import get_redis, safe_get, safe_set
+from mao.api.cache_key import CacheKeyInputs, build_chat_cache_key
+from mao.api.streaming import may_stream_raw_tokens
+from mao.api.tracing import emit_trace
 from mao.core.state import make_initial_state
 from mao.db import get_db_session, init_db
-from mao.db.models import ChatSession
+from mao.db.repository import get_report_card, save_chat_session, save_feedback
 from mao.graph import get_graph
 from mao.guardrails import apply_input_guardrails, apply_output_guardrails
 from mao.monitoring.metrics import (
-    active_requests_gauge,
     record_request,
     record_reranker_score,
 )
@@ -215,29 +215,6 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     request_id = uuid.uuid4().hex
     start_time = time.perf_counter()
 
-    # Cache lookup — return immediately for identical recent queries (TTL 5 min)
-    _query_cache_key = (
-        f"query:{hashlib.md5(f'{request.user_id}:{request.query}'.encode()).hexdigest()}"
-    )
-    _redis = get_redis()
-    _cached = safe_get(_redis, _query_cache_key)
-    if _cached:
-        try:
-            _cached_data = json.loads(_cached)
-            logger.info("Cache HIT request_id=%s", request_id)
-            return ChatResponse(
-                response=_cached_data.get("response", ""),
-                agent_used=_cached_data.get("agent_used", "cache"),
-                intent=_cached_data.get("intent", ""),
-                metadata={},
-                request_id=request_id,
-                latency_ms=0.0,
-                sources=[],
-                web_sources=[],
-            )
-        except Exception as _cache_exc:
-            logger.debug("Cache entry malformed, ignoring: %s", _cache_exc)
-
     logger.info(
         "request_id=%s user_id=%s query=%r",
         request_id,
@@ -245,7 +222,43 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         request.query[:80],
     )
 
+    # Guardrails run BEFORE the cache is consulted. A cache lookup that precedes
+    # input validation lets a request that would have been rejected be answered
+    # from a previous, accepted one.
     safe_query = await apply_input_guardrails(request.query, request_id)
+
+    # Cache key folds in every input that can change the answer — history,
+    # attachment content, and the model/policy/index versions (P1-4).
+    _query_cache_key = build_chat_cache_key(
+        CacheKeyInputs(
+            user_id=request.user_id,
+            query=safe_query,
+            chat_history=[m.model_dump() for m in request.chat_history],
+            metadata=request.metadata,
+        )
+    )
+    _redis = get_redis()
+    _cached = safe_get(_redis, _query_cache_key)
+    if _cached:
+        try:
+            _cached_data = json.loads(_cached)
+            logger.info("Cache HIT request_id=%s", request_id)
+            # Provenance is part of the answer for an evidence-grounded product.
+            # The previous cache-hit branch returned empty sources and metadata,
+            # so a cached clinical answer shipped with zero citations (P1-5).
+            _cached_meta = _cached_data.get("metadata", {})
+            return ChatResponse(
+                response=_cached_data.get("response", ""),
+                agent_used=_cached_data.get("agent_used", "cache"),
+                intent=_cached_data.get("intent", ""),
+                metadata=_cached_meta,
+                request_id=request_id,
+                latency_ms=round((time.perf_counter() - start_time) * 1000, 1),
+                sources=_cached_meta.get("sources", []),
+                web_sources=_cached_meta.get("web_sources", []),
+            )
+        except Exception as _cache_exc:
+            logger.debug("Cache entry malformed, ignoring: %s", _cache_exc)
 
     # Build initial state using PII-scrubbed query
     state = make_initial_state(
@@ -292,32 +305,25 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     if top_scores:
         record_reranker_score(agent=agent_used, top_score=top_scores[0])
 
-    # Persist chat session (fire-and-forget, never blocks response)
-    def _save_session() -> None:
-        try:
-            with get_db_session() as db:
-                db.add(ChatSession(
-                    user_id=request.user_id,
-                    user_query=safe_query,
-                    response=result.get("response", ""),
-                    agent_used=agent_used,
-                    domain=metadata.get("domain"),
-                    uncertainty_flag=bool(metadata.get("uncertainty_flag", False)),
-                ))
-        except Exception as exc:
-            logger.warning("ChatSession persist failed request_id=%s: %s", request_id, exc)
+    emit_trace(trace_id=request_id, result=result, latency_ms=latency_ms)
 
+    # Persist chat session (fire-and-forget, never blocks response)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(_executor, _save_session)
+    loop.run_in_executor(
+        _executor, _persist_session, request.query, safe_query, request.user_id, result, request_id
+    )
 
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
     def _cache_session() -> None:
         try:
             redis_client = get_redis()
+            # Provenance is cached with the answer so a cache hit can return
+            # the same citations the live path would have (P1-5).
             _payload = json.dumps({
                 "response": result.get("response", ""),
                 "agent_used": agent_used,
                 "intent": intent,
+                "metadata": metadata,
             })
             # Per-request session cache (TTL 1h)
             safe_set(redis_client, f"session:{request_id}", _payload, ex=3600)
@@ -433,6 +439,20 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         request_id, agent_used, latency_ms,
     )
 
+    # The streaming path used to record nothing: no metrics, no audit row, no
+    # trace — so observability and the clinical audit trail were systematically
+    # missing for the primary user-facing path (P1-9, P1-22).
+    record_request(
+        agent=agent_used,
+        intent=result.get("intent", "unknown"),
+        latency_seconds=latency_ms / 1000,
+    )
+    emit_trace(trace_id=request_id, result=result, latency_ms=latency_ms)
+    _loop = asyncio.get_running_loop()
+    _loop.run_in_executor(
+        _executor, _persist_session, request.query, safe_query, request.user_id, result, request_id
+    )
+
     # Build SSE metadata payload (sent once after all tokens)
     def _meta_payload(final_latency: float) -> str:
         payload = {
@@ -446,10 +466,15 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         return f"data: __meta__:{json.dumps(payload)}\n\n"
 
     # ----------------------------------------------------------------
-    # True streaming path: if the graph stored _stream_messages, call
-    # Groq with stream=True and yield each delta token directly.
+    # Raw token streaming — permitted ONLY where the safety policy exempts the
+    # request from verification. Raw tokens come straight from the provider and
+    # have passed through neither the council, the NLI gate, the judge, nor the
+    # output guardrails; streaming them for a route that requires verification
+    # is exactly the audited P0-1 bypass. `may_stream_raw_tokens` fails closed.
     # ----------------------------------------------------------------
-    stream_messages: list[dict] | None = result.get("_stream_messages")
+    stream_messages: list[dict] | None = (
+        result.get("_stream_messages") if may_stream_raw_tokens(result) else None
+    )
     stream_model: str | None = result.get("_stream_model")
 
     def _sse_encode(token: str) -> str:
@@ -506,9 +531,10 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         )
 
     # ----------------------------------------------------------------
-    # Fallback path: word-split the pre-computed response.
-    # Used for structured agents (sql, tool, multimodal) whose output
-    # is fully computed before streaming begins.
+    # Verified path — the default. Streams the text that came out of the
+    # verification chain and `apply_output_guardrails`, chunked for the client.
+    # Slower to first token than raw streaming, deliberately: streaming and
+    # non-streaming must carry equivalent safety guarantees.
     # ----------------------------------------------------------------
     response_text: str = result.get("response", "")
 
@@ -672,6 +698,37 @@ async def graph_topology_endpoint() -> dict[str, Any]:
 # Background tasks
 # ---------------------------------------------------------------------------
 
+def _persist_session(
+    raw_query: str,
+    safe_query: str,
+    user_id: str,
+    result: dict[str, Any],
+    request_id: str,
+) -> None:
+    """Write one turn's full clinical audit trail. Never raises.
+
+    Used by BOTH /chat and /chat/stream. The streaming path previously wrote no
+    ChatSession row at all, so streamed clinical answers — the majority of real
+    traffic — left no audit record whatsoever (P1-9).
+    """
+    metadata = result.get("metadata") or {}
+    try:
+        save_chat_session(
+            user_id=user_id,
+            user_query=raw_query,
+            pii_scrubbed_query=safe_query,
+            response=result.get("response", ""),
+            agent_used=result.get("agent_used", "unknown"),
+            domain=metadata.get("domain"),
+            uncertainty_flag=bool(metadata.get("uncertainty_flag", False)),
+            council_verdict=result.get("council_verdict"),
+            nli_flags=result.get("nli_flags"),
+            report_card=result.get("report_card"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ChatSession persist failed request_id=%s: %s", request_id, exc)
+
+
 async def _score_response_async(
     question: str,
     answer: str,
@@ -800,18 +857,23 @@ class FeedbackRequest(BaseModel):
 
 @app.post("/feedback")
 async def post_feedback(req: FeedbackRequest):
-    import asyncpg
-    try:
-        async with await asyncpg.connect(os.environ["DATABASE_URL"]) as conn:
-            await conn.execute(
-                "INSERT INTO response_feedback (session_id, rating, comment, created_at) "
-                "VALUES ($1, $2, $3, NOW())",
-                req.session_id, 1 if req.thumbs_up else -1, req.comment,
-            )
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error("Feedback insert failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to save feedback")
+    """Record thumbs up/down against a stored session.
+
+    Goes through the shared repository rather than a second raw asyncpg
+    connection: the old implementation depended on a package in neither
+    requirements file, omitted the NOT NULL user_id, and passed a str against a
+    Uuid foreign key — so every call failed with a 500 (P1-7).
+    """
+    loop = asyncio.get_running_loop()
+    saved = await loop.run_in_executor(
+        _executor,
+        lambda: save_feedback(
+            session_id=req.session_id, thumbs_up=req.thumbs_up, comment=req.comment
+        ),
+    )
+    if not saved:
+        raise HTTPException(status_code=404, detail="Unknown or malformed session_id")
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -820,18 +882,22 @@ async def post_feedback(req: FeedbackRequest):
 
 @app.get("/export/report/{session_id}")
 async def export_report(session_id: str):
-    import asyncpg
-    import os
+    """Render a stored report card as PDF.
+
+    This could never succeed before: nothing wrote `report_card`, so the column
+    was always NULL and the endpoint was a permanent 404 (P1-8). The repository
+    now persists it on every clinical turn.
+    """
     from fastapi import Response
     from mao.report.report_card import build_report_card
     try:
-        async with await asyncpg.connect(os.environ["DATABASE_URL"]) as conn:
-            row = await conn.fetchrow(
-                "SELECT report_card FROM chat_sessions WHERE session_id = $1", session_id
-            )
-        if not row or not row["report_card"]:
+        loop = asyncio.get_running_loop()
+        card_data = await loop.run_in_executor(
+            _executor, lambda: get_report_card(session_id)
+        )
+        if not card_data:
             raise HTTPException(status_code=404, detail="Report not found")
-        card = build_report_card(**json.loads(row["report_card"]))
+        card = build_report_card(**card_data)
         pdf_bytes = card.to_pdf()
         return Response(
             content=pdf_bytes,
