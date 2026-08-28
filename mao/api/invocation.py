@@ -13,13 +13,14 @@ from typing import Any
 from fastapi import HTTPException
 
 from mao.api.executor import get_executor
+from mao.core.state import MAOState
 from mao.graph import get_graph
 from mao.providers import usage
 
 logger = logging.getLogger(__name__)
 
 
-def invoke_with_usage(graph: Any, state: dict[str, Any]) -> dict[str, Any]:
+def invoke_with_usage(graph: Any, state: MAOState) -> dict[str, Any]:
     """Run the graph and record what its model calls cost.
 
     The collector is bound *inside* this function because it runs in a
@@ -36,7 +37,7 @@ def invoke_with_usage(graph: Any, state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-async def run_graph(state: dict[str, Any], request_id: str) -> dict[str, Any]:
+async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
     """Invoke the graph off the event loop, translating failures to HTTP."""
     try:
         loop = asyncio.get_running_loop()
