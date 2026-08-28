@@ -25,7 +25,7 @@ def test_module_holds_no_hardcoded_vision_model_constant() -> None:
 
 def test_image_call_uses_the_vision_role() -> None:
     with patch("mao.providers.gateway.complete", return_value=_completion("a brain MRI")) as chat:
-        answer, meta = mm._handle_image("what is this?", {"image_b64": "AAA"}, "")
+        answer, meta = mm.handle_image("what is this?", {"image_b64": "AAA"}, "")
 
     assert answer == "a brain MRI"
     assert chat.call_args.kwargs["role"] is ModelRole.VISION
@@ -37,7 +37,7 @@ def test_image_call_uses_the_vision_role() -> None:
 
 def test_vision_system_prompt_comes_from_the_registry() -> None:
     with patch("mao.providers.gateway.complete", return_value=_completion("ok")) as chat:
-        mm._handle_image("what is this?", {"image_b64": "AAA"}, "")
+        mm.handle_image("what is this?", {"image_b64": "AAA"}, "")
 
     system = chat.call_args.kwargs["messages"][0]["content"]
     assert get_prompt("clinical.vision").template in system

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from mao.tools import ToolSpec, get_tool, registry
+from mao.tools import get_tool, registry
 from mao.tools.registry import ReadOrWrite, TrustTier
 
 

@@ -55,7 +55,8 @@ def test_router_module_never_names_sql_node() -> None:
         ("summarize", "summarizer_node"),
         ("graphrag", "graphrag_node"),
         ("tool", "tool_node"),
-        ("multimodal", "multimodal_node"),
+        # Modality is a capability of clinical_node, not a top-level agent.
+        ("multimodal", "clinical_node"),
         ("critic", "critic_node"),
         ("clinical", "clinical_node"),
         ("chitchat", "chitchat_node"),

@@ -8,7 +8,7 @@ import logging
 
 import requests
 
-from mao.agents.multimodal_agent import handle_audio
+from mao.agents.multimodal_agent import handle_audio, handle_image
 from mao.core.config import MRI_CONFIDENCE_GATE
 from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
@@ -149,11 +149,24 @@ def _handle_mri_image(
 
     # Step 1: Run EfficientNetB3
     prediction = _run_mri_prediction(metadata)
+    vision_used = False
 
     if prediction.get("error"):
         logger.warning("MRI prediction failed: %s", prediction["error"])
-        pred_block = "MRI prediction could not be completed (model unavailable)."
-        augmented_query = user_query
+        # The stage predictor only understands brain MRI. When it cannot answer —
+        # because the model is unavailable, or because this is a photograph of a
+        # pill bottle rather than a scan — the image still has to be *looked at*.
+        # This branch used to synthesise from retrieval alone, so an upload the
+        # predictor did not recognise was answered as though no image had been
+        # sent, with nothing telling the clinician it had been ignored.
+        described, vision_used = _describe_image(user_query, metadata, memory_context)
+        pred_block = (
+            f"MRI stage prediction did not apply to this image.\n\n"
+            f"Image description:\n{described}"
+            if vision_used
+            else "MRI prediction could not be completed (model unavailable)."
+        )
+        augmented_query = f"{described} {user_query}" if vision_used else user_query
     else:
         label      = prediction["prediction"]
         full_label = prediction["full_label"]
@@ -202,12 +215,32 @@ def _handle_mri_image(
     return response, {
         "mode": "mri_image",
         "prediction": prediction,
+        "vision_fallback": vision_used,
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
         "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
         "_ranked_chunks": ranked_chunks,
     }
+
+
+def _describe_image(
+    user_query: str, metadata: dict, memory_context: str
+) -> tuple[str, bool]:
+    """Describe an image the stage predictor could not classify.
+
+    Returns (description, succeeded). Never raises: a vision outage should cost
+    the description, not the whole clinical request.
+    """
+    try:
+        described, meta = handle_image(user_query, metadata, memory_context)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Vision fallback failed: %s", exc)
+        return "", False
+    if meta.get("error") or not described.strip():
+        logger.warning("Vision fallback produced nothing: %s", meta.get("error", ""))
+        return "", False
+    return described, True
 
 
 def _run_mri_prediction(metadata: dict) -> dict:

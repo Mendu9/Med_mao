@@ -109,7 +109,13 @@ def route_to_agent(state: MAOState) -> str:
         "summarize":  "summarizer_node",
         "graphrag":   "graphrag_node",
         "tool":       "tool_node",
-        "multimodal": "multimodal_node",
+        # Modality is a capability, not a top-level agent (01_ARCHITECTURE.md:
+        # "avoid top-level Multimodal Agent when modality can be handled as
+        # workflow capability"). `clinical_node` owns image, report and audio,
+        # and every attachment is forced here anyway — the multimodal node could
+        # only ever be entered with nothing attached, so its only possible reply
+        # was "please provide an image".
+        "multimodal": "clinical_node",
         "critic":     "critic_node",
         "clinical":   "clinical_node",
         "chitchat":   "chitchat_node",

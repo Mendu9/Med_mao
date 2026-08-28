@@ -51,7 +51,7 @@ def multimodal_node(state: MAOState) -> MAOState:
 
     # --- Dispatch ---
     if modality == "image":
-        response, result_meta = _handle_image(user_query, metadata, memory_context)
+        response, result_meta = handle_image(user_query, metadata, memory_context)
     elif modality == "audio":
         response, result_meta = handle_audio(user_query, metadata, memory_context)
     else:
@@ -80,7 +80,7 @@ def multimodal_node(state: MAOState) -> MAOState:
 # Image handler
 # ---------------------------------------------------------------------------
 
-def _handle_image(
+def handle_image(  # public: shared with `clinical_agent`
     user_query: str,
     metadata: dict,
     memory_context: str,

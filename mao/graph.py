@@ -20,7 +20,7 @@ Graph topology:
                                         |
       .-------------------+-------------+-------------+-------------.
       v                   v             v             v             v
-  summarizer_node   graphrag_node   tool_node   multimodal_node   ...
+  summarizer_node   graphrag_node   tool_node   clinical_node   ...
   critic_node       clinical_node   chitchat_node
       |                   |             |             |             |
       '-------------------+------ verification -------+-------------'
@@ -53,6 +53,12 @@ Invariants this topology exists to enforce:
   4. There is no SQL route (P0-3): LLM-authored SQL against the operational
      database was removed rather than sandboxed.
 
+  5. There is no top-level multimodal node. Modality is a capability of
+     `clinical_node`, which owns image, report and audio. The router forces every
+     attachment to `clinical`, so a separate multimodal node could only ever be
+     entered with nothing attached — it had no way to receive the data it existed
+     to process.
+
 After `senior_supervisor` or `blocked` the graph terminates. Multi-turn state is
 managed by the API layer, which reinvokes the graph per request with updated
 chat_history — that keeps the graph deterministic and debuggable.
@@ -77,7 +83,6 @@ from mao.agents.domain_classifier import classifier_node
 from mao.agents.domain_supervisor import domain_supervisor_node
 from mao.agents.graphrag_agent import graphrag_node
 from mao.agents.llm_council import council_node
-from mao.agents.multimodal_agent import multimodal_node
 from mao.agents.query_decomposer import decomposer_node
 from mao.agents.router import is_chitchat, route_to_agent, router_node
 from mao.agents.senior_supervisor import senior_supervisor_node
@@ -108,7 +113,6 @@ NODE_VERIFY     = "verification"
 NODE_SUMMARIZER = "summarizer_node"
 NODE_GRAPHRAG   = "graphrag_node"
 NODE_TOOL       = "tool_node"
-NODE_MULTIMODAL = "multimodal_node"
 NODE_CRITIC     = "critic_node"
 NODE_CLINICAL   = "clinical_node"
 NODE_CHITCHAT   = "chitchat_node"
@@ -117,7 +121,6 @@ _ALL_AGENT_NODES = [
     NODE_SUMMARIZER,
     NODE_GRAPHRAG,
     NODE_TOOL,
-    NODE_MULTIMODAL,
     NODE_CRITIC,
     NODE_CLINICAL,
     NODE_CHITCHAT,
@@ -223,7 +226,6 @@ def build_graph() -> StateGraph:
     builder.add_node(NODE_SUMMARIZER, summarizer_node)
     builder.add_node(NODE_GRAPHRAG,   graphrag_node)
     builder.add_node(NODE_TOOL,       tool_node)
-    builder.add_node(NODE_MULTIMODAL, multimodal_node)
     builder.add_node(NODE_CRITIC,     critic_node)
     builder.add_node(NODE_CLINICAL,   clinical_node)
     builder.add_node(NODE_CHITCHAT,   chitchat_node)
@@ -265,7 +267,6 @@ def build_graph() -> StateGraph:
             NODE_SUMMARIZER: NODE_SUMMARIZER,
             NODE_GRAPHRAG:   NODE_GRAPHRAG,
             NODE_TOOL:       NODE_TOOL,
-            NODE_MULTIMODAL: NODE_MULTIMODAL,
             NODE_CRITIC:     NODE_CRITIC,
             NODE_CLINICAL:   NODE_CLINICAL,
             NODE_CHITCHAT:   NODE_CHITCHAT,
