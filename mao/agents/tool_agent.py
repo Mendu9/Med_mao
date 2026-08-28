@@ -1,16 +1,19 @@
-"""Tool agent: ReAct-style loop over DuckDuckGo search, Wikipedia API, and safe calculator (numexpr)."""
+"""Tool agent: a ReAct loop over the capabilities declared in `mao.tools`.
+
+The tool implementations and the dispatch table used to live here, which meant
+nothing outside this module could discover what tools existed, what they cost,
+or whether they were read-only. They are now declared ToolSpecs in the registry
+and this module only drives the loop.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
-import wikipediaapi
-
+from mao import tools
 from mao.core.state import MAOState
-from mao.core.web_search import web_search as _web_search_provider
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
@@ -24,18 +27,21 @@ _MAX_TOOL_CALLS = 3
 # Tool definitions (described to the LLM in the system prompt)
 # ---------------------------------------------------------------------------
 
-_TOOLS_DESCRIPTION = """\
-You have access to these tools. To call a tool, respond ONLY with JSON:
-{"tool": "<tool_name>", "input": "<tool_input>"}
+def _tools_description() -> str:
+    """The tool block for the system prompt, derived from the registry.
 
-Available tools:
-  web_search(query)     - Search the web for current information. Input: search query string.
-  wikipedia(topic)      - Get a Wikipedia summary for a topic. Input: topic name string.
-  calculator(expression)- Evaluate a math expression. Input: valid math expression (e.g. "15 * 0.15").
+    Hand-maintaining this list next to the dispatch table is how a prompt ends
+    up advertising a tool that no longer exists, or hiding one that does.
+    """
+    return (
+        "You have access to these tools. To call a tool, respond ONLY with JSON:\n"
+        '{"tool": "<tool_name>", "input": "<tool_input>"}\n\n'
+        "Available tools:\n"
+        f"{tools.registry().describe_for_prompt()}\n\n"
+        "After receiving tool output, you may call another tool OR provide a final answer.\n"
+        'For a final answer respond with: {"tool": "final_answer", "input": "<your answer>"}\n'
+    )
 
-After receiving tool output, you may call another tool OR provide a final answer.
-For a final answer respond with: {"tool": "final_answer", "input": "<your answer>"}
-"""
 
 def tool_node(state: MAOState) -> MAOState:
     """
@@ -46,7 +52,7 @@ def tool_node(state: MAOState) -> MAOState:
 
 
     system_prompt = build_system_prompt(
-        f'{get_prompt("tool.react").template}\n\n{_TOOLS_DESCRIPTION}',
+        f'{get_prompt("tool.react").template}\n\n{_tools_description()}',
         memory_context,
     )
 
@@ -75,7 +81,7 @@ def tool_node(state: MAOState) -> MAOState:
             break
 
         # Execute tool
-        tool_output = _dispatch_tool(tool_name, tool_input)
+        tool_output = tools.registry().invoke(tool_name, tool_input)
         tool_trace.append({"tool": tool_name, "input": tool_input, "output": tool_output})
         logger.debug("Tool %s(%r) → %s", tool_name, tool_input, tool_output[:200])
 
@@ -94,71 +100,6 @@ def tool_node(state: MAOState) -> MAOState:
     state["agent_used"] = "tool"
     state["metadata"]   = {"tool_trace": tool_trace}
     return state
-
-
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
-
-def _web_search(query: str) -> str:
-    """Web search — returns top 5 results as formatted text via multi-provider fallback."""
-    results = _web_search_provider(query, num_results=5)
-    if not results:
-        return "No web results found."
-    lines = []
-    for r in results:
-        title = r.get("title", "")
-        body  = r.get("body", "")[:300]
-        href  = r.get("href", "")
-        lines.append(f"- {title}\n  {body}\n  URL: {href}")
-    return "\n\n".join(lines)
-
-
-def _wikipedia_lookup(topic: str) -> str:
-    """Fetch Wikipedia summary for a topic (English)."""
-    try:
-        wiki = wikipediaapi.Wikipedia(
-            language="en",
-            user_agent="MAO-Agent/1.0 (https://github.com/mao-project)",
-        )
-        page = wiki.page(topic)
-        if not page.exists():
-            return f"No Wikipedia page found for '{topic}'."
-        # Return first 1500 chars of summary
-        return page.summary[:1500]
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Wikipedia lookup failed: %s", exc)
-        return f"Wikipedia error: {exc}"
-
-
-def _calculator(expression: str) -> str:
-    """
-    Safe math evaluation via numexpr.
-
-    numexpr supports basic arithmetic, trig, log — no arbitrary Python execution.
-    Intentionally NOT using eval() — that would be a security vulnerability.
-    """
-    try:
-        # Strip any markdown code fences
-        clean_expr = re.sub(r"```.*?```", "", expression, flags=re.DOTALL).strip()
-        import numexpr
-        result = numexpr.evaluate(clean_expr)
-        return str(float(result))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Calculator error for '%s': %s", expression, exc)
-        return f"Calculator error: {exc}"
-
-
-def _dispatch_tool(tool_name: str, tool_input: str) -> str:
-    dispatch: dict[str, Any] = {
-        "web_search":  _web_search,
-        "wikipedia":   _wikipedia_lookup,
-        "calculator":  _calculator,
-    }
-    fn = dispatch.get(tool_name)
-    if fn is None:
-        return f"Unknown tool: {tool_name}"
-    return fn(tool_input)
 
 
 # ---------------------------------------------------------------------------
