@@ -5,6 +5,7 @@ import pytest
 
 from mao.core import groq_usage
 from mao.providers.gateway import registry
+from mao.providers.registry import ModelRole
 
 
 @pytest.fixture(autouse=True)
@@ -20,18 +21,22 @@ def test_no_duplicate_literal_price_table() -> None:
 
 
 def test_price_matches_the_registry_record() -> None:
-    record = registry().get("llama-3.1-8b-instant")
+    """Uses a currently ACTIVE id: the point is that price comes from the
+    registry record, and a retired record is not what production prices."""
+    model_id = registry().model_id_for(ModelRole.ROUTER_FAST)
+    record = registry().get(model_id)
     assert record is not None
-    price = groq_usage.price_for("llama-3.1-8b-instant")
+    price = groq_usage.price_for(model_id)
     assert price.input_per_1m == pytest.approx(record.cost_per_1m_input_usd)
     assert price.output_per_1m == pytest.approx(record.cost_per_1m_output_usd)
     assert price.source == "registry"
 
 
 def test_recorded_cost_uses_registry_pricing() -> None:
-    record = registry().get("llama-3.3-70b-versatile")
+    model_id = registry().model_id_for(ModelRole.GENERAL_SYNTHESIS)
+    record = registry().get(model_id)
     assert record is not None
-    groq_usage.tracker.record("llama-3.3-70b-versatile", 1_000_000, 1_000_000)
+    groq_usage.tracker.record(model_id, 1_000_000, 1_000_000)
     summary = groq_usage.tracker.get_summary()
     expected = record.cost_per_1m_input_usd + record.cost_per_1m_output_usd
     assert summary["estimated_cost_usd"] == pytest.approx(expected, rel=1e-6)

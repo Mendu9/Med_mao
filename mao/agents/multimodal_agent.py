@@ -26,12 +26,6 @@ from mao.safety.policy import ATTACHMENT_KEYS
 
 logger = logging.getLogger(__name__)
 
-_AUDIO_SYSTEM = """\
-You are reviewing a transcript of an audio recording.
-Summarize the key points and answer any questions the user has about the content.
-"""
-
-
 def multimodal_node(state: MAOState) -> MAOState:
     """
     LangGraph node: route to image or audio handler based on metadata.
@@ -196,7 +190,7 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
         return "The audio appears to contain no speech.", {"transcript": ""}
 
     # Now answer the user's question about the transcript
-    system_prompt = build_system_prompt(_AUDIO_SYSTEM, memory_context)
+    system_prompt = build_system_prompt(get_prompt("multimodal.audio_transcript").template, memory_context)
     user_prompt = (
         f"Audio transcript:\n{transcript}\n\n"
         f"User question: {user_query}"

@@ -18,20 +18,10 @@ logger = logging.getLogger(__name__)
 _CHUNK_SIZE   = 3000
 _CHUNK_OVERLAP = 200
 
-# Map/reduce staging prompts are internal scaffolding, not the production
-# summarisation contract — that one lives in the registry as
-# "summarizer.synthesis".
-_MAP_SYSTEM = """\
-Summarize the following passage in 2-4 bullet points. Be concise.
-"""
-
-_REDUCE_SYSTEM = """\
-You are given several partial summaries of sections of a longer document.
-Combine them into a single coherent summary:
-  - 1-sentence TL;DR at the top
-  - 5-10 bullet points covering the most important points across all sections
-  - Remove redundancy; keep the most specific facts
-"""
+# The map and reduce staging prompts live in the registry too
+# ("summarizer.map", "summarizer.reduce"). They are internal scaffolding rather
+# than the production summarisation contract, but they still reach a model, and
+# prompt text that reaches a model is prompt text the registry should version.
 
 
 def summarizer_node(state: MAOState) -> MAOState:
@@ -129,14 +119,14 @@ def _map_reduce_summarize(text: str, system_prompt: str) -> str:
     partial_summaries: list[str] = []
     for i, chunk in enumerate(chunks):
         partial = _call_llm(
-            _MAP_SYSTEM,
+            get_prompt("summarizer.map").template,
             f"Section {i + 1}:\n{chunk}",
         )
         partial_summaries.append(f"Section {i + 1} summary:\n{partial}")
 
     # Reduce phase
     combined = "\n\n".join(partial_summaries)
-    return _call_llm(_REDUCE_SYSTEM, combined)
+    return _call_llm(get_prompt("summarizer.reduce").template, combined)
 
 
 def _split_text(text: str, chunk_size: int, overlap: int) -> list[str]:

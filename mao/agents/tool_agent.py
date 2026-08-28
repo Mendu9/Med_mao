@@ -12,6 +12,7 @@ import wikipediaapi
 from mao.core.state import MAOState
 from mao.core.web_search import web_search as _web_search_provider
 from mao.memory.mem0_handler import build_system_prompt
+from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
 
@@ -36,13 +37,6 @@ After receiving tool output, you may call another tool OR provide a final answer
 For a final answer respond with: {"tool": "final_answer", "input": "<your answer>"}
 """
 
-_TOOL_AGENT_SYSTEM = """\
-You are a helpful assistant that uses tools to answer questions accurately.
-Never guess when a tool can give you the real answer.
-Always verify numbers with the calculator tool before stating them.
-"""
-
-
 def tool_node(state: MAOState) -> MAOState:
     """
     LangGraph node: ReAct tool-calling loop using mistral.
@@ -52,7 +46,7 @@ def tool_node(state: MAOState) -> MAOState:
 
 
     system_prompt = build_system_prompt(
-        f"{_TOOL_AGENT_SYSTEM}\n\n{_TOOLS_DESCRIPTION}",
+        f'{get_prompt("tool.react").template}\n\n{_TOOLS_DESCRIPTION}',
         memory_context,
     )
 

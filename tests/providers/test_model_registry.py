@@ -98,9 +98,21 @@ class TestSafetyRoleIsolation:
         assert registry.model_id_for(ModelRole.SAFETY_JUDGE) != "llama-3.1-8b-instant"
 
     def test_each_role_reads_its_own_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("MAO_MODEL_SAFETY_JUDGE", "qwen/qwen3.8-27b")
+        registry = ModelRegistry.default()
+        assert registry.model_id_for(ModelRole.SAFETY_JUDGE) == "qwen/qwen3.8-27b"
+
+    def test_an_override_naming_a_retired_model_is_refused(self, monkeypatch) -> None:
+        """An operator can rebind a role, but not to something withdrawn.
+
+        The registry records retired ids precisely so a stale value in a
+        deployment env cannot reach the provider and 404 at request time.
+        """
         monkeypatch.setenv("MAO_MODEL_SAFETY_JUDGE", "llama-3.3-70b-versatile")
         registry = ModelRegistry.default()
-        assert registry.model_id_for(ModelRole.SAFETY_JUDGE) == "llama-3.3-70b-versatile"
+        resolved = registry.model_id_for(ModelRole.SAFETY_JUDGE)
+        assert resolved != "llama-3.3-70b-versatile"
+        assert registry.get(resolved).status is ModelStatus.ACTIVE
 
     def test_env_override_naming_all_roles(self) -> None:
         for role in ModelRole:

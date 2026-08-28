@@ -7,6 +7,8 @@ import base64
 import pytest
 from unittest.mock import MagicMock, patch
 
+from tests.agents.gateway_stub import _completing, _completion
+
 
 # ---------------------------------------------------------------------------
 # Helpers

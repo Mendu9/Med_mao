@@ -32,14 +32,22 @@ class TestLegacyAliasesTrackRoleBindings:
 
     def test_per_role_override_reaches_the_legacy_clinical_alias(self, monkeypatch) -> None:
         """The registry's per-role env var must win, not the legacy chain."""
-        monkeypatch.setenv("MAO_MODEL_CLINICAL_SYNTHESIS", "llama-3.1-8b-instant")
+        monkeypatch.setenv("MAO_MODEL_CLINICAL_SYNTHESIS", "qwen/qwen3.8-27b")
         config = _reload_config()
-        assert config.CLINICAL_MODEL == "llama-3.1-8b-instant"
+        assert config.CLINICAL_MODEL == "qwen/qwen3.8-27b"
 
     def test_per_role_override_reaches_the_legacy_fast_alias(self, monkeypatch) -> None:
-        monkeypatch.setenv("MAO_MODEL_GENERAL_SYNTHESIS", "llama-3.3-70b-versatile")
+        monkeypatch.setenv("MAO_MODEL_GENERAL_SYNTHESIS", "qwen/qwen3.8-27b")
         config = _reload_config()
-        assert config.FAST_MODEL == "llama-3.3-70b-versatile"
+        assert config.FAST_MODEL == "qwen/qwen3.8-27b"
+
+    def test_an_override_naming_a_retired_model_does_not_reach_the_alias(
+        self, monkeypatch
+    ) -> None:
+        """A stale deployment env var must not put a withdrawn id in front of a model call."""
+        monkeypatch.setenv("MAO_MODEL_CLINICAL_SYNTHESIS", "llama-3.3-70b-versatile")
+        config = _reload_config()
+        assert config.CLINICAL_MODEL != "llama-3.3-70b-versatile"
 
     def test_judge_model_tracks_safety_judge_role(self) -> None:
         config = _reload_config()
