@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import base64
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tests.agents.gateway_stub import _completing, _completion
 
@@ -139,91 +139,21 @@ def test_clinical_node_invalid_pdf_no_crash(
 
 
 # ---------------------------------------------------------------------------
-# Frontend PDF routing (unit test — no running server needed)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.xfail(
-    reason=(
-        "app/frontend.py is the legacy abandoned Gradio frontend — "
-        "PDF routing (report_b64) is intentionally not implemented there. "
-        "The active Streamlit UI (app/streamlit_app.py) correctly uses report_b64. "
-        "See test_streamlit_routes_pdf_as_report_b64 for the active test."
-    ),
-    strict=False,
-)
-def test_send_query_routes_pdf_as_report_b64(tmp_path):
-    """_send_query must send PDFs as report_b64, not image_b64."""
-    pdf_file = tmp_path / "patient_report.pdf"
-    pdf_file.write_bytes(_make_minimal_pdf())
-
-    captured: dict = {}
-
-    def fake_post(url, json=None, timeout=None):
-        captured.update(json or {})
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "response": "Clinical summary.",
-            "intent": "clinical",
-            "agent_used": "clinical",
-            "request_id": "abc123",
-            "latency_ms": 100,
-            "metadata": {"mode": "pdf_report", "chunks_retrieved": 3, "top_rag_score": 0.25},
-        }
-        return mock_resp
-
-    # Patch httpx.post before importing the module to avoid Gradio UI build side effects
-    with patch("httpx.post", side_effect=fake_post):
-        from app.frontend import _send_query
-
-        class FakeFile:
-            name = str(pdf_file)
-
-        _send_query("Analyse this report", [], FakeFile())
-
-    meta = captured.get("metadata", {})
-    assert "report_b64" in meta, "PDF must be sent as report_b64"
-    assert "image_b64" not in meta, "PDF must NOT be sent as image_b64"
-
-
-@pytest.mark.xfail(
-    reason="app/frontend.py is the legacy abandoned Gradio frontend — not importable.",
-    strict=False,
-)
-def test_send_query_routes_image_as_image_b64(tmp_path):
-    """PNG files must still be sent as image_b64."""
-    png_file = tmp_path / "brain_mri.png"
-    png_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
-
-    captured: dict = {}
-
-    def fake_post(url, json=None, timeout=None):
-        captured.update(json or {})
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "response": "MRI analysis.",
-            "intent": "clinical",
-            "agent_used": "clinical",
-            "request_id": "def456",
-            "latency_ms": 200,
-            "metadata": {},
-        }
-        return mock_resp
-
-    with patch("httpx.post", side_effect=fake_post):
-        from app.frontend import _send_query
-
-        class FakeFile:
-            name = str(png_file)
-
-        _send_query("Analyse the MRI", [], FakeFile())
-
-    meta = captured.get("metadata", {})
-    assert "image_b64" in meta, "PNG must be sent as image_b64"
-    assert "report_b64" not in meta, "PNG must NOT be sent as report_b64"
+# Frontend PDF routing
+#
+# The two tests that lived here drove `app/frontend.py`, the legacy Gradio UI.
+# Both were xfail(strict=False) and one of them XPASSed, so they asserted
+# nothing in either direction; the architecture review counted that pair as
+# suite noise.
+#
+# The UI itself was removed in Wave 7. It was wired into no entrypoint under
+# deploy/ (HF Spaces runs app/streamlit_app.py), it needed an opt-in
+# dependency, and it was one of the two frontends sending metadata["filename"]
+# — the PHI vector in adversarial H-2. 00_RULES: "Do not preserve dead
+# functionality solely because it already exists."
+#
+# PDF routing for the SHIPPED UI is covered by
+# test_streamlit_routes_pdf_as_report_b64.
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +257,16 @@ def test_pdf_report_text_is_scrubbed_before_retrieval_seed():
 
 @pytest.mark.parametrize("raw_key", ["image_b64", "report_b64"])
 def test_clinical_node_does_not_echo_raw_attachment_payloads(raw_key: str):
-    """clinical_node spreads inbound metadata into state['metadata'], which the
-    API returns to the client. Raw attachment payloads must not ride along."""
+    """The response metadata is what the agent PRODUCED — never the caller's input.
+
+    Tightened in Wave 7. This test used to assert that unrelated caller keys
+    ("trace_id") survived into the response, which is precisely adversarial
+    finding H-2: both shipped frontends send `filename`, and
+    `Doe_Jane_MRN4471023_1948-03-12.pdf` rode that echo into two Redis keys and
+    back to the client. Stripping `ATTACHMENT_KEYS` was never sufficient,
+    because that list says which keys mean patient data is *attached*, not which
+    keys may *contain* it. The assertion is inverted rather than removed.
+    """
     from mao.agents.clinical_agent import clinical_node
 
     state = _minimal_state({raw_key: "QkFTRTY0UEFZTE9BRA==", "trace_id": "keep-me"})
@@ -343,7 +281,13 @@ def test_clinical_node_does_not_echo_raw_attachment_payloads(raw_key: str):
         f"{raw_key} must be stripped before the response is built; "
         f"got keys: {sorted(out['metadata'])}"
     )
-    assert out["metadata"].get("trace_id") == "keep-me", "unrelated metadata must survive"
+    assert "trace_id" not in out["metadata"], (
+        "caller-supplied metadata must not be echoed into the response — it is "
+        "cached in Redis and returned to the client (adversarial H-2)"
+    )
+    assert out["metadata"]["mode"] in {"mri_image", "pdf_report"}, (
+        "the agent's own output must still reach the client"
+    )
 
 
 # ---------------------------------------------------------------------------

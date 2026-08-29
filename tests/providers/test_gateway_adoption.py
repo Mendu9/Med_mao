@@ -69,12 +69,35 @@ class TestTheGatewayReportsRealUsage:
 
         monkeypatch.setattr(
             "mao.core.llm.chat_with_usage",
-            lambda **kwargs: ("text", 21, 9),
+            lambda **kwargs: ("text", 21, 9, False),
         )
         out = groq_provider.GroqChatProvider().complete(
             model_id="m", messages=[], temperature=0.0, max_tokens=10
         )
         assert (out.input_tokens, out.output_tokens) == (21, 9)
+        assert out.truncated is False
+
+    def test_the_groq_provider_propagates_truncation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`finish_reason == "length"` must survive to the caller.
+
+        On a reasoning model an under-budgeted call returns HTTP 200 with an
+        empty string, which is indistinguishable from a model that chose to say
+        nothing unless this flag arrives with it — the exact ambiguity that hid
+        Wave 6 blocker 3.
+        """
+        from mao.providers.llm import groq_provider
+
+        monkeypatch.setattr(
+            "mao.core.llm.chat_with_usage",
+            lambda **kwargs: ("", 21, 300, True),
+        )
+        out = groq_provider.GroqChatProvider().complete(
+            model_id="m", messages=[], temperature=0.0, max_tokens=10
+        )
+        assert out.truncated is True
+        assert out.text == ""
 
 
 class TestUsageIsCollectedPerRequest:

@@ -5,6 +5,7 @@ guardrails, council, and NLI gates cannot drift apart.
 """
 from __future__ import annotations
 
+import dataclasses
 import pytest
 
 from mao.safety.policy import RiskLevel, SafetyPolicy, get_policy
@@ -20,7 +21,7 @@ class TestPolicyIdentity:
 
     def test_policy_is_frozen(self) -> None:
         policy = get_policy()
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             policy.nli_block_ratio = 0.99  # type: ignore[misc]
 
 

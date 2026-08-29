@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 _PROMPT_NAME = "senior_supervisor.completeness"
 _MAX_TOKENS = 300
 
+# Advisory, so deliberately NOT ModelRole.SAFETY_JUDGE — see the note in
+# domain_supervisor.py. Nothing reads `completeness_ok` to gate anything, and
+# provider quotas are per model, so this call was spending the safety model's
+# budget on a signal that cannot affect a safety decision.
+_ROLE = ModelRole.EXTRACTION_FAST
+
 
 def _parse_missing(raw: str) -> list[str]:
     """Pull `missing` out of the model's JSON. Never raises."""
@@ -65,7 +71,7 @@ def senior_supervisor_node(state: dict) -> dict:
 
     try:
         completion = gateway.complete(
-            role=ModelRole.SAFETY_JUDGE,
+            role=_ROLE,
             messages=[
                 {"role": "system", "content": spec.template},
                 {"role": "user", "content": prompt},

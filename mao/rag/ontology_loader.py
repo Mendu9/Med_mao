@@ -152,7 +152,7 @@ def build_synonym_map(G: "nx.MultiDiGraph") -> dict[str, str]:
     Returns {synonym_lower: canonical_name}.
     """
     synonym_map: dict[str, str] = {}
-    for node_id, attrs in G.nodes(data=True):
+    for _node_id, attrs in G.nodes(data=True):
         name = attrs.get("name", "")
         if not name:
             continue

@@ -25,23 +25,31 @@ class HealthResponse(BaseModel):
     groq: str
     vector_store: str
     postgres: str
+    # Redis was a real dependency with no probe: it backs the query cache and the
+    # rate limiter, and the health panel had a Redis tile that could only ever
+    # render "unknown" because nothing reported on it.
+    redis: str
 
 
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Check connectivity to all downstream services.
 
-    Reports "ok" only when all three pass; any failure degrades the whole.
+    Reports "ok" only when every probe passes; any failure degrades the whole.
     """
-    groq_status, vector_store_status, postgres_status = await asyncio.gather(
+    groq_status, vector_store_status, postgres_status, redis_status = await asyncio.gather(
         _check_groq(),
         _check_vector_store(),
         _check_postgres(),
+        _check_redis(),
     )
 
     overall = (
         "ok"
-        if all(s == "ok" for s in (groq_status, vector_store_status, postgres_status))
+        if all(
+            s == "ok"
+            for s in (groq_status, vector_store_status, postgres_status, redis_status)
+        )
         else "degraded"
     )
 
@@ -50,6 +58,7 @@ async def health() -> HealthResponse:
         groq=groq_status,
         vector_store=vector_store_status,
         postgres=postgres_status,
+        redis=redis_status,
     )
 
 
@@ -130,6 +139,31 @@ async def _check_vector_store() -> str:
 
         await loop.run_in_executor(None, _ping)
         return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"error: {exc}"
+
+
+async def _check_redis() -> str:
+    """Probe Redis through the shared client, which fails soft by design.
+
+    `get_redis()` returns None when Redis is unreachable or unconfigured, so
+    that a cache outage degrades performance rather than the request path. That
+    is the right runtime behaviour and exactly why it needs a probe: without one
+    the system runs cacheless indefinitely with nothing saying so.
+    """
+    try:
+        from mao.core.redis_client import get_redis
+
+        loop = asyncio.get_running_loop()
+
+        def _ping() -> str:
+            client = get_redis()
+            if client is None:
+                return "error: redis unavailable"
+            client.ping()
+            return "ok"
+
+        return await loop.run_in_executor(None, _ping)
     except Exception as exc:  # noqa: BLE001
         return f"error: {exc}"
 

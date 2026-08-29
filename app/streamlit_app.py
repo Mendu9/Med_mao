@@ -614,6 +614,22 @@ CLINICIAN: Dr. A. Patel, Consultant Neurologist
 # Tab 5: System Health
 # ---------------------------------------------------------------------------
 
+# (response field, display label) for every dependency /health reports.
+#
+# This is data, not four hand-written `health.get("...")` calls, because those
+# had drifted: the panel read `chromadb` and `redis` while the API returned
+# `vector_store` and no Redis field at all, so two tiles rendered "unknown"
+# permanently and nothing failed. `tests/app/test_health_panel_matches_the_api.py`
+# binds these names to `HealthResponse.model_fields`, which only works if the
+# renderer reads them from here.
+HEALTH_PANELS: tuple[tuple[str, str], ...] = (
+    ("groq", "Groq LLM"),
+    ("vector_store", "Vector store"),
+    ("postgres", "PostgreSQL"),
+    ("redis", "Redis"),
+)
+
+
 def _status_badge(status: str) -> str:
     """Return a Streamlit colored-text badge for a service status string."""
     if status == "ok":
@@ -639,19 +655,9 @@ def _render_health_tab() -> None:
         st.markdown(f"**Overall status:** {_status_badge(overall)}")
         st.divider()
 
-        hcol1, hcol2, hcol3, hcol4 = st.columns(4)
-        with hcol1:
-            groq_s = health.get("groq", "unknown")
-            st.markdown(f"**Groq LLM**\n\n{_status_badge(groq_s)}")
-        with hcol2:
-            chroma = health.get("chromadb", "unknown")
-            st.markdown(f"**ChromaDB**\n\n{_status_badge(chroma)}")
-        with hcol3:
-            postgres = health.get("postgres", "unknown")
-            st.markdown(f"**PostgreSQL**\n\n{_status_badge(postgres)}")
-        with hcol4:
-            redis_s = health.get("redis", "unknown")
-            st.markdown(f"**Redis**\n\n{_status_badge(redis_s)}")
+        for column, (field, label) in zip(st.columns(len(HEALTH_PANELS)), HEALTH_PANELS, strict=False):
+            with column:
+                st.markdown(f"**{label}**\n\n{_status_badge(health.get(field, 'unknown'))}")
 
         # LangSmith status row
         ls_key = os.getenv("LANGSMITH_API_KEY", "")

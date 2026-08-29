@@ -128,7 +128,7 @@ def main():
                 ok(passed, f'response_len={len(resp)}_chars')
                 print(f'      Snippet: {resp[:120]}')
             else:
-                fail(failed, 'response_structure', f'too short: {repr(resp)}')
+                fail(failed, 'response_structure', f'too short: {resp!r}')
         else:
             fail(failed, 'response_structure', f'HTTP {r.status_code}')
     except Exception as e:

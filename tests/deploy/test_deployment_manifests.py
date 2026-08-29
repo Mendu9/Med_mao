@@ -43,7 +43,6 @@ IMPORT_TO_DISTRIBUTION = {
     "datasets": "datasets",
     "dotenv": "python-dotenv",
     "fastapi": "fastapi",
-    "gradio": "gradio",
     "groq": "groq",
     "httpx": "httpx",
     "huggingface_hub": "huggingface_hub",
@@ -92,7 +91,6 @@ RUNTIME_ROOTS = ("mao", "app/streamlit_app.py", "app/graph_explorer.py", "app.py
 NOT_RUNTIME = {
     "pytest", "playwright", "setuptools",      # dev/test tooling
     "tensorflow", "cv2", "whisper",            # heavyweight optional models
-    "gradio",                                  # app/frontend.py: alternative UI
     "chromadb", "datasets", "Bio", "lxml",     # ingestion / non-default backend
 }
 
@@ -264,7 +262,7 @@ def test_heavy_optional_extras_are_documented_not_silently_dropped() -> None:
     optional = REPO_ROOT / "requirements-optional.txt"
     assert optional.exists(), "heavyweight extras must live in a documented extras file"
     declared = _declared(optional)
-    for distribution in ("tensorflow", "opencv-python-headless", "gradio", "chromadb"):
+    for distribution in ("tensorflow", "opencv-python-headless", "chromadb"):
         assert distribution in declared, f"{distribution} must be declared as an opt-in extra"
 
 

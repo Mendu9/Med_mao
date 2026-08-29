@@ -31,6 +31,13 @@ class RetrievalTrace:
     hits: int
     reranker_id: str = ""
     top_score: float = 0.0
+    # Which scorer produced `top_score`. Without it the field is not learnable:
+    # the cross-encoder emits a normalised 0-1 probability, and the passthrough
+    # path emits an unbounded BM25 score, so the same column held values two
+    # orders of magnitude apart depending on whether a model loaded that day.
+    # A learning data plane cannot compare those, and cannot tell that it must
+    # not compare them, unless the scale is recorded alongside the number.
+    scorer: str = ""
 
 
 @dataclass

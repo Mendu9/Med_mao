@@ -10,13 +10,13 @@ from mao.api.cache_key import CacheKeyInputs, build_chat_cache_key
 
 
 def _inputs(**kw) -> CacheKeyInputs:
-    base = dict(
-        user_id="u1",
-        query="what is tau?",
-        chat_history=[],
-        metadata={},
-        workflow="evidence_qa",
-    )
+    base = {
+        "user_id": "u1",
+        "query": "what is tau?",
+        "chat_history": [],
+        "metadata": {},
+        "workflow": "evidence_qa",
+    }
     base.update(kw)
     return CacheKeyInputs(**base)
 

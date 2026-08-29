@@ -82,8 +82,18 @@ FAST_MODEL: str = model_id_for(ModelRole.GENERAL_SYNTHESIS)
 CLINICAL_MODEL: str = model_id_for(ModelRole.CLINICAL_SYNTHESIS)
 
 # Council
+#
+# COUNCIL_MAX_TOKENS is the budget for the VERDICT — "VERDICT: PASS" plus one
+# sentence, measured at 38-52 tokens. The bound model's analysis channel is paid
+# for separately by the gateway from the model record's declared reasoning
+# overhead, so this number no longer has to guess at how much a model thinks.
 COUNCIL_MAX_TOKENS: int = 200
-COUNCIL_TIMEOUT_SECONDS: float = 30.0
+
+# Must exceed `retry.MAX_RATE_LIMIT_WAIT_SECONDS` plus the call itself, or the
+# council's own timeout cancels a member that is correctly waiting out a burst
+# rate limit — and a cancelled member fails closed, so the timeout would turn a
+# recoverable 429 into a withheld clinical answer.
+COUNCIL_TIMEOUT_SECONDS: float = 120.0
 
 # NLI — a local cross-encoder, not a provider-routed role
 NLI_MODEL: str = "cross-encoder/nli-deberta-v3-small"

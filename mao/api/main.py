@@ -237,13 +237,38 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
             # The previous cache-hit branch returned empty sources and metadata,
             # so a cached clinical answer shipped with zero citations (P1-5).
             _cached_meta = _cached_data.get("metadata", {})
+            _cached_latency = (time.perf_counter() - start_time) * 1000
+
+            # A cache hit is still a clinical answer delivered to a clinician,
+            # so it still has to leave a record. This branch used to `return`
+            # above both of these, which made the audit trail a function of
+            # cache state rather than of clinical significance — the same gap
+            # P1-9 was raised for on the streaming path. `served_from_cache`
+            # distinguishes the two in the trace rather than hiding one.
+            _cached_result = {
+                **_cached_data,
+                "metadata": {**_cached_meta, "served_from_cache": True},
+            }
+            emit_trace(
+                trace_id=request_id, result=_cached_result, latency_ms=_cached_latency
+            )
+            _cache_loop = asyncio.get_running_loop()
+            _cache_loop.run_in_executor(
+                get_executor(),
+                _persist_session,
+                safe_query,
+                request.user_id,
+                _cached_result,
+                request_id,
+            )
+
             return ChatResponse(
                 response=_cached_data.get("response", ""),
                 agent_used=_cached_data.get("agent_used", "cache"),
                 intent=_cached_data.get("intent", ""),
-                metadata=_cached_meta,
+                metadata=_cached_result["metadata"],
                 request_id=request_id,
-                latency_ms=round((time.perf_counter() - start_time) * 1000, 1),
+                latency_ms=round(_cached_latency, 1),
                 sources=_cached_meta.get("sources", []),
                 web_sources=_cached_meta.get("web_sources", []),
             )
@@ -427,13 +452,27 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     headers = {"Cache-Control": "no-cache", "X-Request-ID": request_id}
 
     if stream_messages:
-        from mao.core.config import FAST_MODEL
-        from mao.core.llm import chat_stream
+        # Through the gateway on the synthesis role, not `mao.core.llm` with a
+        # `FAST_MODEL` config alias. That import was a non-agent gateway bypass
+        # on the request path: it skipped role resolution, so a retired id could
+        # reach the provider, and it skipped the reasoning-overhead budgeting
+        # every other call site now gets.
+        from mao.providers import gateway
+        from mao.providers.registry import ModelRole
 
-        model = result.get("_stream_model") or FAST_MODEL
+        # The role the agent deferred with, not a role chosen here. Hardcoding
+        # one would silently stream on a different capability than the request
+        # was routed to — the same class of drift as naming a literal model id.
+        _stream_role = ModelRole(result.get("_stream_role") or ModelRole.GENERAL_SYNTHESIS.value)
+
         return StreamingResponse(
             sse.raw_token_stream(
-                produce_tokens=lambda: chat_stream(stream_messages, model=model),
+                produce_tokens=lambda: gateway.stream(
+                    role=_stream_role,
+                    messages=stream_messages,
+                    temperature=0.1,
+                    max_tokens=768,
+                ),
                 submit=get_executor().submit,
                 trailer=_trailer,
                 request_id=request_id,

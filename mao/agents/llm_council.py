@@ -23,11 +23,18 @@ from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.safety.policy import get_policy, resolve_risk
+from mao.schemas.evidence import as_text
 
 logger = logging.getLogger(__name__)
 
 _SAFETY = "safety"
 _HALLUCINATION = "hallucination"
+
+# `blocked_by` value for "the review could not run", as distinct from "the
+# review ran and rejected this". Both withhold the answer; only one is a
+# statement about the clinical content, and telling a clinician their answer was
+# judged unsafe when a rate limiter fired is a false statement about a patient.
+REVIEW_UNAVAILABLE = "review_unavailable"
 
 # Council member -> registered prompt name. Prompt text lives in the registry so
 # a verdict can cite the exact prompt version that produced it.
@@ -76,8 +83,21 @@ def parse_member_verdict(text: object) -> bool:
     return "FAIL" not in found
 
 
-async def _async_call_agent(member: str, response: str, context: str) -> tuple[str, str]:
-    """Call one council member through the model gateway. Returns (member, verdict)."""
+async def _async_call_agent(
+    member: str, response: str, context: str
+) -> tuple[str, str, bool]:
+    """Call one council member. Returns (member, verdict, reviewed).
+
+    `reviewed` says whether this member actually looked at the answer. It is
+    False only for infrastructure failures — a timeout, a rate limit, a provider
+    outage. A member that replied with something unreadable HAS reviewed the
+    answer; we simply cannot act on what it said, which is a different thing and
+    still fails closed.
+
+    The verdict text stays FAIL in both cases, so the fail-closed adjudication
+    is untouched. The flag exists so the pipeline can report the failure
+    honestly instead of attributing a rate limit to a patient-safety finding.
+    """
     spec = get_prompt(_MEMBER_PROMPTS[member])
     user_turn = get_prompt("council.user_turn").render(context=context, response=response)
     try:
@@ -94,13 +114,13 @@ async def _async_call_agent(member: str, response: str, context: str) -> tuple[s
             ),
             timeout=COUNCIL_TIMEOUT_SECONDS,
         )
-        return member, completion.text.strip()
+        return member, completion.text.strip(), True
     except asyncio.TimeoutError:
         logger.error("Council member %s timed out after %.1fs", member, COUNCIL_TIMEOUT_SECONDS)
-        return member, "VERDICT: FAIL. Timeout."
+        return member, "VERDICT: FAIL. Timeout.", False
     except Exception as exc:  # noqa: BLE001 - a judge that cannot answer must not abstain
         logger.error("Council member %s failed: %s", member, exc)
-        return member, "VERDICT: FAIL. Agent error."
+        return member, "VERDICT: FAIL. Agent error.", False
 
 
 def _prompt_refs(members: tuple[str, ...]) -> dict[str, str]:
@@ -117,23 +137,41 @@ async def run_council_async(response: str, context: str) -> dict:
     )
 
     verdicts: dict[str, str] = {}
+    unavailable: list[str] = []
     for item in results:
         if isinstance(item, BaseException):
             logger.error("Council gather exception: %s", item)
             continue
-        member, verdict = item
+        member, verdict, reviewed = item
         verdicts[member] = verdict
+        if not reviewed:
+            unavailable.append(member)
 
     # A member that produced no verdict has not passed the response — it has
-    # failed to review it. Fail closed.
+    # failed to review it. Fail closed. A member missing from `results` entirely
+    # means the gather itself raised, which is also infrastructure.
     for member in members:
-        verdicts.setdefault(member, "VERDICT: FAIL. Missing verdict.")
+        if member not in verdicts:
+            verdicts[member] = "VERDICT: FAIL. Missing verdict."
+            unavailable.append(member)
 
-    meta = {"members": list(members), "prompt_refs": _prompt_refs(members)}
+    meta: dict = {"members": list(members), "prompt_refs": _prompt_refs(members)}
+    if unavailable:
+        meta["unavailable_members"] = sorted(set(unavailable))
 
     # Each member must have affirmatively approved. Report the highest-severity
     # blocker first so `blocked_by` names the reason a clinician would care about.
     approved = {m: parse_member_verdict(verdicts.get(m)) for m in members}
+
+    # An answer nobody could review is withheld — but it is NOT reported as a
+    # safety finding. Checked before the per-member attribution below, because
+    # the infrastructure fact explains the FAIL and the member name does not.
+    if unavailable:
+        logger.error(
+            "Council review unavailable for %s — withholding the answer",
+            ", ".join(sorted(set(unavailable))),
+        )
+        return {**verdicts, **meta, "passed": False, "blocked_by": REVIEW_UNAVAILABLE}
 
     for member in (_SAFETY, _HALLUCINATION):
         if member in approved and not approved[member]:
@@ -200,6 +238,10 @@ def council_node(state: dict) -> dict:
 
     # An empty context is passed through: run_council_async narrows the council
     # to the members that can still judge, rather than skipping review (P1-3).
-    context = "\n".join(str(c) for c in chunks[:4])
+    #
+    # `as_text`, not `str(c)`: the graphrag route publishes dicts, so `str(c)`
+    # handed the accuracy and hallucination members Python repr syntax to judge
+    # a clinical answer against.
+    context = "\n\n".join(as_text(c) for c in chunks[:4])
     verdict = run_council(response=answer, context=context)
     return {**state, "council_verdict": verdict}

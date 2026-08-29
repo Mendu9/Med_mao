@@ -17,6 +17,14 @@ Two rules govern the value of a labelled field:
   - it ends at the end of the line, or at the next `Label:` on the same line;
   - it never swallows that next label.
 
+"End of the line" is why every pattern is compiled with `re.MULTILINE`. Without
+that flag `$` means end of *string*, and the first rule silently became "ends at
+the next recognised label, or at the end of the document" — so in a letter whose
+header fields are separated by prose, which is exactly what PDF text extraction
+produces, neither the patient name nor the record number was scrubbed at all.
+The flag is load-bearing, not stylistic; `tests/core/test_pii_scrubber_line_scope.py`
+asserts it directly.
+
 The second rule is not a nicety. The previous name pattern greedily consumed up
 to three following capitalised words, so on a single line — exactly what PDF
 text extraction produces when layout collapses — "Patient Name: John Smith MRN:
@@ -131,8 +139,21 @@ _PATTERNS: list[tuple[str, str]] = [
     # --- Structured identifiers by shape ---
     (r"\b\d{3}-\d{2}-\d{4}\b", "[SSN]"),                       # US SSN
     (r"\b\d{2}[A-Z]\d{6}[A-Z]\b", "[MEDICARE]"),
+    # UK National Insurance number: two letters, six digits, an A-D suffix.
+    # Written both closed up (QQ123456C) and spaced (QQ 12 34 56 C) on forms.
+    #
+    # Deliberately matched by SHAPE, not validated against the real prefix rules
+    # (which exclude D/F/I/Q/U/V leading). De-identification is not validation:
+    # `QQ123456C` is HMRC's own example number and would fail a valid-prefix
+    # check, yet it is exactly what turns up in referral letters and test data.
+    # Redacting a near-miss costs nothing; missing a real one is a disclosure.
+    (r"\b[A-Z]{2}[ \t]?(?:\d[ \t]?){6}[A-D]\b", "[NI_NUMBER]"),
     (r"\b(?:\d{3}[ \t]){2}\d{4}\b", "[NHS]"),                  # 943 476 5919
     (r"\b\d{10}\b", "[NHS_ID]"),                               # 9434765919
+    # Passport / long civil identifier. Nine bare digits is not a clinical
+    # quantity — doses, scores and lab values are orders of magnitude shorter —
+    # so the false-positive cost is low and the disclosure cost is not.
+    (r"\b\d{9}\b", "[ID_NUMBER]"),
     (r"\b[A-Z]{2,4}-\d{2,4}-\d{4,8}\b", "[ACCOUNT]"),          # ACC-2024-889231
 
     # --- Dates ---
@@ -176,8 +197,10 @@ _PATTERNS: list[tuple[str, str]] = [
     ),
 ]
 
+# MULTILINE is required, not cosmetic: `_VALUE` terminates on `\s*$`, and
+# without it `$` matches only at end-of-string. See the module docstring.
 _COMPILED: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(pattern), replacement) for pattern, replacement in _PATTERNS
+    (re.compile(pattern, re.MULTILINE), replacement) for pattern, replacement in _PATTERNS
 ]
 
 

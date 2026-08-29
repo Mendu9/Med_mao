@@ -5,6 +5,7 @@ variables, and an expected output contract — and to be traceable with response
 """
 from __future__ import annotations
 
+import dataclasses
 import pytest
 
 from mao.prompts import PromptRegistry, PromptSpec, get_prompt, registry
@@ -47,7 +48,7 @@ class TestPromptSpecContract:
         spec = PromptSpec(
             name="demo", version="1.0.0", template="x", required_variables=(), output_contract="text"
         )
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             spec.version = "2.0.0"  # type: ignore[misc]
 
     def test_trace_ref_combines_name_and_version(self) -> None:

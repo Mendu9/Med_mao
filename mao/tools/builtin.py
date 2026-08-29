@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 
-from mao.tools.registry import ReadOrWrite, ToolSpec, TrustTier, registry
+from mao.tools.registry import AuthScope, ReadOrWrite, ToolSpec, TrustTier, registry
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,12 @@ _SPECS = (
             output_schema="list of {title, snippet, url} rendered as text",
             typical_latency_ms=1500.0,
             cost_per_call_usd=0.0,
+            auth_scope=AuthScope.PUBLIC_NETWORK,
+            failure_modes=(
+                "provider rate limit or outage returns no results",
+                "results may be stale, promotional, or factually wrong",
+                "query terms are sent to a third party",
+            ),
             description="Search the web for current information.",
         ),
         _web_search,
@@ -80,6 +86,12 @@ _SPECS = (
             output_schema="summary text, truncated to 1500 chars",
             typical_latency_ms=800.0,
             cost_per_call_usd=0.0,
+            auth_scope=AuthScope.PUBLIC_NETWORK,
+            failure_modes=(
+                "no page exists for the topic",
+                "summary is truncated at 1500 characters mid-sentence",
+                "content is editable by anyone and may be vandalised",
+            ),
             description="Get an encyclopaedic summary for a topic.",
         ),
         _wikipedia,
@@ -95,6 +107,11 @@ _SPECS = (
             output_schema="numeric result as a string",
             typical_latency_ms=5.0,
             cost_per_call_usd=0.0,
+            auth_scope=AuthScope.NONE,
+            failure_modes=(
+                "numexpr rejects any non-arithmetic expression",
+                "float result loses precision on very large integers",
+            ),
             description="Evaluate a math expression.",
         ),
         _calculator,

@@ -66,23 +66,47 @@ class TestAttachmentIdentifiersDoNotSurvive:
         out = clinical_agent.clinical_node(state)
         assert key not in out["metadata"]
 
-    def test_unrelated_metadata_is_still_echoed(
+    def test_no_caller_metadata_is_echoed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Inverted in Wave 7 — this asserted the H-2 defect as the contract.
+
+        It required unrelated caller keys to survive into the response. Both
+        shipped frontends send `filename`, so that echo carried
+        `Doe_Jane_MRN4471023_1948-03-12.pdf` into Redis and back to the client.
+        `locale` is harmless; the rule that let it through was not, because the
+        agent cannot tell a caller's locale from a caller's patient name.
+        """
         monkeypatch.setattr(
             clinical_agent,
             "_handle_text_question",
             lambda *a, **k: ("answer", {}),
         )
         out = clinical_agent.clinical_node(
-            {"user_query": "q", "metadata": {"locale": "en-GB"}}
+            {"user_query": "q", "metadata": {"locale": "en-GB", "filename": "J_Smith.pdf"}}
         )
-        assert out["metadata"]["locale"] == "en-GB"
+        assert "locale" not in out["metadata"]
+        assert "filename" not in out["metadata"]
 
-    def test_the_agent_does_not_keep_its_own_key_list(self) -> None:
-        source = inspect.getsource(clinical_agent)
-        assert '"image_b64", "report_b64"' not in source
-        assert "ATTACHMENT_KEYS" in source
+    def test_the_agent_produces_its_own_response_metadata(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Replaces a source-text assertion that had become vacuous.
+
+        The old test read the agent's source for the string "ATTACHMENT_KEYS" to
+        prove it did not keep a duplicate key list. The agent now consults no
+        key list at all — it echoes nothing — so that string survives only in a
+        comment and the assertion would pass on prose. This asserts the
+        behaviour instead: the response carries the agent's own output.
+        """
+        monkeypatch.setattr(
+            clinical_agent,
+            "_handle_text_question",
+            lambda *a, **k: ("answer", {"mode": "text_question", "sources": []}),
+        )
+        out = clinical_agent.clinical_node({"user_query": "q", "metadata": {}})
+        assert out["metadata"]["mode"] == "text_question"
+        assert "uncertainty_flag" in out["metadata"]
 
 
 class TestAudioIsNotSilentlyDropped:

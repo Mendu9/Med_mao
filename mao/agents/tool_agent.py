@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from mao import tools
@@ -62,9 +63,10 @@ def tool_node(state: MAOState) -> MAOState:
     ]
 
     tool_trace: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
     final_answer = ""
 
-    for turn in range(_MAX_TOOL_CALLS + 1):
+    for _turn in range(_MAX_TOOL_CALLS + 1):
         llm_response = _call_llm(messages)
         parsed = _parse_tool_call(llm_response)
 
@@ -81,8 +83,29 @@ def tool_node(state: MAOState) -> MAOState:
             break
 
         # Execute tool
+        started = time.perf_counter()
         tool_output = tools.registry().invoke(tool_name, tool_input)
+        latency_ms = (time.perf_counter() - started) * 1000
         tool_trace.append({"tool": tool_name, "input": tool_input, "output": tool_output})
+
+        # A content-free record for the trace, alongside the ReAct transcript.
+        # `TraceSchema.tool_calls` was declared and populated by nothing, so the
+        # trace could not say which capability a request actually used. The two
+        # lists are deliberately separate: the transcript carries tool output
+        # because the model needs it, and traces are content-free by contract.
+        #
+        # `invoke` reports failures as its return value rather than raising —
+        # that is the ReAct contract — so success is inferred from the error
+        # shape it documents, not from the absence of an exception.
+        failed = tool_output.startswith((f"{tool_name} error:", "Unknown tool:"))
+        tool_calls.append(
+            {
+                "tool_id": tool_name,
+                "latency_ms": round(latency_ms, 2),
+                "ok": not failed,
+                "error": tool_output[:200] if failed else "",
+            }
+        )
         logger.debug("Tool %s(%r) → %s", tool_name, tool_input, tool_output[:200])
 
         # Inject tool result back into conversation
@@ -98,7 +121,7 @@ def tool_node(state: MAOState) -> MAOState:
 
     state["response"]   = final_answer
     state["agent_used"] = "tool"
-    state["metadata"]   = {"tool_trace": tool_trace}
+    state["metadata"]   = {"tool_trace": tool_trace, "tool_calls": tool_calls}
     return state
 
 

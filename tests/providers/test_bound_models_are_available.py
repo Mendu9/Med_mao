@@ -24,6 +24,18 @@ import pytest
 from mao.providers.gateway import registry
 from mao.providers.registry import ModelRole, ModelStatus
 
+
+def _router_budget() -> int:
+    from mao.agents.router import _CLASSIFY_MAX_TOKENS
+
+    return _CLASSIFY_MAX_TOKENS
+
+
+def _domain_budget() -> int:
+    from mao.agents.domain_classifier import _DOMAIN_MAX_TOKENS
+
+    return _DOMAIN_MAX_TOKENS
+
 # Ids proven dead by live probe on 2026-08-28. None may be bound to a role.
 DECOMMISSIONED = {
     "llama-3.1-8b-instant",
@@ -53,27 +65,46 @@ class TestNoRoleResolvesToADecommissionedModel:
 
 
 class TestFastRolesToleratePreambleFreeBudgets:
-    """The classifier asks for 5 tokens and the router for 10.
+    """Budget adequacy, asserted against values rather than against source text.
 
-    A reasoning model spends that budget thinking and returns an empty string,
-    so a tight budget silently turns into "the router never classified anything".
-    Both the model choice and the budget have to be safe.
+    These two checks were `inspect.getsource` string matches:
+
+        assert "max_tokens=5" not in source
+        assert "max_tokens=10" not in inspect.getsource(_classify)
+
+    The architecture review called them out, and it was right: they pass at
+    `max_tokens=6`, they never look at the two safety-critical budgets at all,
+    and — the part that mattered — they cannot see which model is bound to the
+    role. Adequacy is a relation between a budget and a model, so no assertion
+    about the text of a call site can decide it. `openai/gpt-oss-safeguard-20b`
+    spends up to 883 tokens reasoning before it answers; `qwen/qwen3.8-27b`
+    spends 35. The same literal is fine for one and fatal for the other.
+
+    What replaced them:
+      - the relation, offline: tests/providers/test_reasoning_budget.py
+      - the outcome, live:     tests/providers/test_live_call_sites.py
     """
 
-    def test_domain_classifier_budget_is_not_hair_trigger(self) -> None:
-        import inspect
+    @pytest.mark.parametrize(
+        "budget,minimum",
+        [
+            (_router_budget(), 16),
+            (_domain_budget(), 16),
+        ],
+    )
+    def test_a_one_word_label_has_room_for_a_short_preamble(
+        self, budget: int, minimum: int
+    ) -> None:
+        assert budget >= minimum, (
+            f"a {budget}-token answer budget leaves no room for a model that "
+            "emits any preamble; an empty reply reads as 'never classified', "
+            "which escalates every request to HIGH"
+        )
 
-        from mao.agents import domain_classifier
-
-        source = inspect.getsource(domain_classifier._llm_classify)
-        assert "max_tokens=5" not in source
-
-    def test_router_budget_is_not_hair_trigger(self) -> None:
-        import inspect
-
-        from mao.agents.router import _classify
-
-        assert "max_tokens=10" not in inspect.getsource(_classify)
+    @pytest.mark.parametrize("role", [ModelRole.ROUTER_FAST, ModelRole.EXTRACTION_FAST])
+    def test_the_analysis_channel_is_budgeted_separately(self, role: ModelRole) -> None:
+        """The classifier budget must not have to cover the model's thinking."""
+        assert registry().resolve(role).reasoning_overhead_tokens > 0
 
 
 @pytest.mark.slow

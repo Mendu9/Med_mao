@@ -217,8 +217,23 @@ def _run_ragas_sync(
         except ImportError:
             from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore[no-redef]
 
+        # The model id is resolved through the registry at call time, on the
+        # judge role — not read from `cfg.groq_judge_model`, which is a
+        # module-import-time alias and so cannot see a rebinding or a retirement
+        # that happened afterwards. `resolve()` walks the fallback chain, so a
+        # retired id is refused here exactly as it is on the serving path.
+        #
+        # The `ChatGroq` object itself stays: ragas 0.3.x takes a LangChain LLM,
+        # not a callable, so this is a genuine adapter to a third-party
+        # interface rather than a shortcut around the gateway. It is confined to
+        # these three lines, and this module is eval-only — nothing here is on
+        # the request path.
+        from mao.providers.gateway import resolve
+        from mao.providers.registry import ModelRole
+
+        _judge_model = resolve(ModelRole.SAFETY_JUDGE).model_id
         _ragas_llm = LangchainLLMWrapper(
-            ChatGroq(api_key=cfg.groq_api_key, model=cfg.groq_judge_model, temperature=0)
+            ChatGroq(api_key=cfg.groq_api_key, model=_judge_model, temperature=0)
         )
 
         _ragas_embeddings = LangchainEmbeddingsWrapper(

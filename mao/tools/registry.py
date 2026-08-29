@@ -43,6 +43,23 @@ class TrustTier(str, Enum):
     DETERMINISTIC = "deterministic"  # computed locally, no external claim
 
 
+class AuthScope(str, Enum):
+    """What a tool needs to be allowed to reach.
+
+    `01_ARCHITECTURE.md` mandates this field and it was missing, so the registry
+    could describe what a tool *costs* but not what it can *touch* — which is
+    the half a risk policy actually needs. 00_RULES forbids unrestricted SQL,
+    shell, filesystem, secrets and operational DB access; naming the scope is
+    what lets that be checked rather than assumed.
+    """
+
+    NONE = "none"                    # pure computation, no I/O
+    PUBLIC_NETWORK = "public_network"  # unauthenticated outbound HTTP
+    PROVIDER_API = "provider_api"    # authenticated third-party API
+    INTERNAL_READ = "internal_read"  # read-only internal data
+    INTERNAL_WRITE = "internal_write"  # mutates internal state
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One declared capability."""
@@ -56,6 +73,14 @@ class ToolSpec:
     output_schema: str
     typical_latency_ms: float
     cost_per_call_usd: float
+    # Architecture-mandated, and previously absent. PROJECT_STATE claimed this
+    # dataclass carried "every architecture-mandated field"; the Wave 6 review
+    # found that claim was wrong, and these are the two it was wrong about.
+    auth_scope: AuthScope = AuthScope.NONE
+    # How this tool is known to fail, so a caller can reason about degraded
+    # output instead of discovering the modes in production. `invoke` returns
+    # failures as text by contract, which makes them easy to miss.
+    failure_modes: tuple[str, ...] = ()
     description: str = ""
     handler: ToolHandler | None = field(default=None, compare=False, repr=False)
 
@@ -84,6 +109,36 @@ class ToolRegistry:
 
     def all(self) -> list[ToolSpec]:
         return [self._specs[n] for n in self.names()]
+
+    # -- capability lookup --------------------------------------------------
+    #
+    # `01_ARCHITECTURE.md` lists a CapabilityRegistry alongside the
+    # ToolRegistry. It is not built as a second registry, because a second
+    # registry over the same objects is a second thing to keep in step, and
+    # every tool already *declares* its capability — the missing part was that
+    # nothing could query by it. Indexing what is already declared is the whole
+    # of what a CapabilityRegistry would have done here; a separate one would
+    # add a synchronisation problem and no answer.
+
+    def capabilities(self) -> list[str]:
+        """Every capability the registered tools provide."""
+        return sorted({s.capability for s in self._specs.values()})
+
+    def by_capability(self, capability: str) -> list[ToolSpec]:
+        """Tools providing a capability, cheapest first.
+
+        Ordered by cost then latency so a caller asking for a capability rather
+        than a tool gets the cheapest way to obtain it, which is the point of
+        addressing capabilities instead of names.
+        """
+        return sorted(
+            (s for s in self._specs.values() if s.capability == capability),
+            key=lambda s: (s.cost_per_call_usd, s.typical_latency_ms, s.tool_id),
+        )
+
+    def for_domain(self, domain: str) -> list[ToolSpec]:
+        """Tools declared usable in a domain."""
+        return [s for s in self.all() if domain in s.domains]
 
     def invoke(self, tool_id: str, tool_input: str) -> str:
         """Run a tool. Always returns text, never raises.

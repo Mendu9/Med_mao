@@ -11,8 +11,11 @@ non-streaming) or on budget.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 # Bump whenever a threshold or a classification rule changes.
 POLICY_VERSION = "2026.08-1"
@@ -51,15 +54,26 @@ ATTACHMENT_KEYS: frozenset[str] = frozenset(
 
 
 def has_attachment(metadata: object) -> bool:
-    """Whether request metadata carries patient data.
+    """Whether request metadata may carry patient data.
 
-    Tolerates a missing or malformed metadata object by answering False — the
-    caller escalates on True, so an unparseable payload must not silently
-    *lower* risk relative to an absent one. Callers that cannot read metadata at
-    all should escalate on their own.
+    Three cases, and the middle one used to be collapsed into the first:
+
+    - *absent* (None, or no metadata at all) — nothing was attached. False.
+    - *unreadable* (present, but not a dict) — we cannot tell what was
+      attached. True, because "we cannot tell" and "nothing was attached" are
+      not the same answer on the path to a clinical response, and every caller
+      here escalates on True. This previously returned False, so a malformed
+      payload resolved exactly like an empty one (adversarial L-2).
+    - *readable* — answer from the policy's key list.
     """
-    if not isinstance(metadata, dict):
+    if metadata is None:
         return False
+    if not isinstance(metadata, dict):
+        logger.warning(
+            "Unreadable request metadata of type %s — treating as an attachment",
+            type(metadata).__name__,
+        )
+        return True
     return any(metadata.get(key) for key in ATTACHMENT_KEYS)
 
 
@@ -117,12 +131,79 @@ class SafetyPolicy:
         return risk is RiskLevel.HIGH
 
 
-_policy = SafetyPolicy()
+class PolicyRegistry:
+    """Version -> SafetyPolicy, plus which version is active.
+
+    `01_ARCHITECTURE.md` lists a PolicyRegistry among the required registries.
+    The version metadata already existed and was threaded into the cache key and
+    into every trace, but nothing could resolve a version *back* to the policy it
+    named — so a stored trace saying `policy_version: 2026.08-1` recorded a
+    string, not a decision anyone could later reconstruct.
+
+    That matters for this phase specifically. Phase 1 is "Architecture
+    Stabilization and Learning Data Plane", and a trace store whose policy
+    references cannot be dereferenced is not a learning substrate: you cannot ask
+    "did the threshold change explain the change in block rate" if the thresholds
+    behind each version are unrecoverable.
+
+    Deliberately small. It resolves and it records; it does not hot-swap policy
+    at runtime, because a safety policy that can change mid-flight is a safety
+    policy no trace can be trusted to describe.
+    """
+
+    def __init__(self, policies: dict[str, SafetyPolicy], active: str) -> None:
+        if active not in policies:
+            raise ValueError(f"active policy {active!r} is not registered")
+        self._policies = dict(policies)
+        self._active = active
+
+    @classmethod
+    def default(cls) -> PolicyRegistry:
+        policy = SafetyPolicy()
+        return cls({policy.policy_version: policy}, active=policy.policy_version)
+
+    def active(self) -> SafetyPolicy:
+        return self._policies[self._active]
+
+    def get(self, version: str) -> SafetyPolicy:
+        """The policy a recorded `policy_version` refers to."""
+        try:
+            return self._policies[version]
+        except KeyError:
+            raise KeyError(
+                f"unknown policy version {version!r}; known: {sorted(self._policies)}"
+            ) from None
+
+    def versions(self) -> list[str]:
+        return sorted(self._policies)
+
+    def register(self, policy: SafetyPolicy) -> None:
+        """Record a policy version so historical traces stay dereferenceable.
+
+        A version is immutable once registered: re-registering a *different*
+        policy under a version already in the store would silently rewrite what
+        every trace citing it means.
+        """
+        existing = self._policies.get(policy.policy_version)
+        if existing is not None and existing != policy:
+            raise ValueError(
+                f"policy version {policy.policy_version!r} is already registered "
+                "with different values; bump POLICY_VERSION instead"
+            )
+        self._policies[policy.policy_version] = policy
+
+
+_registry = PolicyRegistry.default()
+
+
+def registry() -> PolicyRegistry:
+    """The process-wide policy registry."""
+    return _registry
 
 
 def get_policy() -> SafetyPolicy:
     """The process-wide active safety policy."""
-    return _policy
+    return _registry.active()
 
 
 def resolve_risk(state: object) -> RiskLevel:
@@ -134,21 +215,34 @@ def resolve_risk(state: object) -> RiskLevel:
     missing value. A second implementation used to live in
     `mao/safety/verification.py`, and the two disagreed about what LOW means.
 
-    Two rules, and the distinction between them is the whole point:
+    Three rules, in this order:
 
-    1. An explicit `risk_level` is honoured only on an *exact* match. LOW is the
-       only level permitted to skip output verification and the clinical
-       disclaimer, so it must never be reachable by a typo, a stray space, a
-       None, or a wrong type. `"Low"` and `" LOW "` are not LOW.
+    0. An attachment always implies HIGH, and it is checked FIRST — before any
+       explicit level is consulted. `risk_for` states this rule without
+       qualification ("regardless of the routed intent"), but the resolver used
+       to honour an explicit level before looking at attachments, so
+       `{"risk_level": "low", "metadata": {"image_b64": ...}}` resolved to LOW.
+       LOW is the only level allowed to skip output verification and the
+       clinical disclaimer, so that single state defeated both streaming gates
+       at once. It was unreachable only because `risk_gate_node` happens to be
+       the sole writer of `risk_level` — a property of today's call graph, not
+       of this function, which every safety control consults.
 
-    2. When no usable `risk_level` is present, classify from intent and
-       attachments rather than assuming a floor. Defaulting a clinical request
-       to STANDARD silently drops its mandatory disclaimer; `risk_for` escalates
-       it to HIGH instead. This can only return LOW for an intent that is
-       genuinely low-risk, which is a classification, not a typo.
+    1. Otherwise an explicit `risk_level` is honoured only on an *exact* match.
+       LOW must never be reachable by a typo, a stray space, a None, or a wrong
+       type. `"Low"` and `" LOW "` are not LOW.
+
+    2. With no usable `risk_level`, classify from intent and attachments rather
+       than assuming a floor. Defaulting a clinical request to STANDARD silently
+       drops its mandatory disclaimer; `risk_for` escalates it to HIGH instead.
     """
     if not isinstance(state, dict):
         return RiskLevel.STANDARD
+
+    # Rule 0. Nothing a caller or an upstream node can write may declassify a
+    # request that carries patient data.
+    if has_attachment(state.get("metadata")):
+        return RiskLevel.HIGH
 
     raw = state.get("risk_level")
     if isinstance(raw, RiskLevel):
@@ -159,7 +253,4 @@ def resolve_risk(state: object) -> RiskLevel:
         except ValueError:
             pass
 
-    return _policy.risk_for(
-        str(state.get("intent") or ""),
-        has_attachment=has_attachment(state.get("metadata")),
-    )
+    return get_policy().risk_for(str(state.get("intent") or ""), has_attachment=False)

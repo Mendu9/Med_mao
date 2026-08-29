@@ -32,6 +32,25 @@ class FakeProvider:
         )
         return ProviderResponse(text=self.text, input_tokens=11, output_tokens=7)
 
+    def stream(self, *, model_id, messages, temperature, max_tokens):
+        """Streaming is part of the provider interface.
+
+        It moved here from `mao.core.llm`, which the API layer was importing
+        directly to stream — a non-agent gateway bypass on the request path
+        that also resolved its model from a config alias instead of the
+        registry.
+        """
+        self.calls.append(
+            {
+                "model_id": model_id,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "streamed": True,
+            }
+        )
+        return iter(self.text.split())
+
 
 @pytest.fixture
 def fake() -> FakeProvider:
@@ -39,6 +58,24 @@ def fake() -> FakeProvider:
     gateway.set_provider(provider)
     yield provider
     gateway.reset_provider()
+
+
+class TestRoleAddressedStreaming:
+    """Streaming resolves its model the same way completion does."""
+
+    def test_the_gateway_streams_on_the_resolved_model(self, fake: FakeProvider) -> None:
+        list(gateway.stream(role=ModelRole.GENERAL_SYNTHESIS, messages=[]))
+        assert fake.calls[0]["model_id"] == gateway.model_id_for(
+            ModelRole.GENERAL_SYNTHESIS
+        )
+        assert fake.calls[0]["streamed"] is True
+
+    def test_streaming_budgets_for_the_analysis_channel_too(
+        self, fake: FakeProvider
+    ) -> None:
+        overhead = gateway.resolve(ModelRole.GENERAL_SYNTHESIS).reasoning_overhead_tokens
+        list(gateway.stream(role=ModelRole.GENERAL_SYNTHESIS, messages=[], max_tokens=768))
+        assert fake.calls[0]["max_tokens"] == 768 + overhead
 
 
 class TestRoleAddressedCompletion:

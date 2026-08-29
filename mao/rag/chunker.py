@@ -111,7 +111,7 @@ def adaptive_biomedical_chunk(
                 # Carry the last `overlap_sentences` sentences into the next chunk
                 # so cross-boundary context (e.g. diagnosis → treatment) is preserved.
                 overlap = current[-overlap_sentences:] if overlap_sentences > 0 else []
-                current = overlap + [sentences[i]]
+                current = [*overlap, sentences[i]]
                 current_words = sum(len(s.split()) for s in current)
             else:
                 current.append(sentences[i])

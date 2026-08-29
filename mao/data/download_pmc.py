@@ -92,13 +92,13 @@ def _search_pmc(query: str, max_results: int, retstart: int = 0) -> list[str]:
     # Append PMC-compatible date filter (not [dp] which is PubMed-only)
     full_term = f"({query}) AND 2016:2026[pdat]"
 
-    kwargs: dict[str, Any] = dict(
-        db="pmc",
-        term=full_term,
-        retmax=max_results,
-        retstart=retstart,
-        sort="relevance",
-    )
+    kwargs: dict[str, Any] = {
+        "db": "pmc",
+        "term": full_term,
+        "retmax": max_results,
+        "retstart": retstart,
+        "sort": "relevance",
+    }
     if _NCBI_API_KEY:
         kwargs["api_key"] = _NCBI_API_KEY
 
@@ -124,12 +124,12 @@ def _fetch_metadata_batch(pmcids: list[str]) -> list[dict[str, Any]]:
     # Strip PMC prefix for the ID list — Entrez pmc db expects bare numbers
     ids = [p.replace("PMC", "") for p in pmcids]
 
-    kwargs: dict[str, Any] = dict(
-        db="pmc",
-        id=",".join(ids),
-        rettype="xml",
-        retmode="xml",
-    )
+    kwargs: dict[str, Any] = {
+        "db": "pmc",
+        "id": ",".join(ids),
+        "rettype": "xml",
+        "retmode": "xml",
+    }
     if _NCBI_API_KEY:
         kwargs["api_key"] = _NCBI_API_KEY
 

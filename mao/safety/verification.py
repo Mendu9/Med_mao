@@ -42,6 +42,7 @@ from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.safety.policy import get_policy, resolve_risk
+from mao.schemas.evidence import Claim, VerificationStatus, as_text
 
 logger = logging.getLogger(__name__)
 
@@ -91,15 +92,22 @@ DISCLAIMER_MARKER = "AI Decision Support Only"
 # ---------------------------------------------------------------------------
 
 def _premise_from(docs) -> str:
-    """Flatten retrieved chunks (objects or strings) into an NLI premise."""
+    """Flatten retrieved evidence into an NLI and judge premise.
+
+    `as_text` rather than a local `str(doc)` fallback. `graphrag_node` publishes
+    dicts, which have no `.text` attribute, so the fallback fired and the
+    premise became Python repr syntax — truncated at 300 characters of
+    `{'text': '...` per document, with the source key cut off every time. The
+    judge scored groundedness against that, and the truncation budget was being
+    spent on punctuation.
+    """
     if not docs:
         return ""
     parts = []
     for doc in list(docs)[:_MAX_PREMISE_DOCS]:
         if doc is None:
             continue
-        text = getattr(doc, "text", None)
-        parts.append(str(text if text is not None else doc)[:_MAX_DOC_CHARS])
+        parts.append(as_text(doc)[:_MAX_DOC_CHARS])
     return " ".join(p for p in parts if p.strip())
 
 
@@ -107,6 +115,51 @@ def _claims_from(response: str) -> list[str]:
     return [
         s.strip() for s in response.split(".") if len(s.strip()) > _MIN_CLAIM_CHARS
     ][:_MAX_CLAIMS]
+
+
+def _to_claim(index: int, flag: dict) -> Claim:
+    """One NLI result as the architecture's canonical Claim.
+
+    `Claim` was declared in Phase 1 and consumed by nothing. Building it here
+    makes it the type this logic is written against, and buys something real:
+    `entailed` is one boolean covering three different situations, and
+    `verification_status` separates them. "The sources contradict this" and "the
+    sources do not mention this" are both `entailed=False`, and a clinician
+    reading a warning about unverified claims would want to know which.
+    """
+    support = float(flag.get("score") or 0.0)
+    contradiction = float(flag.get("contradiction_score") or 0.0)
+    if flag.get("entailed"):
+        status = VerificationStatus.SUPPORTED
+    elif contradiction > support:
+        status = VerificationStatus.CONTRADICTED
+    else:
+        status = VerificationStatus.INSUFFICIENT
+    return Claim(
+        claim_id=f"c{index}",
+        text=str(flag.get("claim", "")),
+        support_score=support,
+        contradiction_score=contradiction,
+        certainty=support,
+        verification_status=status,
+    )
+
+
+def _claim_as_flag(claim: Claim) -> dict:
+    """JSON-safe projection of a Claim.
+
+    `nli_flags` is written to a JSON column and read as dicts by the output
+    guardrails, the trace and the audit row, so the wire format stays a dict.
+    `entailed` is kept for those readers; `verification_status` is added
+    alongside it rather than replacing it.
+    """
+    return {
+        "claim": claim.text,
+        "entailed": claim.verification_status is VerificationStatus.SUPPORTED,
+        "score": claim.support_score,
+        "contradiction_score": claim.contradiction_score,
+        "verification_status": claim.verification_status.value,
+    }
 
 
 def _run_nli(response: str, docs) -> list[dict]:
@@ -119,10 +172,9 @@ def _run_nli(response: str, docs) -> list[dict]:
         if not claims:
             return []
         flags = check_all_claims(claims, premise)
-        # Normalise: output_guardrails computes an unentailed ratio from these.
         return [
-            {**f, "entailed": bool(f.get("entailed"))}
-            for f in flags
+            _claim_as_flag(_to_claim(i, f))
+            for i, f in enumerate(flags)
             if isinstance(f, dict)
         ]
     except Exception as exc:  # noqa: BLE001 - a broken checker must not fail the request

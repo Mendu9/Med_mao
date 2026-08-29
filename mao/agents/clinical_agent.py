@@ -18,8 +18,8 @@ from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
 from mao.report.report_card import SourceEntry, build_report_card
-from mao.safety.policy import ATTACHMENT_KEYS
 from mao.safety.verification import CLINICAL_DISCLAIMER
+from mao.schemas.evidence import from_chunk as evidence_from_chunk
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 # mao.safety.verification so output_guardrails can re-assert it without
 # importing this agent (P0-2).
 _DISCLAIMER = CLINICAL_DISCLAIMER
+
+# Answer budgets, named so the live call-site probe can assert against the
+# values this module really uses. The bound model's analysis channel is paid for
+# on top of these by the gateway — see mao/providers/registry.py.
+_REPORT_SUMMARY_MAX_TOKENS = 300
+_EXTRACTION_MAX_TOKENS = 512
+_SYNTHESIS_MAX_TOKENS = 1024
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -107,23 +114,70 @@ def clinical_node(state: MAOState) -> MAOState:
         uncertainty_flag=uncertainty_flag,
     )
 
+    # An empty synthesis must not become a response whose entire body is the
+    # disclaimer (adversarial L-3). That reads to a clinician as "the system
+    # considered your question and had nothing to say", when what happened is
+    # that generation produced nothing — a different fact, and one they can act
+    # on by retrying.
+    if not response.strip():
+        logger.warning("Clinical synthesis produced no text for mode=%s",
+                       result_meta.get("mode", "unknown"))
+        response = (
+            "I could not generate a clinical assessment for this request. "
+            "This is a system failure, not a clinical finding. Please retry, "
+            "and consult a licensed clinician directly if the problem persists."
+        )
+
     response = response + _DISCLAIMER
 
     state["response"]     = response
     state["agent_used"]   = "clinical"
-    # Echo the caller's metadata back MINUS every attachment identifier. This
-    # used to strip only the two base64 keys, so `report_path`, `image_url`,
-    # `audio_b64` and `audio_path` survived into the returned and cached
-    # metadata — and a filename like `/uploads/JohnSmith_MRN12345.pdf` carries
-    # PHI just as surely as the file does. The key list is the policy's.
+    # The response carries what this agent PRODUCED. Nothing the caller sent is
+    # echoed back.
+    #
+    # Stripping `ATTACHMENT_KEYS` and echoing the rest was not enough, because
+    # that list describes which keys mean "patient data is attached" — not which
+    # keys may contain it. Both shipped frontends send `filename`, and
+    # `Doe_Jane_MRN4471023_1948-03-12.pdf` reached Redis intact, where it is
+    # cached under two keys and returned to the client. M5's "persist only
+    # de-identified text" held for Postgres and for the provider; it did not
+    # hold here.
+    #
+    # Scrubbing the echo instead would not have worked: that filename has no
+    # field labels for the labelled rules, and its underscores suppress the word
+    # boundaries the shape rules need. There is no general way to de-identify an
+    # arbitrary caller-chosen string, so the fix is to not carry it.
     state["metadata"]     = {
-        **{k: v for k, v in metadata.items() if k not in ATTACHMENT_KEYS},
         **{k: v for k, v in result_meta.items() if not k.startswith("_")},
-        "uncertainty_flag": uncertainty_flag,  # API reads this from metadata (main.py:305,444)
+        "uncertainty_flag": uncertainty_flag,  # API reads this from metadata
     }
     state["report_card"]  = report.to_dict()
     state["uncertainty_flag"] = uncertainty_flag
+    # Publish the evidence this answer was built from.
+    #
+    # This route used to publish none: the chunks stayed under `_ranked_chunks`
+    # in `result_meta`, which the `_`-prefix filter above strips. So on the
+    # HIGHEST-risk route in the system, `state["retrieved_docs"]` was empty and
+    # three controls quietly degraded at once — the NLI gate had no premise and
+    # returned no flags, the judge scored groundedness against nothing, and
+    # `_members_for("")` seated only the safety member, so the accuracy and
+    # hallucination vetoes never ran on a clinical answer.
+    state["retrieved_docs"] = [
+        evidence_from_chunk(c) for c in result_meta.get("_ranked_chunks", []) or []
+    ]
     return state
+
+
+def _rag_is_sufficient(ranked_chunks: list) -> bool:
+    """Whether retrieval covered the question. See graphrag_agent.rag_is_sufficient.
+
+    One implementation, imported — the 0.20 literal here and the 0.10 literal
+    there were two uncalibrated thresholds applied to the same ambiguous score,
+    which is exactly the drift the safety policy centralisation exists to stop.
+    """
+    from mao.agents.graphrag_agent import rag_is_sufficient
+
+    return rag_is_sufficient(ranked_chunks)
 
 
 def _interpret_stage(stage: str) -> str:
@@ -219,7 +273,8 @@ def _handle_mri_image(
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
-        "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
+        "rag_sufficient": _rag_is_sufficient(ranked_chunks),
+        "score_scorer": getattr(ranked_chunks[0], "scorer", "") if ranked_chunks else "",
         "_ranked_chunks": ranked_chunks,
     }
 
@@ -351,7 +406,8 @@ def _handle_pdf_report(
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
-        "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
+        "rag_sufficient": _rag_is_sufficient(ranked_chunks),
+        "score_scorer": getattr(ranked_chunks[0], "scorer", "") if ranked_chunks else "",
         "report_length": len(report_text),
         "_ranked_chunks": ranked_chunks,
     }
@@ -404,7 +460,7 @@ def _summarize_report(report_text: str, memory_context: str) -> str:
             role=ModelRole.CLINICAL_SYNTHESIS,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=_REPORT_SUMMARY_MAX_TOKENS,
         ).text.strip()
     except Exception as exc:
         logger.error("Report summarization failed: %s", exc)
@@ -428,7 +484,7 @@ def _extract_structured_fields(report_text: str) -> dict:
                 {"role": "user", "content": f"Report:\n{report_text[:2000]}"},
             ],
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=_EXTRACTION_MAX_TOKENS,
         ).text.strip()
         start = raw.find("{")
         end = raw.rfind("}") + 1
@@ -476,7 +532,8 @@ def _handle_text_question(
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
-        "rag_sufficient": bool(ranked_chunks) and top_score >= 0.20,
+        "rag_sufficient": _rag_is_sufficient(ranked_chunks),
+        "score_scorer": getattr(ranked_chunks[0], "scorer", "") if ranked_chunks else "",
         "_ranked_chunks": ranked_chunks,
     }
 
@@ -527,7 +584,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
                 {"role": "user",   "content": user_prompt},
             ],
             temperature=0.1,
-            max_tokens=1024,
+            max_tokens=_SYNTHESIS_MAX_TOKENS,
         ).text.strip()
     except Exception as exc:
         logger.error("Clinical LLM call failed: %s", exc)

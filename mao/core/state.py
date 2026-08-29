@@ -78,9 +78,42 @@ class MAOState(TypedDict, total=False):
     nli_flags: list[dict]
     council_verdict: Optional[dict]
 
+    # --- Output verification (written by verification_node) ---
+    #
+    # These MUST be declared. LangGraph discards any key a node returns that the
+    # state schema does not declare, and it does so silently — no error, no log.
+    # `judge_scores` was written by `verification_node` and dropped here, so
+    # `apply_output_guardrails` always read its `safety` default of 10 and the
+    # judge's BLOCK (<5) and WARN (<7) branches were unreachable in production.
+    # A judge returning {"safety": 0, "notes": "would kill the patient"} shipped
+    # the answer. The node was correct; the schema severed it.
+    #
+    # The same gap emptied `verification_trace`, which carries `prompt_ref` — so
+    # the prompt-provenance field the architecture requires was blank on every
+    # trace ever emitted.
+    judge_scores: dict[str, Any]
+    verification_trace: dict[str, Any]
+
     # Senior supervisor
     completeness_ok: bool
     missing_sub_queries: list[str]
+
+    # --- Prompt provenance from the supervision chain ---
+    # Written by domain_supervisor_node and senior_supervisor_node. Undeclared,
+    # they were dropped exactly as judge_scores was.
+    grounding_prompt_ref: str
+    completeness_prompt_ref: str
+
+    # --- Written after the graph returns, on the same dict ---
+    #
+    # `apply_output_guardrails` and `invoke_with_usage` run in the API layer, so
+    # LangGraph never sees these writes. They are declared anyway: this TypedDict
+    # is the contract for what a request carries, `mao/api/tracing.py` and
+    # `mao/memory/interface.py` both read them off it, and an undeclared key
+    # would be dropped the moment any of this moved inside the graph.
+    output_blocked: bool
+    output_blocked_by: str
+    llm_usage: dict[str, Any]
 
     # Token budget
     token_budget_remaining: int
@@ -110,8 +143,12 @@ class MAOState(TypedDict, total=False):
     # any verified route the agent generates normally and _stream_messages stays
     # empty. Transport is never an input to a safety decision.
     _want_stream: bool
-    _stream_messages: list  # list[dict] — messages to send to Groq with stream=True
-    _stream_model: str      # model name to use for streaming
+    _stream_messages: list  # list[dict] — messages to send to the provider
+    _stream_model: str      # resolved model id, for the trace and for debugging
+    # The capability role the deferred call would have used. The endpoint streams
+    # by ROLE, not by id, so this is what it needs; `_stream_model` records what
+    # that role resolved to at the time the agent deferred.
+    _stream_role: str
 
 
 # ---------------------------------------------------------------------------
@@ -207,4 +244,5 @@ def make_initial_state(
         _want_stream=False,
         _stream_messages=[],
         _stream_model="",
+        _stream_role="",
     )

@@ -79,13 +79,19 @@ def chat_with_usage(
     temperature: float = 0.7,
     max_tokens: int = 1024,
     model: str | None = None,
-) -> tuple[str, int, int]:
-    """Call Groq chat. Returns (content, input_tokens, output_tokens).
+) -> tuple[str, int, int, bool]:
+    """Call Groq chat. Returns (content, input_tokens, output_tokens, truncated).
 
     `chat()` discarded the usage the API already returns, so every
     `Completion` the gateway built reported zero tokens and zero cost, and the
     trace fields that exist to record what a request cost were structurally
     empty. The counts are free — they arrive on the same response.
+
+    `truncated` is `finish_reason == "length"`. Only `message.content` is read,
+    and on a reasoning model the analysis channel is billed to the same ceiling,
+    so an under-budgeted call returns HTTP 200 with an empty string. Without
+    this flag that is indistinguishable from a model that chose to say nothing —
+    which is exactly how Wave 6 blocker 3 stayed invisible.
     """
     from mao.core.retry import with_groq_retry
     try:
@@ -106,7 +112,13 @@ def chat_with_usage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
-        return resp.choices[0].message.content or "", input_tokens, output_tokens
+        choice = resp.choices[0]
+        return (
+            choice.message.content or "",
+            input_tokens,
+            output_tokens,
+            choice.finish_reason == "length",
+        )
         # OLLAMA: resp = ollama.chat(
         # OLLAMA:     model=model or cfg.groq_model,
         # OLLAMA:     messages=messages,
@@ -130,7 +142,7 @@ def chat(
     Kept for the non-agent callers (health probe, ingestion helpers). Agents go
     through `mao.providers.gateway`, which needs the usage counts.
     """
-    text, _, _ = chat_with_usage(
+    text, _, _, _ = chat_with_usage(
         messages, temperature=temperature, max_tokens=max_tokens, model=model
     )
     return text
@@ -229,7 +241,7 @@ def chat_structured(
         try:
             return schema.model_validate({})
         except Exception:
-            raise exc
+            raise exc from None
 
 
 def chat_with_budget(

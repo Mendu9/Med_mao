@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 
 _VALID_DOMAINS = {"alzheimer", "stroke", "general"}
 
+# Budget for the one-word domain label. Named rather than inline so the live
+# call-site probe can assert against the value this module actually uses — an
+# `inspect.getsource` check for the string "max_tokens=5" passed at 6 and could
+# not see the bound model at all.
+#
+# Not 5: a model that emits any preamble returns an empty string at that budget,
+# and every query then silently classifies as "general". The model's analysis
+# channel is paid for separately by the gateway, from the record's declared
+# reasoning overhead.
+_DOMAIN_MAX_TOKENS = 32
+
 
 def _llm_classify(query: str) -> str:
     return gateway.complete(
@@ -19,9 +30,7 @@ def _llm_classify(query: str) -> str:
             {"role": "system", "content": get_prompt("domain.classify").template},
             {"role": "user", "content": query},
         ],
-        # Not 5: a model that emits any preamble returns an empty string at that
-        # budget, and every query then silently classifies as "general".
-        max_tokens=32,
+        max_tokens=_DOMAIN_MAX_TOKENS,
         temperature=0.0,
     ).text.strip().lower()
 

@@ -14,6 +14,7 @@ from mao.providers import gateway
 from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
 from mao.safety.policy import get_policy
+from mao.schemas.evidence import from_chunk as evidence_from_chunk
 
 try:
     from mao.data.ingest_pubmed import live_pubmed_search as _live_pubmed_search
@@ -28,6 +29,42 @@ logger = logging.getLogger(__name__)
 # (bge-reranker scores are 0-1 after normalize=True, but when the reranker is
 # disabled the raw cosine similarity is used instead — keep threshold low.)
 RAG_CONFIDENCE_THRESHOLD: float = 0.10
+
+# Answer budget. The bound model's analysis channel is paid for on top of this
+# by the gateway — see mao/providers/registry.py.
+_SYNTHESIS_MAX_TOKENS = 768
+
+
+def rag_is_sufficient(ranked_chunks: list) -> bool:
+    """Whether retrieval covered the question well enough to skip the fallback.
+
+    The threshold is calibrated against the cross-encoder's normalised 0-1
+    output. It is applied ONLY to a score the cross-encoder produced.
+
+    A passthrough score — when the reranker is disabled, absent, or failed to
+    load — is on an unknown scale. The BM25 leg emits unbounded Okapi scores
+    routinely in the 20-30 range, so `27.17 >= 0.10` was true for every such
+    query and the PubMed and web fallback could not fire on any of them. It read
+    as "the corpus covers this beautifully" when it meant "we cannot tell".
+
+    Unknown confidence resolves toward MORE evidence, not less: an uncalibrated
+    score is insufficient, so the fallback runs. The cost of being wrong that way
+    is one extra literature search; the other way it is an answer grounded in
+    whatever BM25 happened to rank first.
+    """
+    from mao.rag.reranker import CROSS_ENCODER
+
+    if not ranked_chunks:
+        return False
+    best = ranked_chunks[0]
+    if getattr(best, "scorer", None) != CROSS_ENCODER:
+        logger.info(
+            "Retrieval confidence is uncalibrated (scorer=%s) — treating as "
+            "insufficient so the literature fallback runs",
+            getattr(best, "scorer", "unknown"),
+        )
+        return False
+    return best.score >= RAG_CONFIDENCE_THRESHOLD
 
 _CONTEXT_TEMPLATE = """\
 --- Retrieved Knowledge ---
@@ -102,7 +139,7 @@ def graphrag_node(state: MAOState) -> MAOState:
     # Step 3: Assess confidence — web search supplements when RAG score is low,
     # but we ALWAYS synthesize a response from whatever RAG chunks exist.
     top_score = ranked_chunks[0].score if ranked_chunks else 0.0
-    rag_sufficient = bool(ranked_chunks) and top_score >= RAG_CONFIDENCE_THRESHOLD
+    rag_sufficient = rag_is_sufficient(ranked_chunks)
     # Web fallback fires when: no chunks OR top score below floor
     trigger_web = not rag_sufficient
     logger.info(
@@ -193,9 +230,28 @@ def graphrag_node(state: MAOState) -> MAOState:
     risk = risk_level_of(state)
     may_defer = not get_policy().requires_verification(risk)
 
+    # Which capability this synthesis actually is.
+    #
+    # When the curated index was insufficient and the answer is being built from
+    # live PubMed abstracts and web results, this is synthesis over primary
+    # literature, not over the vetted corpus — which is exactly what
+    # RESEARCH_SYNTHESIS names. The role previously had no call site at all, so
+    # the gateway advertised a capability nothing could request.
+    #
+    # Both roles resolve to the same model today, so this changes no behaviour
+    # now. What it changes is that literature synthesis becomes independently
+    # rebindable and independently traceable, which is the point of addressing
+    # capabilities rather than models.
+    synthesis_role = (
+        ModelRole.RESEARCH_SYNTHESIS
+        if (pubmed_snippets or web_results)
+        else ModelRole.GENERAL_SYNTHESIS
+    )
+
     if state.get("_want_stream") and may_defer:
         state["_stream_messages"] = messages
-        state["_stream_model"]    = gateway.model_id_for(ModelRole.GENERAL_SYNTHESIS)
+        state["_stream_model"]    = gateway.model_id_for(synthesis_role)
+        state["_stream_role"]     = synthesis_role.value
         response = ""
     else:
         if state.get("_want_stream"):
@@ -205,17 +261,19 @@ def graphrag_node(state: MAOState) -> MAOState:
             )
         state["_stream_messages"] = []
         state["_stream_model"]    = ""
-        response = _call_llm_from_messages(messages)
+        state["_stream_role"]     = ""
+        response = _call_llm_from_messages(messages, role=synthesis_role)
 
     # Memory is persisted once by the graph's `remember` node, after the
     # supervision chain — so what gets remembered is the verified answer, not
     # this draft.
     state["response"]   = response
     state["agent_used"] = "graphrag"
-    state["retrieved_docs"] = [
-        {"text": c.text, "source": (c.metadata or {}).get("source", ""), "score": c.score}
-        for c in ranked_chunks
-    ]
+    # Typed Evidence, not ad-hoc dicts. The council, the judge's premise and the
+    # domain supervisor all consume this; when it was a dict they each reached
+    # for `.text`, missed, and fell back to `str(doc)`, so the safety chain
+    # judged clinical answers against Python repr syntax.
+    state["retrieved_docs"] = [evidence_from_chunk(c) for c in ranked_chunks]
     state["web_results"] = [
         {"title": r.get("title", ""), "url": r.get("href", ""), "body": r.get("body", "")}
         for r in web_results
@@ -227,6 +285,12 @@ def graphrag_node(state: MAOState) -> MAOState:
         "web_search_triggered": bool(web_results),
         "web_results_count":    len(web_results),
         "top_scores":           [round(c.score, 4) for c in ranked_chunks],
+        # Which scorer produced those numbers. Without it a stored `top_score`
+        # cannot be interpreted later, because its scale depends on whether the
+        # cross-encoder was available on that request.
+        "score_scorer":         (
+            getattr(ranked_chunks[0], "scorer", "") if ranked_chunks else ""
+        ),
         "sources": [
             {
                 "chunk_id": (c.metadata or {}).get("chunk_id", "n/a"),
@@ -244,17 +308,27 @@ def graphrag_node(state: MAOState) -> MAOState:
     return state
 
 
-def _call_llm_from_messages(messages: list[dict[str, Any]]) -> str:
+def _call_llm_from_messages(
+    messages: list[dict[str, Any]],
+    role: ModelRole = ModelRole.GENERAL_SYNTHESIS,
+) -> str:
     try:
         return gateway.complete(
-            role=ModelRole.GENERAL_SYNTHESIS,
+            role=role,
             messages=messages,
             temperature=0.1,
-            max_tokens=768,
+            max_tokens=_SYNTHESIS_MAX_TOKENS,
         ).text.strip()
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG LLM call failed: %s", exc)
-        return f"I encountered an error generating a response: {exc}"
+        # Deliberately does not carry `exc` to the user: this string becomes the
+        # response body. The API layer makes the same distinction in
+        # `client_safe_detail` — the cause belongs in the log.
+        logger.exception("GraphRAG synthesis failed")
+        return (
+            "I could not generate an answer for this question. "
+            "Please try again, or rephrase the question."
+        )
 
 
 if __name__ == "__main__":

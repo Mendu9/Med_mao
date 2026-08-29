@@ -17,64 +17,31 @@ from pathlib import Path
 
 import requests
 
-from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
-from mao.safety.policy import ATTACHMENT_KEYS
 
 logger = logging.getLogger(__name__)
 
-def multimodal_node(state: MAOState) -> MAOState:
-    """
-    LangGraph node: route to image or audio handler based on metadata.
-    """
-    user_query: str = state["user_query"]
-    memory_context: str = state.get("memory_context", "")
-    metadata: dict  = state.get("metadata", {})
-
-
-    modality = metadata.get("modality", "")
-
-    # --- Auto-detect modality if not explicitly set ---
-    if not modality:
-        if metadata.get("image_b64") or metadata.get("image_url"):
-            modality = "image"
-        elif metadata.get("audio_path") or metadata.get("audio_b64"):
-            # `audio_b64` was omitted here, so a base64 voice sample with no
-            # path fell through to the "no media supplied" branch — even though
-            # `handle_audio` decodes exactly that key.
-            modality = "audio"
-        else:
-            modality = "text_about_media"
-
-    # --- Dispatch ---
-    if modality == "image":
-        response, result_meta = handle_image(user_query, metadata, memory_context)
-    elif modality == "audio":
-        response, result_meta = handle_audio(user_query, metadata, memory_context)
-    else:
-        response = (
-            "To use the multimodal agent, please provide an image (base64 or URL) "
-            "or an audio file path along with your question."
-        )
-        result_meta = {"modality": "none"}
-
-
-    state["response"]   = response
-    state["agent_used"] = "multimodal"
-    # Echo the caller's metadata back MINUS the raw attachment payloads. Graph
-    # state is persisted, traced and logged; carrying a base64 scan or voice
-    # sample through all of that spreads patient data far beyond the one call
-    # that needed it.
-    state["metadata"]   = {
-        **{k: v for k, v in metadata.items() if k not in ATTACHMENT_KEYS},
-        **result_meta,
-        "modality": modality,
-    }
-    return state
-
+# ---------------------------------------------------------------------------
+# There is deliberately no `multimodal_node`.
+#
+# It was removed in Wave 7. It had not been a graph node since modality became a
+# capability of `clinical_node`, and it was unreachable-with-media even before
+# that: `router_node` forces EVERY attachment to `clinical`, so the node could
+# only ever have been entered with nothing attached — in which case its only
+# possible reply was "please provide an image or audio file". An agent that
+# cannot receive the data it exists to process is not a design choice.
+#
+# It also carried the last copy of the echo-caller-metadata pattern that
+# adversarial H-2 was about, and its own `ATTACHMENT_KEYS` filter, both of which
+# would have had to be maintained in step with `clinical_node`'s.
+#
+# The CAPABILITIES survive and are what `clinical_node` calls: `handle_image`
+# and `handle_audio` below. 00_RULES: "Do not create an 'agent' where a
+# deterministic function/workflow/tool is sufficient."
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Image handler
@@ -215,12 +182,17 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
-    # Example: test with a public image URL
-    from mao.core.state import make_initial_state
-    state = make_initial_state("What is in this image?", "user-test")
-    state["metadata"] = {
-        "modality": "image",
-        "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png",
-    }
-    state = multimodal_node(state)
-    print(state["response"])
+    # Exercises the capability directly, which is how `clinical_node` uses it.
+    description, meta = handle_image(
+        "What is in this image?",
+        {
+            "image_url": (
+                "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/"
+                "PNG_transparency_demonstration_1.png/280px-"
+                "PNG_transparency_demonstration_1.png"
+            ),
+        },
+        "",
+    )
+    print(description)
+    print("meta:", meta)

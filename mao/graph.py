@@ -82,7 +82,7 @@ from mao.agents.critic_agent import critic_node
 from mao.agents.domain_classifier import classifier_node
 from mao.agents.domain_supervisor import domain_supervisor_node
 from mao.agents.graphrag_agent import graphrag_node
-from mao.agents.llm_council import council_node
+from mao.agents.llm_council import REVIEW_UNAVAILABLE, council_node
 from mao.agents.query_decomposer import decomposer_node
 from mao.agents.router import is_chitchat, route_to_agent, router_node
 from mao.agents.senior_supervisor import senior_supervisor_node
@@ -185,15 +185,32 @@ def risk_gate_node(state: dict) -> dict:
 
 
 def blocked_response_node(state: dict) -> dict:
+    """Withhold the answer, and say accurately why.
+
+    Two different facts reach this node, and they used to produce one message.
+    A council that reviewed the answer and rejected it is a statement about the
+    clinical content. A council that could not run — a provider rate limit, a
+    timeout, an outage — is a statement about the system. Telling a clinician
+    their answer "was flagged for patient safety" when a rate limiter fired
+    asserts something about their patient that nothing established, and points
+    them at the wrong response: one case warrants clinical caution, the other
+    warrants pressing retry.
+    """
     verdict = state.get("council_verdict") or {}
     blocked_by = verdict.get("blocked_by", "council")
-    return {
-        **state,
-        "response": (
+
+    if blocked_by == REVIEW_UNAVAILABLE:
+        message = (
+            "The safety review could not be completed, so this response is being "
+            "withheld. This is a system availability problem, not a finding about "
+            "the clinical content. Please try again in a moment."
+        )
+    else:
+        message = (
             f"I cannot provide this response. It was flagged by the {blocked_by} review "
             "for patient safety. Please consult a licensed clinician directly."
-        ),
-    }
+        )
+    return {**state, "response": message}
 
 
 def _route_after_council(state: dict) -> str:

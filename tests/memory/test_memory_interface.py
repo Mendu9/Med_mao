@@ -10,6 +10,7 @@ unverified answers, including ones the council went on to block.
 """
 from __future__ import annotations
 
+from typing import ClassVar
 import pytest
 
 from mao.memory.interface import MemoryStore, get_memory_store, recall_node, remember_node
@@ -136,7 +137,7 @@ class TestRememberSavesTheVerifiedAnswer:
 
 
 class TestAgentsNoLongerRepeatTheBoilerplate:
-    AGENTS = [
+    AGENTS: ClassVar[list[str]] = [
         "clinical_agent",
         "critic_agent",
         "graphrag_agent",

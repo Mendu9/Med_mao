@@ -68,7 +68,7 @@ def check_all_claims(claims: list[str], premise: str) -> list[dict]:
     pairs = [[premise, c] for c in claims]
     all_scores = enc.predict(pairs)
     results = []
-    for claim, scores in zip(claims, all_scores):
+    for claim, scores in zip(claims, all_scores, strict=False):
         if len(scores) < 3:
             logger.warning("NLI model returned unexpected score shape: %s", scores)
             results.append(_safe_result(claim))

@@ -19,6 +19,7 @@ import re
 from mao.prompts import get_prompt
 from mao.providers import gateway
 from mao.providers.registry import ModelRole
+from mao.schemas.evidence import as_text
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -26,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_NAME = "domain_supervisor.reconcile"
 _MAX_TOKENS = 500
+
+# Advisory, so deliberately NOT ModelRole.SAFETY_JUDGE.
+#
+# This node observes grounding and blocks nothing — P0-2 removed its ability to
+# edit the response, and nothing reads `ungrounded_claims` to gate anything.
+#
+# Running it on the safety model meant a third of that model's per-request token
+# spend went on a signal no code consumed, against a per-model quota the council
+# and the judge need. Provider limits are per model, so moving an advisory check
+# to a different model is not a smaller safety budget; it is the same safety
+# budget, no longer shared with work that cannot affect a safety decision.
+# Structured extraction from text is what EXTRACTION_FAST is for.
+_ROLE = ModelRole.EXTRACTION_FAST
 
 
 def _parse_ungrounded_claims(raw: str) -> list[str]:
@@ -60,15 +74,18 @@ def domain_supervisor_node(state: dict) -> dict:
     web_results = state.get("web_results", []) or []
 
     spec = get_prompt(_PROMPT_NAME)
+    # `as_text`, not `str(c)` — see mao/schemas/evidence.py. Asking a model
+    # which claims are ungrounded, while showing it dict reprs as the ground,
+    # produced ungrounded-claim lists that described the punctuation.
     context = "\n".join([
-        "RAG CHUNKS:", *[str(c) for c in rag_chunks[:4]],
-        "WEB RESULTS:", *[str(w) for w in web_results[:3]],
+        "RAG CHUNKS:", *[as_text(c) for c in rag_chunks[:4]],
+        "WEB RESULTS:", *[as_text(w) for w in web_results[:3]],
         "DRAFT ANSWER:", answer,
     ])
 
     try:
         completion = gateway.complete(
-            role=ModelRole.SAFETY_JUDGE,
+            role=_ROLE,
             messages=[
                 {"role": "system", "content": spec.template},
                 {"role": "user", "content": context},

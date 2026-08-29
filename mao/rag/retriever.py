@@ -400,7 +400,7 @@ def _vector_search_chroma(query: str, n: int) -> list[dict[str, Any]]:
         metas = results.get("metadatas", [[]])[0]
         ids = results.get("ids", [[]])[0]
         distances = results.get("distances", [[]])[0]
-        for doc, meta, cid, dist in zip(docs, metas, ids, distances):
+        for doc, meta, cid, dist in zip(docs, metas, ids, distances, strict=False):
             meta = meta or {}
             chunks.append({
                 "text": doc,
@@ -481,7 +481,7 @@ def _entity_search_chroma(entities: list[str], limit: int) -> list[dict[str, Any
         metas = res.get("metadatas", [[]])[0]
         ids = res.get("ids", [[]])[0]
         distances = res.get("distances", [[]])[0]
-        for doc, meta, cid, dist in zip(docs, metas, ids, distances):
+        for doc, meta, cid, dist in zip(docs, metas, ids, distances, strict=False):
             meta = meta or {}
             results.append({
                 "chunk_id": meta.get("chunk_id", cid),

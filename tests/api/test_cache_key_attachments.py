@@ -82,6 +82,24 @@ class TestPromptVersionInvalidatesTheCache:
         assert a != b
 
 
-class TestUnrelatedMetadataDoesNotChangeTheKey:
-    def test_non_attachment_metadata_is_ignored(self) -> None:
-        assert _key({}) == _key({"ui_theme": "dark"})
+class TestAllMetadataChangesTheKey:
+    """Inverted in Wave 7 — this class asserted adversarial finding H-3.
+
+    It required non-attachment metadata to be invisible to the cache key, on the
+    reasoning that only attachments change an answer. `patient_id`,
+    `encounter_id` and a DICOM study UID are all non-attachment metadata, and a
+    caller scoping a request by any of them got one cached answer shared across
+    patients. `/chat` consults this cache *before* `graph.invoke`, so that hit
+    also skips the risk gate, the council, the judge and the disclaimer.
+
+    Cache efficiency for a key like `ui_theme` is not worth a mechanism that
+    cannot tell `ui_theme` from `patient_id`. The full contract lives in
+    tests/api/test_caller_metadata_is_not_trusted.py.
+    """
+
+    def test_an_incidental_key_changes_the_key(self) -> None:
+        assert _key({}) != _key({"ui_theme": "dark"})
+
+    def test_identical_metadata_still_shares_a_key(self) -> None:
+        """The cache must still work for genuinely identical requests."""
+        assert _key({"ui_theme": "dark"}) == _key({"ui_theme": "dark"})

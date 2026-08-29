@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from mao.tools import get_tool, registry
-from mao.tools.registry import ReadOrWrite, TrustTier
+from mao.tools.registry import AuthScope, ReadOrWrite, ToolSpec, TrustTier
 
 
 class TestEveryToolDeclaresTheMandatedFields:
@@ -31,6 +31,35 @@ class TestEveryToolDeclaresTheMandatedFields:
         assert spec.output_schema
         assert spec.typical_latency_ms > 0
         assert spec.cost_per_call_usd >= 0
+
+    @pytest.mark.parametrize("name", registry().names())
+    def test_spec_declares_what_the_tool_may_reach(self, name: str) -> None:
+        """`auth_scope` was absent while PROJECT_STATE claimed every mandated
+        field was present. The Wave 6 review found that claim was wrong.
+
+        It is the field a risk policy needs most: the registry could describe
+        what a tool costs but not what it can touch, and 00_RULES forbids
+        unrestricted SQL, shell, filesystem, secrets and operational DB access.
+        """
+        assert isinstance(get_tool(name).auth_scope, AuthScope)
+
+    @pytest.mark.parametrize("name", registry().names())
+    def test_spec_declares_how_the_tool_fails(self, name: str) -> None:
+        """`invoke` returns failures as text by contract, which makes them easy
+        to mistake for results. Declaring the modes is what makes them visible.
+        """
+        modes = get_tool(name).failure_modes
+        assert modes, f"{name} declares no failure modes"
+        assert all(isinstance(m, str) and m for m in modes)
+
+    def test_no_field_the_architecture_mandates_is_missing(self) -> None:
+        """Pins the field set, so the earlier false claim cannot recur silently."""
+        mandated = {
+            "tool_id", "capability", "domains", "read_or_write", "trust_tier",
+            "input_schema", "output_schema", "typical_latency_ms",
+            "cost_per_call_usd", "auth_scope", "failure_modes",
+        }
+        assert mandated <= set(ToolSpec.__dataclass_fields__)
 
     def test_the_registry_is_not_empty(self) -> None:
         assert registry().names()

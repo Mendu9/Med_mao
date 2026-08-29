@@ -34,33 +34,42 @@ Text:
 Triples:"""
 
 
-def extract_triples(text: str, model: str | None = None) -> list[tuple[str, str, str]]:
-    """Extract (subject, predicate, object) triples from biomedical text via Groq.
+_EXTRACT_MAX_TOKENS = 512
+
+
+def extract_triples(text: str) -> list[tuple[str, str, str]]:
+    """Extract (subject, predicate, object) triples from biomedical text.
 
     Returns list of (entity_A, relation, entity_B) tuples.
     Returns empty list if extraction fails.
+
+    Goes through the model gateway on the extraction role. This used to import
+    `mao.core.llm.chat` and `FAST_MODEL` directly — one of three non-agent
+    bypasses the architecture review found. A bypass is not merely untidy here:
+    it skips role resolution, so a retired model id reaches the provider with
+    nothing to catch it (the exact failure P1-18 exists to prevent), and it
+    skips the reasoning-overhead budgeting the gateway applies, so on a
+    reasoning model it would silently return nothing.
+
+    The `model` parameter is gone with it. Naming a concrete model was the way
+    business logic got to bypass role resolution.
     """
     if not text or len(text.strip()) < 50:
         return []
 
-    try:
-        from mao.core.llm import chat
-        from mao.core.config import FAST_MODEL
-    except ImportError:
-        logger.warning("mao.core.llm not available; skipping triple extraction")
-        return []
+    from mao.providers import gateway
+    from mao.providers.registry import ModelRole
 
-    _model = model or FAST_MODEL
     prompt = _TRIPLE_PROMPT.format(text=text[:1500])  # cap to avoid token overflow
 
     try:
-        response = chat(
-            [{"role": "user", "content": prompt}],
+        completion = gateway.complete(
+            role=ModelRole.EXTRACTION_FAST,
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=512,
-            model=_model,
+            max_tokens=_EXTRACT_MAX_TOKENS,
         )
-        return _parse_triples(response)
+        return _parse_triples(completion.text)
     except Exception as exc:
         logger.debug("Triple extraction failed: %s", exc)
         return []

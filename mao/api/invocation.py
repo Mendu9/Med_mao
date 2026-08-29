@@ -37,6 +37,30 @@ def invoke_with_usage(graph: Any, state: MAOState) -> dict[str, Any]:
     return result
 
 
+def client_safe_detail(exc: Exception, request_id: str) -> str:
+    """What the client may be told about a failure.
+
+    The exception string used to be returned verbatim as
+    `detail=f"Agent error: {exc}"`. This graph handles PHI, and an exception
+    message can carry whatever was being processed when it raised — a prompt
+    fragment, a row, a filename. That is a disclosure channel held open for the
+    benefit of a message nobody outside the process can act on anyway.
+
+    The request id is the useful half: it is already on the response header and
+    in every log line for the request, so it is what turns a support call into a
+    lookup. The cause stays in the log.
+    """
+    if _looks_like_a_connectivity_failure(exc):
+        return (
+            "The AI service is temporarily unreachable. Check your connection or "
+            f"provider credentials and try again. (request {request_id})"
+        )
+    return (
+        "The request could not be completed. Quote this reference when reporting "
+        f"the problem: {request_id}"
+    )
+
+
 async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
     """Invoke the graph off the event loop, translating failures to HTTP."""
     try:
@@ -45,16 +69,12 @@ async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
             get_executor(), invoke_with_usage, get_graph(), state
         )
     except Exception as exc:
-        logger.error("Graph invocation failed request_id=%s: %s", request_id, exc)
-        if _looks_like_a_connectivity_failure(exc):
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "The AI service is temporarily unreachable. "
-                    "Check your internet connection or provider credentials and try again."
-                ),
-            ) from exc
-        raise HTTPException(status_code=500, detail=f"Agent error: {exc}") from exc
+        # Full cause here, where it is useful and stays inside the process.
+        logger.exception("Graph invocation failed request_id=%s: %s", request_id, exc)
+        status = 503 if _looks_like_a_connectivity_failure(exc) else 500
+        raise HTTPException(
+            status_code=status, detail=client_safe_detail(exc, request_id)
+        ) from exc
 
 
 def _looks_like_a_connectivity_failure(exc: Exception) -> bool:

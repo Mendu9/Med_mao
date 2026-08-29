@@ -259,7 +259,7 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
     for batch_start in range(0, len(candidate_ids), batch_size):
         batch_ids = candidate_ids[batch_start:batch_start + batch_size]
         r = col.get(ids=batch_ids, include=["documents", "metadatas"])
-        for nid, doc, meta in zip(r["ids"], r["documents"], r["metadatas"]):
+        for nid, doc, meta in zip(r["ids"], r["documents"], r["metadatas"], strict=False):
             all_docs.append((nid, doc or "", meta or {}))
 
     dataset: list[dict[str, Any]] = []
@@ -434,7 +434,7 @@ def run_retrieval_eval(
         # golden relevant chunk's text, treat it as a hit even if the IDs differ.
         # This handles chunk-boundary drift without inflating the relevant set.
         if relevant_chunk_text:
-            for result, rid in zip(results, retrieved_ids):
+            for result, rid in zip(results, retrieved_ids, strict=False):
                 if rid not in relevant_ids:
                     chunk_dict = {"text": result.text if hasattr(result, "text") else result.metadata.get("text", "")}
                     if _soft_match_hit(chunk_dict, relevant_chunk_text):

@@ -468,4 +468,3 @@ def render_graph_explorer() -> None:
 
 def build_graph_explorer_tab(*args, **kwargs):
     """Compatibility stub for legacy frontend.py import — does nothing."""
-    pass

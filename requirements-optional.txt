@@ -30,9 +30,3 @@ chromadb>=0.5,<2.0
 datasets>=2.20.0
 biopython>=1.83
 lxml>=5.0
-
-# --- Legacy Gradio UI (app/frontend.py) ------------------------------------
-# The shipped UI is Streamlit (app/streamlit_app.py). app/frontend.py is an
-# alternative standalone front end kept for reference; it is not wired into
-# any entrypoint under deploy/.
-gradio>=5.29.0

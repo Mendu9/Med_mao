@@ -12,17 +12,17 @@ from mao.schemas.trace import RetrievalTrace, ToolCallTrace, TraceSchema
 
 
 def _trace(**kw) -> TraceSchema:
-    base = dict(
-        trace_id="t-1",
-        workflow="evidence_qa",
-        risk_level="standard",
-        provider="groq",
-        model_id="llama-3.1-8b-instant",
-        model_role="GENERAL_SYNTHESIS",
-        prompt_ref="graphrag.synthesis@1.0.0",
-        policy_version="2026.08-1",
-        latency_ms=120.5,
-    )
+    base = {
+        "trace_id": "t-1",
+        "workflow": "evidence_qa",
+        "risk_level": "standard",
+        "provider": "groq",
+        "model_id": "llama-3.1-8b-instant",
+        "model_role": "GENERAL_SYNTHESIS",
+        "prompt_ref": "graphrag.synthesis@1.0.0",
+        "policy_version": "2026.08-1",
+        "latency_ms": 120.5,
+    }
     base.update(kw)
     return TraceSchema(**base)
 

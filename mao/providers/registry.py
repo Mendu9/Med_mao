@@ -11,6 +11,19 @@ P1-17  Each role reads exactly one env var (`MAO_MODEL_<ROLE>`) with a single
 P1-18  Retired model ids are recorded with `ModelStatus.RETIRED` and can never
        be resolved; `resolve()` walks the fallback chain and raises if no
        active model exists. A retired id cannot reach a provider.
+
+`reasoning_overhead_tokens` closes a third, harder one. Every model this
+provider serves is a reasoning model: it emits an analysis channel before its
+answer, and both share the one `max_tokens` ceiling. A call site that asks for
+200 tokens of verdict therefore gets 200 tokens of *thinking* and an empty
+`message.content`. Recording the overhead per model — and letting the gateway
+add it — means a call site budgets for the answer it needs, and rebinding a role
+re-sizes all of that role's call sites at once.
+
+That composition is what Wave 6 blocker 3 actually was: fail-closed parsing and
+rebinding onto a live model were each correct, and together they refused 5 of 5
+ordinary clinical questions, because the budgets still described the model that
+had been replaced.
 """
 from __future__ import annotations
 
@@ -66,6 +79,24 @@ class ModelRecord:
     typical_latency_ms: float = 0.0
     last_verified_at: str = ""
 
+    # Tokens this model spends on its analysis channel before emitting an
+    # answer. The provider counts both against one `max_tokens` ceiling, so this
+    # is the headroom the gateway must add on top of whatever budget a call site
+    # asks for. Measured live against the real registered prompts — see
+    # `tests/providers/test_reasoning_budget.py` for the method and the numbers.
+    #
+    # Over-declaring costs nothing: `max_tokens` is a ceiling, not a spend.
+    # Under-declaring fails silently, with an empty completion that reads as
+    # "the model had nothing to say".
+    reasoning_overhead_tokens: int = 0
+
+
+# What to assume for a model we have never measured. Deliberately the largest
+# overhead in the catalogue rather than zero: an unmeasured model that turns out
+# to reason silently truncates every safety verdict, while an unmeasured model
+# that turns out not to reason merely leaves a ceiling unused.
+UNMEASURED_REASONING_OVERHEAD_TOKENS = 1536
+
 
 # ---------------------------------------------------------------------------
 # Catalogue
@@ -79,6 +110,12 @@ class ModelRecord:
 # The previous catalogue bound three ids the provider had already withdrawn, so
 # every request 404'd; a catalogue that is only checked by reading it is not
 # checked at all.
+#
+# `reasoning_overhead_tokens` re-measured 2026-08-29 by running each role's real
+# registered prompts at an 8192 ceiling and reading `completion_tokens_details.
+# reasoning_tokens`. Declared values carry ~1.7x headroom over the worst sample,
+# because the analysis channel grows with input length and the failure mode of
+# under-declaring is silent.
 
 _GROQ_FAST = ModelRecord(
     provider="groq",
@@ -91,6 +128,10 @@ _GROQ_FAST = ModelRecord(
     cost_per_1m_input_usd=0.15,
     cost_per_1m_output_usd=0.60,
     last_verified_at="2026-08-28",
+    # Worst observed 35. This is why ROUTER_FAST answered fine at max_tokens=64
+    # while the judge returned nothing at 300 — and why "only the judge is
+    # mis-budgeted" was the wrong conclusion to draw from it.
+    reasoning_overhead_tokens=128,
 )
 
 _GROQ_LARGE = ModelRecord(
@@ -104,6 +145,10 @@ _GROQ_LARGE = ModelRecord(
     cost_per_1m_input_usd=0.15,
     cost_per_1m_output_usd=0.75,
     last_verified_at="2026-08-28",
+    # Worst observed 437 (graphrag.synthesis). At the old accounting, the
+    # clinical report summariser's 300-token budget could not have returned a
+    # summary at all.
+    reasoning_overhead_tokens=768,
 )
 
 _GROQ_SAFEGUARD = ModelRecord(
@@ -117,6 +162,15 @@ _GROQ_SAFEGUARD = ModelRecord(
     cost_per_1m_input_usd=0.075,
     cost_per_1m_output_usd=0.30,
     last_verified_at="2026-08-28",
+    # Worst observed 883 (judge.safety on a long premise). Every Wave 6
+    # blocker-3 symptom is this number exceeding the call site's whole budget.
+    #
+    # 1024 rather than a larger cushion: the provider's rate limiter charges the
+    # requested ceiling, not the tokens produced, so headroom nobody uses is
+    # still spent. `gateway.complete` retries once with three times this
+    # allowance if a reply is ever cut off before it says anything, which covers
+    # the tail without every call paying for it.
+    reasoning_overhead_tokens=1024,
 )
 
 # --- Retired: recorded so they can be *refused*, never resolved (P1-18) ---
@@ -225,13 +279,15 @@ class ModelRegistry:
             chosen = os.getenv(role.env_var, "").strip() or default_id
             if chosen not in records:
                 # An operator-supplied id we have no metadata for. Trust it, but
-                # record it so traces and cost accounting still resolve.
+                # record it so traces and cost accounting still resolve — and
+                # assume it reasons, because that assumption is the cheap one.
                 records[chosen] = ModelRecord(
                     provider=os.getenv("MAO_MODEL_PROVIDER", "groq"),
                     model_id=chosen,
                     modality=Modality.VISION if role is ModelRole.VISION else Modality.TEXT,
                     context_limit=0,
                     fallbacks=(default_id,),
+                    reasoning_overhead_tokens=UNMEASURED_REASONING_OVERHEAD_TOKENS,
                 )
             bindings[role] = chosen
         return cls(records=records, role_bindings=bindings)

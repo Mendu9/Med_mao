@@ -16,7 +16,7 @@ from mao.learning.experience_store import ExperienceStore, get_experience_store
 from mao.providers.gateway import resolve
 from mao.providers.registry import ModelRole
 from mao.safety.policy import get_policy
-from mao.schemas.trace import RetrievalTrace, TraceSchema
+from mao.schemas.trace import RetrievalTrace, ToolCallTrace, TraceSchema
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,16 @@ def _safety_flags(result: dict[str, Any], metadata: dict[str, Any]) -> list[str]
     if metadata.get("uncertainty_flag"):
         flags.append("mri_low_confidence")
 
+    # The two advisory supervisors write these and nothing read them — not the
+    # guardrails, not the audit row, not the trace. A signal a model was paid to
+    # produce and no one consumes is waste; surfacing it here makes grounding
+    # and completeness observable without giving either the power to block.
+    if result.get("ungrounded_claims"):
+        flags.append("ungrounded_claims")
+
+    if result.get("completeness_ok") is False:
+        flags.append("incomplete_answer")
+
     return flags
 
 
@@ -61,7 +71,38 @@ def _retrieval(metadata: dict[str, Any]) -> RetrievalTrace | None:
         hits=int(hits),
         reranker_id=str(metadata.get("reranker_id", "")),
         top_score=float(top_scores[0]) if top_scores else 0.0,
+        scorer=str(metadata.get("score_scorer", "")),
     )
+
+
+def _tool_calls(metadata: dict[str, Any]) -> list[ToolCallTrace]:
+    """Which capabilities the request actually used.
+
+    `TraceSchema.tool_calls` was declared and populated by nothing, so a trace
+    could not say whether a tool ran at all — which makes tool-level policy
+    (budgets, trust tiers, failure rates) unlearnable from the trace store, and
+    the learning data plane is half of this phase.
+
+    `tool_agent` emits a content-free record per invocation; the ReAct
+    transcript with the actual tool output stays in `tool_trace` and is
+    deliberately not read here, because traces carry no content.
+    """
+    raw = metadata.get("tool_calls") or []
+    if not isinstance(raw, list):
+        return []
+    calls: list[ToolCallTrace] = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("tool_id"):
+            continue
+        calls.append(
+            ToolCallTrace(
+                tool_id=str(entry["tool_id"]),
+                latency_ms=float(entry.get("latency_ms") or 0.0),
+                ok=bool(entry.get("ok", False)),
+                error=str(entry.get("error", "")),
+            )
+        )
+    return calls
 
 
 def _prompt_ref(result: dict[str, Any]) -> str:
@@ -106,6 +147,7 @@ def build_trace(*, trace_id: str, result: dict[str, Any], latency_ms: float) -> 
         policy_version=get_policy().policy_version,
         latency_ms=float(latency_ms),
         retrieval=_retrieval(metadata),
+        tool_calls=_tool_calls(metadata),
         input_tokens=int(llm_usage.get("input_tokens") or 0),
         output_tokens=int(llm_usage.get("output_tokens") or 0),
         estimated_cost_usd=float(llm_usage.get("estimated_cost_usd") or 0.0),

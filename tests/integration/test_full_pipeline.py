@@ -33,7 +33,7 @@ TIMEOUT = 60  # Groq calls can be slow under load
 @pytest.fixture(scope="session", autouse=True)
 def wait_for_server():
     """Wait up to 60s for FastAPI to become ready (reranker model load can take 40s)."""
-    for i in range(30):
+    for _i in range(30):
         try:
             r = requests.get(f"{BASE_URL}/health", timeout=10)
             if r.status_code in (200, 503):
