@@ -7,6 +7,7 @@ a failure is reported — or on whether usage is recorded at all.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from typing import Any
 
@@ -62,11 +63,23 @@ def client_safe_detail(exc: Exception, request_id: str) -> str:
 
 
 async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
-    """Invoke the graph off the event loop, translating failures to HTTP."""
+    """Invoke the graph off the event loop, translating failures to HTTP.
+
+    The caller's context is copied into the worker explicitly. `run_in_executor`
+    does not do it — see `invoke_with_usage` — and the request deadline that
+    bounds every rate-limit wait is a `ContextVar` set by the route. Without the
+    copy the deadline stops at this line, while all the waiting happens on the
+    other side of it, and the bound would be decorative.
+
+    `invoke_with_usage` still binds the usage collector inside the worker rather
+    than relying on this: a collector bound out here would be the same object
+    across concurrent requests.
+    """
     try:
         loop = asyncio.get_running_loop()
+        context = contextvars.copy_context()
         return await loop.run_in_executor(
-            get_executor(), invoke_with_usage, get_graph(), state
+            get_executor(), context.run, invoke_with_usage, get_graph(), state
         )
     except Exception as exc:
         # Full cause here, where it is useful and stays inside the process.

@@ -192,18 +192,58 @@ class TestTheRequestPathSetsADeadline:
 
 
 class TestTheDeadlineSurvivesIntoWorkerThreads:
-    def test_a_deadline_set_on_the_caller_is_visible_in_an_executor(self) -> None:
-        """The graph runs in a thread pool. A deadline that does not cross that
-        boundary bounds nothing that matters."""
-        import concurrent.futures
+    """The graph — and therefore every sleep — runs in a ThreadPoolExecutor.
 
-        with request_deadline(30.0), concurrent.futures.ThreadPoolExecutor(1) as pool:
-            import contextvars
+    `loop.run_in_executor` does NOT copy contextvars into the worker;
+    `mao/api/invocation.py` documents this hazard directly, which is why the
+    usage collector is bound inside the worker rather than around the call.
 
-            ctx = contextvars.copy_context()
-            left = pool.submit(ctx.run, remaining_seconds).result()
+    A first version of this test copied the context by hand and asserted on the
+    result. It passed while the production path was still unbounded — it was
+    testing `contextvars`, not this system. So it exercises `run_graph` itself.
+    """
 
-        assert left is not None and left <= 30.0
+    @pytest.mark.asyncio
+    async def test_run_graph_carries_the_deadline_into_the_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mao.api.invocation as invocation
+
+        seen: dict[str, float | None] = {}
+
+        def _capture(graph, state):  # noqa: ANN001
+            seen["left"] = remaining_seconds()
+            return {"response": "ok"}
+
+        monkeypatch.setattr(invocation, "invoke_with_usage", _capture)
+        monkeypatch.setattr(invocation, "get_graph", lambda: object())
+
+        with request_deadline(30.0):
+            await invocation.run_graph({"user_query": "q"}, "req-1")
+
+        assert seen["left"] is not None, (
+            "the graph worker saw no deadline — every rate-limit sleep inside "
+            "the graph is still unbounded, which is the whole of B9(b)"
+        )
+        assert seen["left"] <= 30.0
+
+    @pytest.mark.asyncio
+    async def test_no_deadline_outside_a_bounded_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mao.api.invocation as invocation
+
+        seen: dict[str, float | None] = {}
+
+        def _capture(graph, state):  # noqa: ANN001
+            seen["left"] = remaining_seconds()
+            return {}
+
+        monkeypatch.setattr(invocation, "invoke_with_usage", _capture)
+        monkeypatch.setattr(invocation, "get_graph", lambda: object())
+
+        await invocation.run_graph({"user_query": "q"}, "req-1")
+        assert seen["left"] is None
 
     def test_time_actually_elapses_against_the_budget(self) -> None:
         with request_deadline(1.0):
