@@ -181,6 +181,27 @@ class ChatRequest(BaseModel):
         return metadata
 
 
+def _may_cache_response(result: dict[str, Any]) -> bool:
+    """Whether a result may be stored and served to a later identical query.
+
+    A withheld answer must not be. `_cache_session` stored `result["response"]`
+    unconditionally, so a transient 429 refusal was written under the query key
+    for 300 seconds — and the message tells the clinician to "try again in a
+    moment", while the retry was served the same cached refusal with
+    `served_from_cache=True`. The honesty fix that produced that message is
+    correct; caching it undid its only actionable half. A council safety veto
+    cached the same way.
+
+    Fails closed. A result whose `output_blocked` flag is missing or not a bool
+    has unknown provenance, and unknown provenance is not something to serve
+    twice.
+    """
+    blocked = result.get("output_blocked")
+    if blocked is not False:
+        return False
+    return bool((result.get("response") or "").strip())
+
+
 class ChatResponse(BaseModel):
     response: str
     agent_used: str
@@ -343,6 +364,13 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
 
     # Cache session response in Redis for fast repeated lookups (TTL 1h)
     def _cache_session() -> None:
+        if not _may_cache_response(result):
+            logger.info(
+                "request_id=%s not cached (blocked_by=%s)",
+                request_id,
+                result.get("output_blocked_by", "empty_or_unknown"),
+            )
+            return
         try:
             redis_client = get_redis()
             # Provenance is cached with the answer so a cache hit can return

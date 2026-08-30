@@ -100,8 +100,17 @@ async def apply_output_guardrails(state: dict, session_id: str) -> dict:
 
     Every exit sets `output_blocked`, so a caller can tell an answer the user may
     keep from one that was withdrawn.
+
+    The flag is monotonic within a request: an answer already withheld upstream —
+    by the council through `blocked_response_node`, or by the empty-body guard in
+    `finalize_response` — stays withheld. Resetting it unconditionally here, as
+    this used to, meant a council veto that these checks then passed came out
+    with `output_blocked=False`, and the cache and the memory writer had no way
+    to tell a withdrawal from an answer.
     """
     policy = get_policy()
+    if state.get("output_blocked"):
+        return state
     state["output_blocked"] = False
     state.pop("output_blocked_by", None)
 

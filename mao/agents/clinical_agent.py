@@ -114,20 +114,22 @@ def clinical_node(state: MAOState) -> MAOState:
     )
 
     # An empty synthesis must not become a response whose entire body is the
-    # disclaimer (adversarial L-3). That reads to a clinician as "the system
-    # considered your question and had nothing to say", when what happened is
-    # that generation produced nothing — a different fact, and one they can act
-    # on by retrying.
-    if not response.strip():
-        logger.warning("Clinical synthesis produced no text for mode=%s",
-                       result_meta.get("mode", "unknown"))
-        response = (
-            "I could not generate a clinical assessment for this request. "
-            "This is a system failure, not a clinical finding. Please retry, "
-            "and consult a licensed clinician directly if the problem persists."
+    # disclaimer (adversarial L-3). The substitution itself now lives at the API
+    # boundary in `mao/api/finalize.py`, because this copy was the whole defect:
+    # the guard went into this agent only, and `graphrag_agent` — the route real
+    # clinical traffic takes — kept returning an empty string.
+    #
+    # What has to stay here is *not appending the disclaimer to nothing*. An
+    # empty body plus the mandatory disclaimer is not an answer, and it is
+    # non-empty, so it would sail past the boundary guard looking like content.
+    if response.strip():
+        response = response + _DISCLAIMER
+    else:
+        logger.warning(
+            "Clinical synthesis produced no text for mode=%s — leaving the body "
+            "empty for the boundary guard to report as a failure",
+            result_meta.get("mode", "unknown"),
         )
-
-    response = response + _DISCLAIMER
 
     state["response"]     = response
     state["agent_used"]   = "clinical"

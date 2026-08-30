@@ -210,7 +210,17 @@ def blocked_response_node(state: dict) -> dict:
             f"I cannot provide this response. It was flagged by the {blocked_by} review "
             "for patient safety. Please consult a licensed clinician directly."
         )
-    return {**state, "response": message}
+    # `output_blocked` is the one signal that says "this is a withdrawal, not an
+    # answer". `apply_output_guardrails` documents that every exit sets it, but
+    # this node withheld the answer without doing so — leaving the flag False on
+    # a withheld response, which is how the refusal ended up cached for 300s and
+    # served to the retry the message itself invites.
+    return {
+        **state,
+        "response": message,
+        "output_blocked": True,
+        "output_blocked_by": blocked_by,
+    }
 
 
 def _route_after_council(state: dict) -> str:
