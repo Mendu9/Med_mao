@@ -52,6 +52,44 @@ ATTACHMENT_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Metadata keys that name a resource for the SERVER to open, rather than
+# carrying content the caller already holds.
+#
+# These are refused at the API boundary. `report_path` reached
+# `PdfReader(path)` and `audio_path` reached whisper, so either one was an
+# unauthenticated arbitrary server-side file read whose text was then summarised
+# back into the response — read and exfiltrate in one request. `00_RULES`
+# forbids exposing unrestricted filesystem access.
+#
+# They stay in `ATTACHMENT_KEYS` because internal and CLI callers still use
+# them, and if one ever reappears in request metadata it must still classify
+# HIGH rather than slipping through as unrecognised.
+SERVER_LOCATOR_KEYS: frozenset[str] = frozenset({"report_path", "audio_path"})
+
+# Request metadata keys that do NOT imply patient data.
+#
+# The default is inverted, for the reason `mao/api/cache_key.py` already gives
+# about cache keys: a fixed list of attachment keys can only ever enumerate the
+# inputs someone thought of. `ATTACHMENT_KEYS` had six, so `{"dicom_b64": <scan>}`
+# with a short query classified LOW — skipping verification, the council, the
+# judge and the disclaimer — and the upload was silently discarded with nothing
+# telling the clinician. That is the Wave 5 audio defect, one key away.
+#
+# So an unrecognised key now implies an attachment. Being wrong in this
+# direction costs a needless escalation to HIGH; being wrong in the other
+# direction is what the two paragraphs above describe.
+NON_ATTACHMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "domain",          # retrieval domain hint
+        "workflow",        # which workflow to route to
+        "index_version",   # pinning a retrieval index
+        "reranker_id",     # pinning a reranker
+        "locale",
+        "client",
+        "client_version",
+    }
+)
+
 
 def has_attachment(metadata: object) -> bool:
     """Whether request metadata may carry patient data.
@@ -64,7 +102,11 @@ def has_attachment(metadata: object) -> bool:
       not the same answer on the path to a clinical response, and every caller
       here escalates on True. This previously returned False, so a malformed
       payload resolved exactly like an empty one (adversarial L-2).
-    - *readable* — answer from the policy's key list.
+    - *readable* — any key that is not known to be harmless counts. The docstring
+      of `risk_for` states the rule without qualification — "an attachment ALWAYS
+      implies patient data and therefore HIGH risk" — but this answered from a
+      fixed six-key list, so `{"dicom_b64": <scan>}` classified LOW and the
+      claimed invariant was simply false. See `NON_ATTACHMENT_KEYS`.
     """
     if metadata is None:
         return False
@@ -74,7 +116,9 @@ def has_attachment(metadata: object) -> bool:
             type(metadata).__name__,
         )
         return True
-    return any(metadata.get(key) for key in ATTACHMENT_KEYS)
+    return any(
+        value for key, value in metadata.items() if key not in NON_ATTACHMENT_KEYS
+    )
 
 
 @dataclass(frozen=True)

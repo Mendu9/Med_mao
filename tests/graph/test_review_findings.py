@@ -73,8 +73,20 @@ class TestH1AttachmentCoverage:
         assert out["risk_level"] == RiskLevel.HIGH.value
 
     def test_no_attachment_is_not_high_risk(self) -> None:
+        """Wave 9 / B11 inverts the default, so this case moved.
+
+        This used to assert `has_attachment({"unrelated": "x"}) is False`, which
+        is the defect B11 records rather than a property worth holding: the six-
+        key list meant `{"dicom_b64": <scan>}` classified LOW, skipped every
+        control that patient data requires, and discarded the upload silently.
+        An unrecognised key now counts as an attachment.
+
+        The test's intent — an ordinary request must not be escalated — is
+        unchanged and asserted below against a key the policy knows is harmless.
+        See `tests/safety/test_unknown_attachment_keys_escalate.py`.
+        """
         assert has_attachment({}) is False
-        assert has_attachment({"unrelated": "x"}) is False
+        assert has_attachment({"domain": "alzheimer"}) is False
 
     def test_empty_attachment_value_does_not_count(self) -> None:
         assert has_attachment({"image_b64": ""}) is False

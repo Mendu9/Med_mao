@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from mao.core.config import cfg
 from mao.core.logging_config import configure_logging, set_trace_id
@@ -33,6 +33,7 @@ from mao.api.invocation import run_graph
 from mao.api.routes import ALL_ROUTERS
 from mao.api import sse
 from mao.guardrails import apply_input_guardrails
+from mao.safety.policy import SERVER_LOCATOR_KEYS
 from mao.monitoring.metrics import (
     record_request,
     record_reranker_score,
@@ -156,6 +157,28 @@ class ChatRequest(BaseModel):
     user_id: str = Field(default_factory=lambda: f"anon-{uuid.uuid4().hex[:8]}")
     chat_history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def _no_server_locators(cls, metadata: dict[str, Any]) -> dict[str, Any]:
+        """A caller supplies attachment content, never a server-side locator.
+
+        `report_path` reached `PdfReader(path)` and `audio_path` reached
+        whisper, so either one turned `/chat` into an unauthenticated arbitrary
+        file read whose text was summarised straight back into the response.
+        The `_b64` variants carry every legitimate use.
+
+        Validated on the model rather than in each route handler, so `/chat` and
+        `/chat/stream` cannot drift apart, and refused rather than stripped, so
+        an operator can tell an attack from a stale client.
+        """
+        offending = sorted(SERVER_LOCATOR_KEYS.intersection(metadata))
+        if offending:
+            raise ValueError(
+                f"metadata may not name server-side resources: {', '.join(offending)}. "
+                "Send the file content as report_b64 or audio_b64 instead."
+            )
+        return metadata
 
 
 class ChatResponse(BaseModel):

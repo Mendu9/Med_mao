@@ -15,7 +15,6 @@ import os
 import tempfile
 from pathlib import Path
 
-import requests
 
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
@@ -63,10 +62,14 @@ def handle_image(  # public: shared with `clinical_agent`
 
     # Download if URL provided
     if not image_b64 and metadata.get("image_url"):
+        # Through the shared guard, never `requests.get` directly — the URL is
+        # caller-supplied. See `mao/safety/fetch.py`.
+        from mao.safety.fetch import fetch_image_bytes
+
         try:
-            resp = requests.get(metadata["image_url"], timeout=15)
-            resp.raise_for_status()
-            image_b64 = base64.b64encode(resp.content).decode("utf-8")
+            image_b64 = base64.b64encode(
+                fetch_image_bytes(metadata["image_url"])
+            ).decode("utf-8")
         except Exception as exc:  # noqa: BLE001
             logger.error("Image download failed: %s", exc)
             return f"Failed to download image: {exc}", {"error": str(exc)}

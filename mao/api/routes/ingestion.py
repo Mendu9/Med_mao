@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, BackgroundTasks
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,23 @@ class IngestResponse(BaseModel):
 
 
 class AlzheimersIngestRequest(BaseModel):
-    data_dir: str | None = Field(
-        default=None,
-        description="Path to PDF directory. Defaults to ad/rag/data/",
-    )
+    """Chunking parameters only.
+
+    This model used to carry `data_dir`, a caller-supplied string that the
+    ingester used verbatim as a `Path` — an unauthenticated arbitrary
+    server-side file read, and, because the text is chunked, embedded and then
+    retrievable through `/chat` as evidence, a corpus-poisoning primitive too.
+    `00_RULES` forbids exposing unrestricted filesystem access.
+
+    The corpus directory is a property of the deployment, not of the request, so
+    the field is gone rather than validated: an allowlist is a thing that can be
+    got wrong, and nothing legitimate needed the parameter. `extra="forbid"`
+    turns a stale or hostile caller still sending it into a visible 422 rather
+    than a silent discard.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     chunk_size: int = Field(default=512, ge=128, le=2048)
     chunk_overlap: int = Field(default=50, ge=0, le=256)
 
@@ -68,13 +81,14 @@ async def ingest_alzheimers(
     """
     Trigger ingestion of Alzheimer's research PDFs into the vector store.
 
-    PDFs are loaded from ad/rag/data/ (or a custom path), chunked, embedded, and
+    PDFs are loaded from the configured corpus directory, chunked, embedded, and
     stored alongside the Wikipedia knowledge base. No router changes needed —
     graphrag_agent retrieves from these documents automatically after ingestion.
+
+    The directory is not a request parameter. See `AlzheimersIngestRequest`.
     """
     background_tasks.add_task(
         _run_alzheimers_ingestion,
-        data_dir=request.data_dir,
         chunk_size=request.chunk_size,
         chunk_overlap=request.chunk_overlap,
     )
@@ -123,15 +137,15 @@ def _run_ingestion(topics: list[str], max_articles: int) -> None:
 
 
 def _run_alzheimers_ingestion(
-    data_dir: str | None,
     chunk_size: int,
     chunk_overlap: int,
 ) -> None:
+    """Takes no directory, so none can be reintroduced without also changing
+    the request model — the two places B6 had to be fixed in."""
     try:
         from mao.data.ingest_alzheimers import ingest_alzheimers_pdfs
 
         count = ingest_alzheimers_pdfs(
-            data_dir=data_dir,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )

@@ -6,7 +6,6 @@ import base64
 import json
 import logging
 
-import requests
 
 from mao.agents.multimodal_agent import handle_audio, handle_image
 from mao.core.config import MRI_CONFIDENCE_GATE
@@ -306,9 +305,12 @@ def _run_mri_prediction(metadata: dict) -> dict:
         if metadata.get("image_b64"):
             return predictor.predict(metadata["image_b64"])
         if metadata.get("image_url"):
-            resp = requests.get(metadata["image_url"], timeout=15)
-            resp.raise_for_status()
-            return predictor.predict(resp.content)
+            # Through the shared guard, never `requests.get` directly: the URL
+            # is caller-supplied and the fetch runs with the deployment's own
+            # network position. See `mao/safety/fetch.py`.
+            from mao.safety.fetch import fetch_image_bytes
+
+            return predictor.predict(fetch_image_bytes(metadata["image_url"]))
         return {"error": "no image data found in metadata"}
     except Exception as exc:  # noqa: BLE001
         logger.error("MRI prediction call failed: %s", exc)
