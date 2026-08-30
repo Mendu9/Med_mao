@@ -90,7 +90,15 @@ class CacheKeyInputs:
         bug; the policy keeps owning the risk answer, and this module stops
         borrowing it for something it was never a complete list for.
         """
-        present = {k: v for k, v in sorted(self.metadata.items()) if v}
+        # Presence, not truthiness. Filtering on `if v` let the inversion above
+        # leak back out in one corner: `{"patient_id": 0}` dropped its only key
+        # and shared an entry with no metadata at all. "Scoped to patient 0" and
+        # "not scoped" are different questions with different answers.
+        #
+        # `has_attachment` deliberately still uses truthiness, because an
+        # attachment key with an empty value genuinely is not an upload. That is
+        # the risk question; this is the cache question.
+        present = dict(sorted(self.metadata.items()))
         if not present:
             return "none"
         # `default=str` because a caller can send anything, and a cache key that

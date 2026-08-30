@@ -7,6 +7,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from mao.core.retry import with_groq_retry
+from mao.providers import gateway
+from mao.providers.registry import ModelRole
+
 logger = logging.getLogger(__name__)
 
 _GOLDEN_DATASET_PATH = Path(__file__).parent.parent / "data" / "golden_dataset.json"
@@ -225,7 +229,6 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
     try:
         import chromadb
         from mao.core.config import cfg
-        from mao.core import llm as groq_llm
     except ImportError as exc:
         logger.error("Missing dependency for golden dataset generation: %s", exc)
         return []
@@ -263,7 +266,6 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
             all_docs.append((nid, doc or "", meta or {}))
 
     dataset: list[dict[str, Any]] = []
-    import time
 
     logger.info("Filtering %d candidate chunks for clinical content...", len(all_docs))
     for native_id, doc_text, meta in all_docs:
@@ -273,28 +275,37 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
             continue
         # Use metadata chunk_id — same value as native_id for our ingestion pipeline
         chunk_id = meta.get("chunk_id", native_id)
-        retries = 3
         question = None
-        for attempt in range(retries):
-            try:
-                question = groq_llm.chat(
-                    messages=[
-                        {"role": "system", "content": _QUESTION_GEN_SYSTEM},
-                        {"role": "user", "content": doc_text[:1200]},
-                    ],
-                    temperature=0.3,
-                    max_tokens=120,
-                ).strip()
-                break
-            except Exception as exc:
-                err_str = str(exc)
-                if "429" in err_str or "rate_limit" in err_str.lower() or "Too Many Requests" in err_str:
-                    wait = 2 ** attempt * 3  # 3s, 6s, 12s
-                    logger.info("Groq rate-limited — waiting %ds (attempt %d/%d)", wait, attempt + 1, retries)
-                    time.sleep(wait)
-                else:
-                    logger.debug("Question generation failed for %s: %s", chunk_id, exc)
-                    break
+        # Through the gateway, like every other model call in the system.
+        #
+        # This was the fourth non-agent gateway bypass, and the only one three
+        # previous reviews all missed: `from mao.core import llm as groq_llm`
+        # skipped role resolution — so a retired model id could reach the
+        # provider with nothing to catch it — and carried its own hand-rolled
+        # 429 backoff duplicating `mao/core/retry.py`, which is now the single
+        # rate-limit policy.
+        #
+        # Offline dataset generation, not the request path, which is why it was
+        # NON_BLOCKING. Closing it is what lets Phase 1 scope item 3 ("model
+        # gateway") be reported DONE rather than PARTIAL.
+        # Bound explicitly rather than closed over: the lambda is called within
+        # this iteration, but a closure over the loop variable is one refactor
+        # away from generating every question from the last chunk's text.
+        def _ask(text: str = doc_text[:1200]) -> str:
+            return gateway.complete(
+                role=ModelRole.EXTRACTION_FAST,
+                messages=[
+                    {"role": "system", "content": _QUESTION_GEN_SYSTEM},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.3,
+                max_tokens=120,
+            ).text.strip()
+
+        try:
+            question = with_groq_retry(_ask)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Question generation failed for %s: %s", chunk_id, exc)
 
         if not question or "?" not in question:
             continue
