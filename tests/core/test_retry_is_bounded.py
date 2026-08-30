@@ -203,6 +203,17 @@ class TestTheDeadlineSurvivesIntoWorkerThreads:
     testing `contextvars`, not this system. So it exercises `run_graph` itself.
     """
 
+    @pytest.fixture(autouse=True)
+    def _live_executor(self):
+        """The shared pool is shut down by any TestClient lifespan that ran
+        before this file, so these two tests would otherwise fail on ordering
+        rather than on the property they assert. `lifespan` startup does the
+        same thing in production."""
+        from mao.api.executor import restart_executor
+
+        restart_executor()
+        yield
+
     @pytest.mark.asyncio
     async def test_run_graph_carries_the_deadline_into_the_worker(
         self, monkeypatch: pytest.MonkeyPatch
