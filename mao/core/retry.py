@@ -31,6 +31,8 @@ import re
 import time
 from typing import Callable, TypeVar
 
+from mao.core.deadline import remaining_seconds
+
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
@@ -73,11 +75,25 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     return None
 
 
+class DeadlineExceeded(Exception):
+    """The request's time budget cannot absorb another rate-limit wait."""
+
+
 def with_groq_retry(fn: Callable[[], T], max_retries: int = 4, base_delay: float = 1.0) -> T:
-    """Call `fn`, waiting out transient rate limits.
+    """Call `fn`, waiting out transient rate limits within the request's budget.
 
     Only rate limits are retried. Everything else raises immediately: a wrong
     model id or a malformed request will not become correct by being repeated.
+
+    Two bounds, both added in Wave 9:
+
+    - no wait after the FINAL attempt. This used to sleep on every failure and
+      then raise, so up to `MAX_RATE_LIMIT_WAIT_SECONDS` was spent buying an
+      attempt that never happened.
+    - no wait past the request deadline, when one is set. See
+      `mao/core/deadline.py`; without it a single clinical request could hold an
+      executor thread for roughly half an hour across its seven sequential
+      gateway calls.
     """
     last_exc: Exception | None = None
     for attempt in range(max_retries):
@@ -98,6 +114,11 @@ def with_groq_retry(fn: Callable[[], T], max_retries: int = 4, base_delay: float
                 )
                 raise
 
+            # The last attempt has already been made; sleeping now waits for a
+            # retry that will not happen.
+            if attempt == max_retries - 1:
+                break
+
             # Honour the stated wait; fall back to exponential backoff when the
             # provider did not say. Add a small margin so we return just after
             # the window opens rather than just before it.
@@ -106,6 +127,22 @@ def with_groq_retry(fn: Callable[[], T], max_retries: int = 4, base_delay: float
                 if stated is not None
                 else base_delay * (2 ** attempt)
             )
+
+            left = remaining_seconds()
+            if left is not None and delay >= left:
+                # Sleeping would run the request past its own budget, and the
+                # attempt after it could not complete anyway. Surface it as
+                # unavailability, which the pipeline reports honestly.
+                logger.warning(
+                    "Rate-limit wait of %.1fs exceeds the %.1fs left in the "
+                    "request budget — not waiting",
+                    delay, left,
+                )
+                raise DeadlineExceeded(
+                    f"rate-limit wait of {delay:.1f}s exceeds the {left:.1f}s "
+                    "remaining in the request budget"
+                ) from e
+
             logger.warning(
                 "Provider rate limit, waiting %.1fs (attempt %d/%d, stated=%s)",
                 delay, attempt + 1, max_retries, stated,

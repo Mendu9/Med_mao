@@ -197,34 +197,55 @@ class TestTheCouncilCallSites:
 
 
 class TestTheSupervisionCallSites:
+    """Wave 9 / B10 — the role comes from the module under test, not from here.
+
+    These two probed `SAFETY_JUDGE` while Wave 7 had already moved both
+    supervisors to `EXTRACTION_FAST`. So they exercised a model production never
+    binds, at 2.4-3.1x the ceiling production actually gives them, and passed —
+    in the file the gate rests on, testing the very defect class it was written
+    to prevent.
+
+    Importing `_ROLE` alongside `_MAX_TOKENS` means the probe cannot drift from
+    the call site again: moving a supervisor to another role moves its probe.
+    """
+
     def test_the_domain_supervisor_returns_parseable_json(self) -> None:
-        from mao.agents.domain_supervisor import _MAX_TOKENS, _parse_ungrounded_claims
+        from mao.agents.domain_supervisor import (
+            _MAX_TOKENS,
+            _ROLE,
+            _parse_ungrounded_claims,
+        )
 
         raw = _complete(
-            ModelRole.SAFETY_JUDGE,
+            _ROLE,
             "domain_supervisor.reconcile",
             f"RAG CHUNKS:\n{PREMISE}\nDRAFT ANSWER:\n{ANSWER}",
             _MAX_TOKENS,
         )
-        assert raw.strip(), f"empty completion at max_tokens={_MAX_TOKENS}"
+        assert raw.strip(), (
+            f"empty completion at role={_ROLE.value} max_tokens={_MAX_TOKENS}"
+        )
         assert "{" in raw, f"no JSON object in the reply: {raw[:200]!r}"
         _parse_ungrounded_claims(raw)  # must not raise
 
     def test_the_senior_supervisor_returns_parseable_json(self) -> None:
-        from mao.agents.senior_supervisor import _MAX_TOKENS, _parse_missing
+        from mao.agents.senior_supervisor import _MAX_TOKENS, _ROLE, _parse_missing
 
         raw = _complete(
-            ModelRole.SAFETY_JUDGE,
+            _ROLE,
             "senior_supervisor.completeness",
             f'SUB-QUESTIONS:\n["what does donepezil do?"]\n\nANSWER:\n{ANSWER}',
             _MAX_TOKENS,
         )
-        assert raw.strip(), f"empty completion at max_tokens={_MAX_TOKENS}"
+        assert raw.strip(), (
+            f"empty completion at role={_ROLE.value} max_tokens={_MAX_TOKENS}"
+        )
         assert "}" in raw, (
             f"the JSON object was cut off before it closed, so the parser "
             f"silently returns []: {raw[:200]!r}"
         )
         _parse_missing(raw)
+
 
 
 # ---------------------------------------------------------------------------
@@ -271,14 +292,24 @@ class TestTheRoutingCallSites:
         )
 
 
+def _synthesis_call_sites() -> list[tuple[ModelRole, str, int]]:
+    """Budgets read from the modules that spend them.
+
+    These were hardcoded as 1024 and 768. They matched the call sites at the
+    time, with nothing keeping them matched — the same defect the supervisors
+    above actually hit, one edit away.
+    """
+    from mao.agents.clinical_agent import _SYNTHESIS_MAX_TOKENS as _CLINICAL
+    from mao.agents.graphrag_agent import _SYNTHESIS_MAX_TOKENS as _GRAPHRAG
+
+    return [
+        (ModelRole.CLINICAL_SYNTHESIS, "clinical.synthesis", _CLINICAL),
+        (ModelRole.GENERAL_SYNTHESIS, "graphrag.synthesis", _GRAPHRAG),
+    ]
+
+
 class TestTheSynthesisCallSites:
-    @pytest.mark.parametrize(
-        "role,prompt_name,budget_ref",
-        [
-            (ModelRole.CLINICAL_SYNTHESIS, "clinical.synthesis", 1024),
-            (ModelRole.GENERAL_SYNTHESIS, "graphrag.synthesis", 768),
-        ],
-    )
+    @pytest.mark.parametrize("role,prompt_name,budget_ref", _synthesis_call_sites())
     def test_synthesis_returns_a_substantive_answer(
         self, role: ModelRole, prompt_name: str, budget_ref: int
     ) -> None:

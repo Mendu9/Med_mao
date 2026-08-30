@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 from mao.core.config import cfg
 from mao.core.logging_config import configure_logging, set_trace_id
 from mao.core.rate_limiter import check_rate_limit
+from mao.core.deadline import request_deadline
 from mao.core.redis_client import get_redis, safe_get, safe_set
 from mao.api.cache_key import CacheKeyInputs, build_chat_cache_key
 from mao.api.streaming import may_stream_raw_tokens
@@ -40,6 +41,18 @@ from mao.monitoring.metrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Ceiling on how long one request may hold an executor thread.
+#
+# A clinical /chat makes seven sequential gateway calls. Each could wait out
+# rate limits independently and only the council leg was bounded, so a single
+# request could occupy one of eight worker threads for roughly half an hour —
+# eight of them take the pool. The rate limiter in front fails OPEN when Redis
+# is down, and `user_id` is caller-supplied, so nothing upstream bounds this.
+#
+# Generous enough that a genuine burst limit is still waited out (the whole
+# point of the retry policy), far below the ~28 minutes measured at f757375.
+REQUEST_DEADLINE_SECONDS = 180.0
 # configure_logging is called inside lifespan startup (after uvicorn installs its handlers)
 
 # The thread pool lives in `mao.api.executor` so the route modules can share it
@@ -334,7 +347,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     state["metadata"] = request.metadata
 
     # Run graph in thread pool to keep async loop unblocked
-    result = await run_graph(state, request_id)
+    with request_deadline(REQUEST_DEADLINE_SECONDS):
+        result = await run_graph(state, request_id)
 
     result = await finalize_response(result, request_id)
 
@@ -469,7 +483,8 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     # The agents that support streaming (graphrag/clinical/summarizer) store their
     # LLM prompt in state["_stream_messages"] and their model in state["_stream_model"]
     # instead of making the final LLM call themselves, so we can stream it below.
-    result = await run_graph(state, request_id)
+    with request_deadline(REQUEST_DEADLINE_SECONDS):
+        result = await run_graph(state, request_id)
 
     result = await finalize_response(result, request_id)
 
