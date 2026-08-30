@@ -1,4 +1,4 @@
-"""Deterministic PII scrubbing.
+r"""Deterministic PII scrubbing.
 
 Regex-only by design: this runs on the path to a third-party LLM, so it must be
 fast, offline, and auditable. A model-based de-identifier would add a heavy
@@ -7,29 +7,56 @@ clean.
 
 The structure that makes this tractable is that clinical documents are *labelled*.
 Rather than trying to recognise what a name or a record number looks like in
-free text — which is where the previous version failed, missing every identifier
+free text — which is where an earlier version failed, missing every identifier
 in a realistic clinic header — the labelled rules key off the field label and
 scrub its value whatever shape it takes. `MRN: RGT/44219/B` and `MRN: 12345678`
 are both handled by knowing what `MRN:` means, not by guessing at the value.
 
-Two rules govern the value of a labelled field:
+## The invariant
 
-  - it ends at the end of the line, or at the next `Label:` on the same line;
-  - it never swallows that next label.
+    A placeholder stands for an identifier that was actually removed —
+    and for nothing else.
 
-"End of the line" is why every pattern is compiled with `re.MULTILINE`. Without
-that flag `$` means end of *string*, and the first rule silently became "ends at
-the next recognised label, or at the end of the document" — so in a letter whose
-header fields are separated by prose, which is exactly what PDF text extraction
-produces, neither the patient name nor the record number was scrubbed at all.
-The flag is load-bearing, not stylistic; `tests/core/test_pii_scrubber_line_scope.py`
-asserts it directly.
+Both directions are failures. Under-matching leaks an identifier. Over-matching
+destroys the clinician's question, and does it silently, because `state["user_query"]`
+*is* the scrubbed string: no control downstream can see what the original said.
 
-The second rule is not a nicety. The previous name pattern greedily consumed up
-to three following capitalised words, so on a single line — exactly what PDF
-text extraction produces when layout collapses — "Patient Name: John Smith MRN:
-12345678" matched through `MRN` and left the record number in the clear.
-Adding name coverage had made record-number coverage worse.
+## Why a value is defined positively
+
+The previous `_VALUE` was `[^\n]*?` plus a stop-lookahead — defined only by
+where it stopped, never by what it was. One defect, failing both ways at once:
+
+  - it could match EVERYTHING to end-of-line. A `/chat` query is one line, so a
+    pasted `Tel:` swallowed the whole question. Measured: 7 of 8 realistic
+    phrasings lost the question entirely, and the model answered a question
+    nobody asked, confidently, with a clinical disclaimer attached.
+
+  - it could match the EMPTY STRING. `\s*$` matches at once when a label ends
+    its line, which is exactly what a two-column letterhead extracts as. The
+    scrubber emitted `Patient Name: [NAME]` directly ABOVE the untouched real
+    name — asserting de-identification on the line above the identifier it
+    missed, while the registered `clinical.extraction` prompt told the model the
+    report "has already been de-identified".
+
+So a value is now built up from tokens rather than carved out by terminators. A
+value token is a name-, number-, or code-shaped word: it is not a function word,
+and it is not the label of the next field. A value is one to eight such tokens
+joined by spaces or commas. It therefore cannot be empty, cannot cross a
+newline (the separator is `[ \t]+`), and cannot run into prose.
+
+## Why the document is reflowed first
+
+pypdf reads a two-column letterhead column by column, so every value lands on
+the line *after* its label — and in a wide layout, every label can arrive before
+any value. Rather than teach every rule about that, `_reflow_orphan_labels`
+rejoins `label \n value` into `label: value` and hands the rules the shape they
+are defined for. One normalisation, not a second rule set.
+
+NFKC normalisation happens here too, not only in `input_guardrails`:
+`clinical_agent` scrubs raw pypdf output directly, and a fullwidth colon
+(U+FF1A, routine in scanned documents) is preserved by pypdf and matches no
+ASCII-colon rule at all. Normalising inside the scrubber makes it impossible
+for a caller to forget.
 
 Unlabelled identifiers (free-standing dates, emails, phone numbers, postcodes,
 titled names in prose) are matched by shape, most specific first.
@@ -37,6 +64,7 @@ titled names in prose) are matched by shape, most specific first.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _MONTHS = (
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?"
@@ -71,16 +99,10 @@ _DOB_LABELS = r"(?:dob|d\.o\.b\.?|date\s+of\s+birth|born|birth\s+date)"
 
 _PHONE_LABELS = r"(?:telephone|tel|phone|mobile|mob|cell|contact\s+(?:number|no\.?))"
 
-# Every label the scrubber knows. A labelled field's value runs until the next
-# *known* label, or the end of the line.
-#
-# Terminating on "any word followed by a colon" is wrong in both directions. On
-# "Name: John Smith MRN: 12345678" it stops after "John" — because " Smith MRN:"
-# looks like a label — and leaks the surname. Terminating only at end-of-line is
-# wrong the other way: it lets one field swallow the next field's label, which is
-# how the previous version left record numbers in the clear. Matching the known
-# label set is what makes "the value is everything up to the next real field"
-# expressible.
+# Every label the scrubber knows. A value never absorbs one of these, because
+# doing so is how an earlier version turned "Patient Name: John Smith MRN:
+# 12345678" into "Patient Name: [NAME]: 12345678" and left the record number in
+# the clear. Adding name coverage had made record-number coverage worse.
 _ANY_LABEL = (
     rf"(?:{_PERSON_LABELS}|{_MRN_LABELS}|{_NHS_LABELS}|{_ACCOUNT_LABELS}"
     rf"|{_ADDRESS_LABELS}|{_DOB_LABELS}|{_PHONE_LABELS}"
@@ -88,11 +110,55 @@ _ANY_LABEL = (
     r"|ward|bed|nhs\s+trust|hospital|department|dept)"
 )
 
-# Stop before a known label, or before any single word acting as one, or at EOL.
+# Function words. These open almost every clinical sentence and appear inside no
+# identifier, so they are what separates "Robert Brown was admitted" (value:
+# "Robert Brown") from "an 84-year-old man with..." (no value at all).
+#
+# "May" is deliberately absent despite being a function word: it is also a
+# month, and excluding it would truncate "DOB: 12 May 1948" after the day and
+# leave the year in the clear.
+_PROSE_WORDS = (
+    r"(?:a|an|the|and|or|but|if|is|are|was|were|be|been|being|has|have|had|do|does"
+    r"|did|can|could|should|would|will|shall|might|must|in|on|at|to|for|with"
+    r"|without|from|by|of|as|that|this|these|those|there|their|his|her|its|he|she"
+    r"|they|them|him|who|whom|which|what|when|where|why|how|not|no|nor|so|than"
+    r"|then|about|after|before|during|since|until|while|per|via|presenting"
+    r"|presented|referred|admitted|discharged|reviewed|seen|known|reports"
+    r"|reported|complains|complaining|diagnosed|treated|started|stopped|continues"
+    r"|denies|attended|attends|please|regarding|re)"
+)
+
+# A token may not be the next field's label. Both forms matter: the known
+# multi-word labels ("NHS Number:") and any bare word acting as one ("Weight:").
+_NOT_A_LABEL = (
+    rf"(?!(?i:{_ANY_LABEL})[ \t]*:)"
+    r"(?![A-Za-z][A-Za-z0-9'\-]*[ \t]*:)"
+)
+_NOT_PROSE = rf"(?!(?i:{_PROSE_WORDS})\b)"
+
+# A single initial ("A." in "John A. Smith") must be tried first: the general
+# word form would match the bare "A" and stop at the period, splitting the name
+# and leaving the surname in the clear.
+#
+# An internal period is part of the token only when a letter or digit follows it
+# ("12.03.1948"). A period followed by a space ends the value — which is what
+# keeps "Smith. What is the evidence..." from being swallowed.
+_WORD = r"\+?[A-Za-z0-9](?:[A-Za-z0-9'/\-]|\.(?=[A-Za-z0-9]))*"
+_CAP_WORD = r"[A-Z0-9](?:[A-Za-z0-9'/\-]|\.(?=[A-Za-z0-9]))*"
+
+# The initial is matched before the prose check, not after it: "A." in
+# "Prof A. Raman" is a single capital, and a case-insensitive test against the
+# function words reads it as the article "a" and rejects it — truncating the
+# value to "Prof" and leaving the surname in the clear.
+_VALUE_TOKEN = rf"(?:[A-Z]\.|{_NOT_A_LABEL}{_NOT_PROSE}{_WORD})"
+# After a comma the value may continue only into a capitalised or numeric token
+# — "Flat 4, 22 Kingsway, London" is one address, but "12/03/1948, presenting
+# with progressive aphasia" is a date followed by the clinician's sentence.
+_CAP_TOKEN = rf"{_NOT_A_LABEL}(?:[A-Z]\.|{_CAP_WORD})"
+
 _VALUE = (
-    r"[^\n]*?(?=\s+(?i:" + _ANY_LABEL + r")[ \t]*:"
-    r"|\s+[A-Za-z][A-Za-z'\-]*[ \t]*:"
-    r"|\s*$)"
+    rf"{_VALUE_TOKEN}"
+    rf"(?:[ \t]*,[ \t]+{_CAP_TOKEN}|[ \t]+{_VALUE_TOKEN}){{0,7}}"
 )
 
 # What a record number looks like when no colon separates it from its label.
@@ -106,12 +172,40 @@ _IDENTIFIER = r"(?=[A-Za-z0-9/\-]*\d)[A-Z0-9][A-Za-z0-9/\-]{3,20}\b"
 # Titles that introduce a name in prose, where no field label exists.
 _TITLES = r"(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof(?:essor)?|Sir|Dame|Lord|Lady|Rev)"
 
+# --- Names in prose with no field label at all -----------------------------
+#
+# A bare name in arbitrary prose is not regex-detectable and is recorded as a
+# residual. A name introduced by a relationship or a clinical encounter is, and
+# those are the shapes a referral letter actually uses.
+_RELATION = (
+    r"(?:wife|husband|spouse|partner|son|daughter|mother|father|brother|sister"
+    r"|parents?|carer|caregiver|guardian|next\s+of\s+kin|neighbour|neighbor|friend)"
+)
+_ENCOUNTER = (
+    r"(?:reviewed|saw|assessed|examined|met|admitted|discharged|referred"
+    r"|consulted|treated|followed\s+up)"
+)
+# Capitalised words that are not people. Eponyms are exactly the collision set
+# for a name rule in a neurology letter — without this, "I reviewed Alzheimer's
+# Disease guidance" redacts the disease.
+_NOT_A_PERSON = (
+    r"(?:Alzheimer|Parkinson|Lewy|Braak|Scheltens|Montreal|Mini|Creutzfeldt"
+    r"|Huntington|Wernicke|Korsakoff|Broca|Binswanger|Pick|Down|Charcot"
+    r"|Hachinski|Rankin|Glasgow|Barthel|Addenbrooke|Boston|Trail|Stroop"
+    r"|Hospital|Clinic|Surgery|Practice|Medical|NHS|MRI|CT|PET|EEG|CSF)"
+)
+_NAME_WORD = rf"(?!{_NOT_A_PERSON}\b)[A-Z][a-z]+(?:-[A-Z][a-z]+)*"
+# Two name-words minimum: one capitalised word after "saw" is far more often a
+# place, an instrument or a drug than a patient.
+_PERSON_NAME = rf"{_NAME_WORD}(?:[ \t]+[A-Z]\.)?(?:[ \t]+{_NAME_WORD})+"
+
 _PATTERNS: list[tuple[str, str]] = [
     # --- Labelled fields (most reliable: the label tells us what the value is) ---
     #
     # The label itself is captured and re-emitted, so the model still sees which
     # field was present — "Patient Name: [NAME]" carries structure that a bare
-    # "[NAME]" does not.
+    # "[NAME]" does not. `_VALUE` requires at least one token, so a label with
+    # nothing after it produces no placeholder at all.
     (rf"\b((?i:{_DOB_LABELS}))[ \t]*:[ \t]*{_VALUE}", r"\1: [DOB]"),
     (rf"\b((?i:{_MRN_LABELS}))[ \t]*:[ \t]*{_VALUE}", r"\1: [MRN]"),
     (rf"\b((?i:{_NHS_LABELS}))[ \t]*:[ \t]*{_VALUE}", r"\1: [NHS]"),
@@ -185,6 +279,10 @@ _PATTERNS: list[tuple[str, str]] = [
         "[NAME]",
     ),
 
+    # --- Untitled names in prose, introduced by a relationship or an encounter ---
+    (rf"\b((?i:{_RELATION}))[ \t]+{_PERSON_NAME}\b", r"\1 [NAME]"),
+    (rf"\b((?i:{_ENCOUNTER}))[ \t]+{_PERSON_NAME}\b", r"\1 [NAME]"),
+
     # --- Named healthcare organisations (letterheads) ---
     #
     # Narrowly anchored on the organisation suffix. A general "two capitalised
@@ -197,11 +295,59 @@ _PATTERNS: list[tuple[str, str]] = [
     ),
 ]
 
-# MULTILINE is required, not cosmetic: `_VALUE` terminates on `\s*$`, and
-# without it `$` matches only at end-of-string. See the module docstring.
 _COMPILED: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(pattern, re.MULTILINE), replacement) for pattern, replacement in _PATTERNS
+    (re.compile(pattern), replacement) for pattern, replacement in _PATTERNS
 ]
+
+# A line holding a label and nothing else — the left column of a letterhead.
+_LABEL_ONLY_LINE = re.compile(rf"^[ \t]*(?i:{_ANY_LABEL})[ \t]*:[ \t]*$")
+# A line that is entirely a plausible field value — the right column. Requiring
+# the WHOLE line to parse as a value is what keeps prose out: "The patient was
+# admitted with acute confusion" stops at "was" and so never matches to `$`.
+_VALUE_ONLY_LINE = re.compile(rf"^[ \t]*{_VALUE}[ \t]*$")
+
+
+def _reflow_orphan_labels(text: str) -> str:
+    """Rejoin `label \\n value` pairs produced by two-column PDF extraction.
+
+    pypdf reads a letterhead column by column, so a label can be separated from
+    its value by a newline, and in a wide layout every label can arrive before
+    any value. Both are handled by pairing a run of label-only lines with the
+    run of value-only lines immediately following it, in order.
+
+    A label that cannot be paired is left exactly as it is. It then matches no
+    labelled rule, and so produces no placeholder — which is the point: a
+    placeholder must never claim a removal that did not happen.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        run_end = i
+        while run_end < len(lines) and _LABEL_ONLY_LINE.match(lines[run_end]):
+            run_end += 1
+        labels = run_end - i
+        if not labels:
+            out.append(lines[i])
+            i += 1
+            continue
+
+        paired = 0
+        while (
+            paired < labels
+            and run_end + paired < len(lines)
+            and _VALUE_ONLY_LINE.match(lines[run_end + paired])
+        ):
+            paired += 1
+
+        for offset in range(labels):
+            label = lines[i + offset].rstrip()
+            if offset < paired:
+                out.append(f"{label} {lines[run_end + offset].strip()}")
+            else:
+                out.append(lines[i + offset])
+        i = run_end + paired
+    return "\n".join(out)
 
 
 def scrub_pii(text: str) -> str:
@@ -209,9 +355,15 @@ def scrub_pii(text: str) -> str:
 
     Placeholders keep the field's *shape* so the model can still tell that a
     patient name or record number was present without learning whose.
+
+    Normalisation and reflow happen here rather than in the callers:
+    `clinical_agent` scrubs raw pypdf output directly, and a guarantee a caller
+    has to remember to establish is not a guarantee.
     """
     if not text:
         return text
+    text = unicodedata.normalize("NFKC", text)
+    text = _reflow_orphan_labels(text)
     for pattern, replacement in _COMPILED:
         text = pattern.sub(replacement, text)
     return text

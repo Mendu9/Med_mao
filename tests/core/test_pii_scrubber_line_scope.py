@@ -1,6 +1,13 @@
 """Wave 6 blocker 1 — a labelled field's value ends at the end of its LINE.
 
-`_VALUE` terminates on `\\s*$`, but no pattern was compiled with `re.MULTILINE`,
+The property still holds and is still tested here. How it is enforced changed in
+Wave 9: `_VALUE` no longer terminates on `$` at all, so the `re.MULTILINE`
+mechanism described below is history rather than current implementation. See
+`TestALabelledValueStopsAtEndOfLine.test_a_value_cannot_span_a_newline`.
+
+The rest of this docstring records why the test exists.
+
+`_VALUE` terminated on `\\s*$`, but no pattern was compiled with `re.MULTILINE`,
 so `$` meant end-of-*string*. A labelled field was scrubbed only when another
 *recognised* label followed it, or when it was the last line of the document.
 The module docstring states the rule as "it ends at the end of the line". That
@@ -20,11 +27,9 @@ the test.
 """
 from __future__ import annotations
 
-import re
 
 import pytest
 
-from mao.core import pii_scrubber
 from mao.core.pii_scrubber import scrub_pii
 
 # A discharge summary as PDF extraction actually yields it: header fields
@@ -53,11 +58,25 @@ IDENTIFIERS = [
 
 
 class TestALabelledValueStopsAtEndOfLine:
-    def test_a_pattern_is_compiled_multiline(self) -> None:
-        assert any(p.flags & re.MULTILINE for p, _ in pii_scrubber._COMPILED), (
-            "no pattern uses re.MULTILINE, so `$` in _VALUE means end-of-string "
-            "and a labelled field only scrubs when it is the last line"
-        )
+    def test_a_value_cannot_span_a_newline(self) -> None:
+        """Wave 9 replaces the mechanism this test used to assert.
+
+        It previously checked that some pattern carried `re.MULTILINE`, because
+        `_VALUE` terminated on `\\s*$` and without the flag `$` meant
+        end-of-*string*. That terminator is gone: a value is now built from
+        tokens joined by `[ \\t]+`, which cannot match a newline at all, so line
+        scope is structural rather than a property of a compiled flag.
+
+        Asserting the flag now would assert nothing — it is inert. The property
+        it protected is asserted directly instead, which is strictly stronger:
+        the old test passed as long as the flag was set, this one fails if a
+        value ever crosses a line for any reason.
+        """
+        scrubbed = scrub_pii("MRN: RGT/44219/B\nDOB: 01/01/1950")
+        assert scrubbed.count("\n") == 1, "the line structure was destroyed"
+        first, second = scrubbed.split("\n")
+        assert first == "MRN: [MRN]"
+        assert second == "DOB: [DOB]"
 
     @pytest.mark.parametrize(
         "tail",
