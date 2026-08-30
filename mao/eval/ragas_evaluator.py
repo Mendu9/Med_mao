@@ -6,6 +6,8 @@ import asyncio
 import logging
 import os
 
+from mao.core.pii_scrubber import scrub_pii
+
 logger = logging.getLogger(__name__)
 
 def _ls_traceable(fn):
@@ -41,7 +43,7 @@ async def score_response(
     Score a RAG response with RAGAS metrics.
 
     Args:
-        question:    The user's original question.
+        question:    The clinician's question. De-identified on entry — see below.
         answer:      The LLM-generated response.
         contexts:    List of raw chunk texts used as context (from metadata["sources"]).
         user_id:     For logging/attribution.
@@ -58,6 +60,17 @@ async def score_response(
     if not contexts:
         logger.debug("Skipping RAGAS scoring for request %s — no contexts", request_id)
         return {}
+
+    # De-identify here, not only at the call site. This parameter previously
+    # documented itself as "the user's original question", and `main.py` duly
+    # passed the raw one — reaching the SAFETY_JUDGE, a ChatGroq built outside
+    # the gateway, and a RetrainingCandidate row in Postgres that
+    # `_persist_session` explicitly refuses to write.
+    #
+    # Fixing that one call site leaves the next caller free to repeat it, so the
+    # guarantee is established where it cannot be skipped. `scrub_pii` is
+    # idempotent, so an already-scrubbed query passes through unchanged.
+    question = scrub_pii(question)
 
     try:
         scores = await asyncio.get_running_loop().run_in_executor(

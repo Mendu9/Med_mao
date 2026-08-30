@@ -205,17 +205,22 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     request_id = uuid.uuid4().hex
     start_time = time.perf_counter()
 
-    logger.info(
-        "request_id=%s user_id=%s query=%r",
-        request_id,
-        request.user_id,
-        request.query[:80],
-    )
-
     # Guardrails run BEFORE the cache is consulted. A cache lookup that precedes
     # input validation lets a request that would have been rejected be answered
     # from a previous, accepted one.
     safe_query = await apply_input_guardrails(request.query, request_id)
+
+    # Logged AFTER de-identification, not before. This call used to sit above
+    # the line computing `safe_query` and logged `request.query`, putting raw
+    # PHI in the application log on every request — an independent sink from
+    # the provider and the database, and one the M5 decision to "persist the
+    # de-identified query only" already ruled out.
+    logger.info(
+        "request_id=%s user_id=%s query=%r",
+        request_id,
+        request.user_id,
+        safe_query[:80],
+    )
 
     # Cache key folds in every input that can change the answer — history,
     # attachment content, and the model/policy/index versions (P1-4).
@@ -339,7 +344,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     if contexts:
         _task = asyncio.create_task(
             _score_response_async(
-                question=request.query,
+                question=safe_query,
                 answer=result.get("response", ""),
                 contexts=contexts,
                 user_id=request.user_id,
@@ -390,14 +395,15 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     request_id = uuid.uuid4().hex
     start_time = time.perf_counter()
 
+    safe_query = await apply_input_guardrails(request.query, request_id)
+
+    # Logged after de-identification — see the note on the /chat route.
     logger.info(
         "stream request_id=%s user_id=%s query=%r",
         request_id,
         request.user_id,
-        request.query[:80],
+        safe_query[:80],
     )
-
-    safe_query = await apply_input_guardrails(request.query, request_id)
 
     state = make_initial_state(
         user_query=safe_query,
