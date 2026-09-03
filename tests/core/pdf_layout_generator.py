@@ -34,6 +34,8 @@ clinical line, which is exactly the hole the Wave 10 CRITICAL lived in.
 from __future__ import annotations
 
 import io
+import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -66,11 +68,27 @@ ALLOWED_PLACEHOLDERS: dict[str, frozenset[str]] = {
 #: kind -> (label, value) pairs. The label vocabulary varies too: a scrubber
 #: keyed on "Patient Name" alone must not pass by accident.
 VOCABULARY: dict[str, tuple[tuple[str, str], ...]] = {
+    # Wave 11 round 2. The layouts stopped being the implementer's choice, but
+    # the NAMES did not, and both reviewers went straight through that gap: the
+    # matcher was ASCII-only and capped at five tokens, so an accented, CJK,
+    # Cyrillic or six-token name leaked ENTIRELY from a layout that was
+    # otherwise handled. A name corpus that is all Anglophone and all two tokens
+    # tests one name, not names.
     "NAME": (
         ("Patient Name", "Harold Nkemdirim"),
         ("Name", "Jonathan Aldred-Whitmore"),
         ("Next of Kin", "Margaret Aldred-Whitmore"),
         ("Consultant", "Priya Venkataraman"),
+        ("Surname", "Okonkwo-Achebe"),
+        ("Forename", "Chidinma"),
+        ("Patient Name", "José Muñoz"),
+        ("Name", "Jürgen Müller"),
+        ("Patient Name", "Maria Del Carmen Gonzalez Rodriguez Perez"),
+        ("Name", "MACDONALD, Fiona"),
+        ("Patient Name", "Ольга Петрова"),
+        ("Name", "張偉玲"),
+        ("Consultant", "Dr Ngozi O. Eze-Uzomaka"),
+        ("Family Name", "van der Grinten"),
     ),
     "MRN": (
         ("MRN", "RGT/44219/B"),
@@ -122,6 +140,13 @@ FIELD_SETS: dict[str, tuple[str, ...]] = {
 # capitalised headings, an ALL-CAPS finding, a name-shaped drug, and the
 # bradycardia line whose deletion is a contraindication for the drug the model
 # is being asked about.
+#
+# Wave 11 round 2: the second half of this corpus is the shape that defeated the
+# first round. A Titlecase clinical NOUN PHRASE is the same shape as a person's
+# name, and a stop-list of clinical words is a losing game against it — the
+# adversarial review destroyed 46 of 60 such phrases. Several of these are
+# cardiac contraindications to the drug this system advises on, so deleting one
+# is a patient-safety event, not a cosmetic defect.
 CLINICAL_CORPUS: tuple[str, ...] = (
     "Current medications",
     "Warfarin INR 2.4",
@@ -135,6 +160,22 @@ CLINICAL_CORPUS: tuple[str, ...] = (
     "Scheltens scale 3",
     "Amyloid PET positive",
     "Alzheimer disease probable",
+    "Peptic Ulcer Bleeding",
+    "Clock Drawing Test",
+    "Sick Sinus Syndrome",
+    "Complete Heart Block",
+    "Lasting Power of Attorney",
+    "Mild Cognitive Impairment",
+    "Prolonged QTc 520 ms",
+    "Verbal Fluency Category",
+    "Trail Making Part B",
+    "Geriatric Depression Scale",
+    "Activities of Daily Living",
+    "Carer Strain Index",
+    "Frontal Assessment Battery",
+    "Posterior Cortical Atrophy",
+    "Normal Pressure Hydrocephalus",
+    "Vitamin B12 Folate Thyroid",
 )
 
 _SEPARATORS: dict[str, str] = {
@@ -147,6 +188,37 @@ _SEPARATORS: dict[str, str] = {
 }
 #: Separators reportlab's Helvetica cannot draw. Rendered with a CID font.
 _NEEDS_CID = frozenset({"fullwidth_colon"})
+
+#: How the extracted text reaches `scrub_pii`.
+#:
+#: pypdf always emits `\n`, so the first round's generator could only ever
+#: produce `\n` — and CRLF turned out to disable the entire labelled path,
+#: because `_SEPARATORS` omitted `\r` and every whole-line match failed on the
+#: trailing carriage return. That is not a hypothetical transport: `/chat`
+#: accepts `ChatRequest.query` straight from an HTTP client with no newline
+#: normalisation, a clinician pastes CRLF from Word, and a UTF-8 BOM survives
+#: `str.strip()` because U+FEFF is not whitespace.
+#:
+#: So the document is rendered once and re-terminated, which models the same
+#: document arriving over a different transport.
+TRANSPORTS: tuple[str, ...] = ("lf", "crlf", "cr", "bom")
+
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def split_lines(text: str) -> list[str]:
+    """Split on any line terminator. `str.split('\\n')` is not enough."""
+    return _LINE_BREAK.split(text)
+
+
+def _apply_transport(text: str, transport: str) -> str:
+    if transport == "crlf":
+        return text.replace("\n", "\r\n")
+    if transport == "cr":
+        return text.replace("\n", "\r")
+    if transport == "bom":
+        return "﻿" + text
+    return text
 
 
 @dataclass(frozen=True)
@@ -168,12 +240,13 @@ class Layout:
     orphans: int
     clinical: str
     field_set: str
+    transport: str
 
     @property
     def name(self) -> str:
         return (
             f"{self.field_set}-{self.columns}-{self.separator}-{self.order}"
-            f"-orphan{self.orphans}-clinical_{self.clinical}"
+            f"-orphan{self.orphans}-clinical_{self.clinical}-{self.transport}"
         )
 
 
@@ -205,6 +278,42 @@ class Document:
     @property
     def id(self) -> str:
         return self.layout.name
+
+
+def _unicode_font() -> str | None:
+    """Register a TTF with Cyrillic/Latin-Extended coverage, if one exists.
+
+    Helvetica is Latin-1 only and the CID font is CJK only, so without this a
+    Cyrillic name silently fails to render, drops out of the ground truth, and
+    the coverage it was added for becomes fake rather than failing loudly.
+    """
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    for candidate in (
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/Library/Fonts/Arial.ttf",
+    ):
+        if os.path.exists(candidate):
+            try:
+                pdfmetrics.registerFont(TTFont("MaoUnicode", candidate))
+                return "MaoUnicode"
+            except Exception:  # pragma: no cover - font-specific
+                continue
+    return None
+
+
+def _font_for(texts: list[str], separator: str) -> str:
+    """The narrowest font that can actually draw everything in the document."""
+    blob = "".join(texts)
+    if separator in _NEEDS_CID or any(ord(ch) > 0x2FFF for ch in blob):
+        pdfmetrics.registerFont(UnicodeCIDFont("HeiseiMin-W3"))
+        return "HeiseiMin-W3"
+    if any(ord(ch) > 0xFF for ch in blob):
+        return _unicode_font() or "Helvetica"
+    return "Helvetica"
 
 
 def _render(lines_at: list[tuple[float, float, str]], font: str) -> str:
@@ -400,13 +509,11 @@ def _build(layout: Layout, index: int) -> Document | None:
     used = {field.label for field in fields}
     orphans = tuple(label for label in orphans if label not in used)
 
-    font = "Helvetica"
-    if layout.separator in _NEEDS_CID:
-        pdfmetrics.registerFont(UnicodeCIDFont("HeiseiMin-W3"))
-        font = "HeiseiMin-W3"
+    placements = _draw(layout, fields, orphans, clinical)
+    font = _font_for([text for _, _, text in placements], layout.separator)
 
-    extracted = _render(_draw(layout, fields, orphans, clinical), font)
-    lines = extracted.split("\n")
+    extracted = _apply_transport(_render(placements, font), layout.transport)
+    lines = split_lines(extracted)
 
     placed: list[tuple[Field, int]] = []
     identifiers: list[str] = []
@@ -464,14 +571,16 @@ def layouts() -> Iterator[Layout]:
                 for order in ("label_first", "value_first"):
                     for orphans in (0, 1, 2):
                         for clinical in ("after", "before", "interleaved"):
-                            yield Layout(
-                                separator=separator,
-                                order=order,
-                                columns=columns,
-                                orphans=orphans,
-                                clinical=clinical,
-                                field_set=field_set,
-                            )
+                            for transport in TRANSPORTS:
+                                yield Layout(
+                                    separator=separator,
+                                    order=order,
+                                    columns=columns,
+                                    orphans=orphans,
+                                    clinical=clinical,
+                                    field_set=field_set,
+                                    transport=transport,
+                                )
 
 
 def generate() -> list[Document]:

@@ -152,12 +152,111 @@ PARTICLES: frozenset[str] = frozenset(
     {
         "van", "von", "de", "den", "der", "del", "della", "di", "da", "du",
         "la", "le", "el", "al", "bin", "ibn", "ben", "ap", "mac", "mc", "st",
-        "ter", "ten", "op", "of",
+        "ter", "ten",
     }
 )
+# "of" and "op" are deliberately absent. A particle is positive evidence of a
+# person in `values.person_evidence`, and "of" would make `Lasting Power of
+# Attorney` and `Activities of Daily Living` look like names.
 
 #: Generational suffixes, which may end a value.
 SUFFIXES: frozenset[str] = frozenset({"jr", "jnr", "sr", "snr", "ii", "iii", "iv"})
+
+# --- The positive signal ----------------------------------------------------
+#
+# `NOT_A_NAME` is a negative signal, and a negative signal loses this argument.
+# `Peptic Ulcer Bleeding`, `Clock Drawing Test`, `Sick Sinus Syndrome` and
+# `Lasting Power of Attorney` are the same SHAPE as `Harold Nkemdirim`, and the
+# adversarial review destroyed 46 of 60 such phrases by pairing them with an
+# orphan `Patient Name:` label. Enumerating clinical English is not a project
+# that finishes.
+#
+# Given names are a much smaller and much more stable set than clinical
+# vocabulary, so the discriminator is inverted: a bare line is accepted as a
+# person ONLY on positive evidence — a title, a name particle, a non-Latin
+# script, a given name from this list, or (in `layout`) proof that the document
+# is a form with other fields that paired correctly.
+#
+# This list is not exhaustive and cannot be. Its gaps are covered by the form
+# evidence, and what remains is recorded as a residual in the phase report.
+GIVEN_NAMES: frozenset[str] = frozenset(
+    {
+        # Anglophone
+        "james", "john", "robert", "michael", "william", "david", "richard",
+        "joseph", "thomas", "charles", "christopher", "daniel", "matthew",
+        "anthony", "donald", "mark", "paul", "steven", "andrew", "kenneth",
+        "george", "joshua", "kevin", "brian", "edward", "ronald", "timothy",
+        "jason", "jeffrey", "ryan", "jacob", "gary", "nicholas", "eric",
+        "stephen", "jonathan", "larry", "justin", "scott", "brandon", "frank",
+        "benjamin", "gregory", "samuel", "raymond", "patrick", "alexander",
+        "jack", "dennis", "jerry", "tyler", "aaron", "henry", "douglas",
+        "peter", "adam", "nathan", "zachary", "walter", "harold", "kyle",
+        "carl", "arthur", "gerald", "roger", "keith", "jeremy", "terry",
+        "lawrence", "sean", "albert", "joe", "ethan", "austin", "harry",
+        "colin", "graham", "malcolm", "nigel", "trevor", "clive", "derek",
+        "alan", "barry", "roy", "stanley", "leonard", "norman",
+        "mary", "patricia", "jennifer", "linda", "elizabeth", "barbara",
+        "susan", "jessica", "sarah", "karen", "nancy", "lisa", "betty",
+        "margaret", "sandra", "ashley", "dorothy", "kimberly", "emily",
+        "donna", "michelle", "carol", "amanda", "melissa", "deborah",
+        "stephanie", "rebecca", "sharon", "laura", "cynthia", "amy",
+        "kathleen", "angela", "shirley", "anna", "brenda", "pamela", "nicole",
+        "ruth", "katherine", "samantha", "christine", "catherine", "virginia",
+        "debra", "rachel", "janet", "emma", "carolyn", "maria", "heather",
+        "diane", "julie", "joyce", "victoria", "kelly", "christina", "joan",
+        "evelyn", "judith", "megan", "alice", "julia", "sophie", "olivia",
+        "charlotte", "amelia", "isla", "ava", "grace", "freya", "florence",
+        "fiona", "eileen", "maureen", "sheila", "gladys", "edith", "hilda",
+        # Irish / Scottish / Welsh
+        "aoife", "siobhan", "niamh", "sinead", "eoin", "cian", "declan",
+        "seamus", "padraig", "ciara", "roisin", "hamish", "iain", "eilidh",
+        "rhys", "dylan", "gareth", "owain", "carys", "bronwen",
+        # Southern and Eastern Europe
+        "jose", "juan", "carlos", "miguel", "antonio", "francisco", "manuel",
+        "pedro", "javier", "sergio", "raul", "alberto", "carmen", "isabel",
+        "pilar", "lucia", "elena", "rosa", "marta", "cristina", "beatriz",
+        "giuseppe", "giovanni", "marco", "luca", "matteo", "francesca",
+        "chiara", "giulia", "valentina", "alessandro", "lorenzo", "stefano",
+        "joao", "ana", "sofia", "ines", "rui", "tiago",
+        "hans", "klaus", "jurgen", "wolfgang", "helmut", "dieter", "gerhard",
+        "ingrid", "ursula", "heidi", "monika", "petra", "sabine", "birgit",
+        "pierre", "jacques", "michel", "philippe", "sylvie", "nathalie",
+        "chantal", "monique", "genevieve", "olga", "irina", "svetlana",
+        "natalia", "tatiana", "ekaterina", "dmitri", "vladimir", "sergei",
+        "andrei", "mikhail", "nikolai", "aleksandr", "yelena", "anastasia",
+        "piotr", "jakub", "agnieszka", "katarzyna", "malgorzata", "zofia",
+        "ivan", "milos", "jelena", "dragan", "vesna", "nikos", "dimitris",
+        "eleni", "yiannis",
+        # South Asia
+        "priya", "anjali", "deepa", "kavita", "meera", "sunita", "pooja",
+        "neha", "shreya", "ananya", "aditya", "rahul", "vikram", "arjun",
+        "sanjay", "rajesh", "amit", "suresh", "ramesh", "anil", "vijay",
+        "ravi", "krishna", "lakshmi", "sita", "gita", "asha", "usha",
+        "mohammed", "muhammad", "ahmed", "ali", "hassan", "hussain", "omar",
+        "yusuf", "ibrahim", "khalid", "tariq", "imran", "bilal", "farhan",
+        "fatima", "aisha", "zainab", "khadija", "amina", "sana", "hira",
+        "nadia", "yasmin", "leila", "noor", "rania", "samira",
+        # East and Southeast Asia
+        "wei", "jing", "yan", "min", "hui", "ling", "mei", "xiu", "fang",
+        "chen", "liang", "jun", "hao", "lei", "ming", "tao", "feng",
+        "hiroshi", "takashi", "kenji", "yuki", "akira", "haruto", "sakura",
+        "yuna", "minjun", "seoyeon", "jihoon", "jiwoo", "hyun", "sung",
+        "nguyen", "linh", "trang", "huong", "thanh", "duc", "hoang",
+        # Africa and the diaspora
+        "chidinma", "chinelo", "ngozi", "adaeze", "amara", "ifeoma", "obiageli",
+        "chukwuemeka", "emeka", "obinna", "ikechukwu", "nnamdi", "chibuzo",
+        "kwame", "kofi", "yaw", "abena", "akosua", "ama", "afua",
+        "thabo", "sipho", "nomsa", "zanele", "lerato", "bongani", "themba",
+        "fatou", "aminata", "mariama", "ousmane", "moussa", "ibrahima",
+        # Hebrew / Jewish
+        "moshe", "avraham", "yitzhak", "yaakov", "shmuel", "chaim", "dovid",
+        "rivka", "leah", "esther", "miriam", "chana",
+        # Nordic
+        "lars", "erik", "sven", "olav", "bjorn", "magnus", "anders", "nils",
+        "astrid", "sigrid", "helga", "kari", "solveig", "annika",
+    }
+)
+
 
 
 def _alternation(words: frozenset[str] | set[str]) -> str:

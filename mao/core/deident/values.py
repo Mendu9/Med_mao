@@ -28,9 +28,18 @@ Every grammar is bounded by construction:
 from __future__ import annotations
 
 import re
+import unicodedata
 
-from .fields import ANY_LABEL, IMPROVISED_LABEL, FieldType
-from .lexicon import NOT_A_NAME_RE, PARTICLES_RE, SUFFIXES_RE, TITLES_RE
+from .fields import ANY_LABEL, IMPROVISED_LABEL, FieldType, type_of
+from .lexicon import (
+    GIVEN_NAMES,
+    NOT_A_NAME,
+    NOT_A_NAME_RE,
+    PARTICLES,
+    SUFFIXES,
+    TITLES,
+)
+from .text import INVISIBLE
 
 # --- token-level building blocks -------------------------------------------
 
@@ -49,34 +58,146 @@ _NOT_CLINICAL = rf"(?!(?i:{NOT_A_NAME_RE})(?![A-Za-z]))"
 #: `A.` in `John A. Smith`. Matched before the clinical check, because a single
 #: capital read case-insensitively is the article "a" and would truncate the
 #: value, leaving the surname in the clear.
-_INITIAL = r"[A-Z]\."
-#: Titlecase, ALL-CAPS or internally hyphenated/apostrophised. Two characters
-#: minimum, so a bare capital is only ever an initial.
-_NAME_SHAPE = r"[A-Z](?:['’\-]?[A-Za-z])+"
-#: The same shape typed without capitals. Admitted only on a line that carries
-#: no capital letter anywhere — see `uncapitalised` below.
-_NAME_SHAPE_ANY_CASE = r"[A-Za-z](?:['’\-]?[A-Za-z])+"
-_TITLE = rf"(?i:{TITLES_RE})\.?"
-_PARTICLE = rf"(?i:{PARTICLES_RE})(?![A-Za-z])"
-_SUFFIX = rf"(?i:{SUFFIXES_RE})\.?(?![A-Za-z])"
+#: A name word, matched by Unicode letter class rather than `[A-Za-z]`.
+#:
+#: The ASCII class was a silent, total failure for anyone outside Anglophone
+#: naming: `Patient Name: José Muñoz` produced `Patient Name: [NAME]é Muñoz` —
+#: a placeholder ASSERTING de-identification with the name still legible beside
+#: it — and Jürgen Müller, Ольга Петрова and 張偉玲 were not touched at all.
+#: `[^\W\d_]` is every Unicode letter and no digit or underscore.
+_LETTER = r"[^\W\d_]"
+# Written as `letters (punct letters)*` rather than `letter (punct letters | letter)*`:
+# the second form lets two alternatives match the same character, which is the
+# shape that backtracks catastrophically. This one is unambiguous.
+_NAME_TOKEN_RE = re.compile(rf"{_LETTER}+(?:[’'\-]{_LETTER}+)*")
+#: Whitespace, optionally after a comma: `MACDONALD, Fiona` is one name.
+_NAME_GAP_RE = re.compile(r"[ \t]*,?[ \t]+")
+
+#: Kept for the address grammar, which still needs a capitalised-word fragment.
+_NAME_WORD = rf"{_NOT_LABEL}{_NOT_CLINICAL}[A-Z](?:['’\-]?[A-Za-z])+"
+
+#: At most eight tokens. The cap is a backstop for a word the lexicon does not
+#: know; it is NOT what protects the clinician's question — the lexicon and the
+#: case rule are. A cap that is too tight is worse than none, because a name
+#: LONGER than the cap failed the whole-line match entirely and then leaked
+#: untouched: `Maria Del Carmen Gonzalez Rodriguez Perez` is six.
+_MAX_NAME_TOKENS = 8
+
+_FOLD = str.maketrans({"’": "'"})
 
 
-def _name(shape: str) -> str:
-    """A person value: at most five tokens — title, forename, initial, surname,
-    suffix.
+def _fold(word: str) -> str:
+    """Lower-case and strip accents, for gazetteer and lexicon lookup.
 
-    A title or a particle may sit INSIDE a name but may not END one, so
-    `Consultant: Dr` names nobody and emits no placeholder.
+    `Jürgen` must find `jurgen` and `José` must find `jose`, or the positive
+    signal misses exactly the names the ASCII matcher already missed.
     """
-    word = rf"{_NOT_LABEL}{_NOT_CLINICAL}{shape}"
-    inner = rf"(?:{_INITIAL}|{_TITLE}|{_PARTICLE}|{_SUFFIX}|{word})"
-    final = rf"(?:{_INITIAL}|{_SUFFIX}|{word})"
-    return rf"(?:{inner}{_JOIN}){{0,4}}{final}"
+    plain = unicodedata.normalize("NFKD", word.translate(_FOLD).lower())
+    return "".join(ch for ch in plain if not unicodedata.combining(ch))
 
 
-_NAME_WORD = rf"{_NOT_LABEL}{_NOT_CLINICAL}{_NAME_SHAPE}"
-NAME = _name(_NAME_SHAPE)
-NAME_ANY_CASE = _name(_NAME_SHAPE_ANY_CASE)
+def _parts(word: str) -> list[str]:
+    """A token and its hyphen/apostrophe components: `Trail-Making` is clinical
+    because `trail` is, and `Aldred-Whitmore` is not because neither part is."""
+    folded = _fold(word)
+    return [folded, *re.split(r"[-']", folded)]
+
+
+def _token_kind(token: str, *, any_case: bool) -> str | None:
+    """What role this token can play in a person's name, or None if it cannot."""
+    folded = _fold(token)
+    if folded in TITLES:
+        return "title"
+    if folded in PARTICLES:
+        return "particle"
+    if folded in SUFFIXES:
+        return "suffix"
+    if any(part in NOT_A_NAME for part in _parts(token) if part):
+        return None
+    if type_of(token) is not None:  # the next field's label ends this value
+        return None
+    if len(token) < 2:
+        return None
+    # A lower-case token is prose, except on a line typed without any capitals.
+    if token.islower() and not any_case:
+        return None
+    return "word"
+
+
+def _has_non_latin(token: str) -> bool:
+    """Cyrillic, Greek, Han, Arabic, Devanagari and beyond.
+
+    Clinical English does not contain these, so a token that does is a name in
+    a script the gazetteer cannot be expected to enumerate.
+    """
+    return any(ord(character) > 0x036F for character in token)
+
+
+def name_tokens(
+    line: str, start: int, *, any_case: bool = False
+) -> list[tuple[str, int, int]]:
+    """The (kind, start, end) of each token of a person value from `start`."""
+    tokens: list[tuple[str, int, int]] = []
+    position = start
+    while len(tokens) < _MAX_NAME_TOKENS:
+        match = _NAME_TOKEN_RE.match(line, position)
+        if match is None:
+            break
+        token = match.group()
+        end = match.end()
+        # `A.` and `Dr.` keep their period; `Smith.` does not — that period ends
+        # a sentence, and swallowing it would delete punctuation the clinician
+        # wrote and let the value run into the next one.
+        followed_by_dot = end < len(line) and line[end] == "."
+        if len(token) == 1 and followed_by_dot:
+            # An initial is settled by its period, BEFORE any word test. A bare
+            # capital fails the two-character minimum and reads case-insensitively
+            # as the article "a", so testing it as a word truncated the value:
+            # `Consultant: Prof A. Raman` stopped at `Prof` and left the surname
+            # in the clear.
+            kind = "initial"
+            end += 1
+        else:
+            word_kind = _token_kind(token, any_case=any_case)
+            if word_kind is None:
+                break
+            kind = word_kind
+            if followed_by_dot and kind in ("title", "suffix"):
+                end += 1
+        tokens.append((kind, match.start(), end))
+        position = end
+        if followed_by_dot and end == match.end():
+            break  # a sentence ended here
+        gap = _NAME_GAP_RE.match(line, position)
+        if gap is None:
+            break
+        position = gap.end()
+    # A title or a particle may sit INSIDE a name but may not END one, so
+    # `Consultant: Dr` names nobody and emits no placeholder.
+    while tokens and tokens[-1][0] in ("title", "particle"):
+        tokens.pop()
+    return tokens
+
+
+def person_evidence(line: str, tokens: list[tuple[str, int, int]]) -> bool:
+    """Positive evidence that this span is a PERSON and not a clinical phrase.
+
+    Shape cannot separate `Harold Nkemdirim` from `Peptic Ulcer Bleeding`, and a
+    stop-list of clinical words loses: the adversarial review destroyed 46 of 60
+    real clinical phrases that way, including three cardiac contraindications to
+    the drug this system advises on. So the burden is inverted — a bare line is
+    a person only on evidence, and the absence of evidence means "leave it
+    alone", which is the safe direction for clinical content.
+    """
+    for kind, start, end in tokens:
+        if kind in ("title", "particle", "initial", "suffix"):
+            return True
+        word = line[start:end]
+        if _fold(word) in GIVEN_NAMES:
+            return True
+        if _has_non_latin(word):
+            return True
+    return False
 
 # --- dates ------------------------------------------------------------------
 _MONTHS = (
@@ -135,8 +256,11 @@ _HOUSE = r"(?:(?i:flat|apt|apartment|unit|suite)[ \t]*\d{1,4}[A-Za-z]?[, \t]+)?"
 _ADDRESS_WORD = rf"(?:{_NAME_WORD}|\d{{1,5}}[A-Za-z]?)"
 ADDRESS = rf"{_HOUSE}\d{{1,5}}[A-Za-z]?(?:{_JOIN}{_ADDRESS_WORD}){{1,5}}"
 
+#: NAME is deliberately ABSENT: it is matched by `name_tokens`, not by a regex.
+#: A regex cannot express "a Unicode letter run that is not lower-case unless
+#: the whole line is", cannot be asked whether a span carries positive person
+#: evidence, and failed open when a name exceeded its token cap.
 _GRAMMARS: dict[FieldType, str] = {
-    FieldType.NAME: NAME,
     FieldType.MRN: MRN,
     FieldType.NHS: NHS,
     FieldType.ACCOUNT: ACCOUNT,
@@ -151,11 +275,6 @@ _GRAMMARS: dict[FieldType, str] = {
 #: Anchored at a position — used for `label: value` on one line.
 _AT: dict[FieldType, re.Pattern[str]] = {
     field_type: re.compile(grammar) for field_type, grammar in _GRAMMARS.items()
-}
-#: The same, for a line typed entirely without capitals.
-_AT_ANY_CASE: dict[FieldType, re.Pattern[str]] = {
-    **_AT,
-    FieldType.NAME: re.compile(NAME_ANY_CASE),
 }
 #: The whole of a line — used to pair an orphan label with a column cell. The
 #: WHOLE line must parse as a value of the label's own type, which is what stops
@@ -182,7 +301,10 @@ def value_at(
     field_type: FieldType, line: str, position: int, *, any_case: bool = False
 ) -> tuple[int, int] | None:
     """The span of a value of `field_type` starting exactly at `position`."""
-    pattern = (_AT_ANY_CASE if any_case else _AT).get(field_type)
+    if field_type is FieldType.NAME:
+        tokens = name_tokens(line, position, any_case=any_case)
+        return (tokens[0][1], tokens[-1][2]) if tokens else None
+    pattern = _AT.get(field_type)
     if pattern is None:
         return None
     match = pattern.match(line, position)
@@ -191,19 +313,51 @@ def value_at(
     return match.start(), match.end()
 
 
-def whole_value(field_type: FieldType, line: str) -> tuple[int, int] | None:
-    """The span of `line` when the entire line is one value of `field_type`."""
-    pattern = _WHOLE.get(field_type)
-    if pattern is None:
-        return None
-    match = pattern.fullmatch(line)
-    if match is None:
-        return None
-    stripped = line.strip(" \t")
+def longest_value_at(
+    field_type: FieldType, line: str, position: int, *, any_case: bool = False
+) -> tuple[int, int] | None:
+    """`value_at`, extended to the longest span any MORE SPECIFIC type accepts.
+
+    `MRN: 943 476 5919` produced `MRN: [MRN] 476 5919` — the generic record-code
+    grammar matched only the first group, and the partial redaction then
+    destroyed the very shape the free-text NHS rule needed to catch the rest. A
+    placeholder that covers part of an identifier is the worst of both
+    directions: the number still leaks and the output claims it did not.
+    """
+    best = value_at(field_type, line, position, any_case=any_case)
+    for candidate in _SPECIFICITY:
+        if _equivalent(candidate, field_type):
+            break
+        span = value_at(candidate, line, position, any_case=any_case)
+        if span is not None and (best is None or span[1] > best[1]):
+            best = span
+    return best
+
+
+def _content_span(line: str) -> tuple[int, int] | None:
+    """The line minus surrounding whitespace and invisible characters."""
+    stripped = line.strip(" \t" + INVISIBLE)
     if not stripped:
         return None
     start = line.index(stripped)
     return start, start + len(stripped)
+
+
+def whole_value(field_type: FieldType, line: str) -> tuple[int, int] | None:
+    """The span of `line` when the entire line is one value of `field_type`."""
+    content = _content_span(line)
+    if content is None:
+        return None
+    start, end = content
+    if field_type is FieldType.NAME:
+        tokens = name_tokens(line, start)
+        if not tokens or tokens[-1][2] != end or tokens[0][1] != start:
+            return None
+        return content
+    pattern = _WHOLE.get(field_type)
+    if pattern is None or pattern.fullmatch(line[start:end]) is None:
+        return None
+    return content
 
 
 # Most specific first. Where two grammars can both accept one string, the more

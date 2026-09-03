@@ -61,6 +61,23 @@ _LABELS: tuple[tuple[str, FieldType], ...] = (
     (r"father", FieldType.NAME),
     (r"spouse", FieldType.NAME),
     (r"partner", FieldType.NAME),
+    # The NHS Data Dictionary spellings. Their absence was a CRITICAL: a
+    # `Surname:` / `Forename:` header is the canonical UK patient banner, and
+    # nothing matched it, so the full name leaked from a layout that was
+    # otherwise handled. A fixed list of labels remains a fixed list; what
+    # bounds the damage is that an unrecognised label produces no placeholder
+    # rather than a wrong one.
+    (r"family\s+name", FieldType.NAME),
+    (r"given\s+name", FieldType.NAME),
+    (r"first\s+name", FieldType.NAME),
+    (r"last\s+name", FieldType.NAME),
+    (r"middle\s+name", FieldType.NAME),
+    (r"maiden\s+name", FieldType.NAME),
+    (r"preferred\s+name", FieldType.NAME),
+    (r"full\s+name", FieldType.NAME),
+    (r"known\s+as", FieldType.NAME),
+    (r"surname", FieldType.NAME),
+    (r"forename", FieldType.NAME),
     (r"name", FieldType.NAME),
     (r"patient", FieldType.NAME),
     # --- record numbers ---
@@ -121,6 +138,31 @@ ANY_LABEL: str = "(?:" + "|".join(spelling for spelling, _ in _BY_LENGTH) + ")"
 #: value must still stop at one, or `Name: John Smith Weight: 78kg` puts the
 #: weight inside the name.
 IMPROVISED_LABEL: str = r"[A-Za-z][A-Za-z0-9'\-]*[ \t]*:"
+
+# Person labels that are ALSO ordinary clinical nouns.
+#
+# `Carer Strain Index` is a validated instrument; `Carer` is a person label; so
+# a colon-less match read the instrument's name as the carer's and produced
+# `Carer [NAME]`, deleting the score's name from the report. The same holds for
+# `Patient` ("Patient reported..."), `Guardian`, `Partner`, `Mother`.
+#
+# The distinction is not cosmetic: `Surname`, `Next of Kin` and `Patient Name`
+# occur in running clinical prose essentially never, so a colon-less match on
+# one of those is safe. These need either explicit punctuation after the label
+# or positive evidence that what follows is a person.
+AMBIGUOUS_PERSON_LABELS: frozenset[str] = frozenset(
+    {
+        "patient", "carer", "caregiver", "guardian", "partner", "spouse",
+        "mother", "father", "doctor", "surgeon", "physician", "clinician",
+        "informant", "attending", "gp",
+    }
+)
+
+
+def is_ambiguous_person_label(label: str) -> bool:
+    """Whether this label spelling is also an ordinary clinical word."""
+    return " ".join(label.split()).lower() in AMBIGUOUS_PERSON_LABELS
+
 
 _LABEL_RE = re.compile(rf"(?<![A-Za-z0-9]){ANY_LABEL}(?![A-Za-z0-9])", re.IGNORECASE)
 _TYPE_OF = tuple(

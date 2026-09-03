@@ -34,10 +34,17 @@ import pytest
 
 from mao.core.pii_scrubber import scrub_pii
 
-from .pdf_layout_generator import ALLOWED_PLACEHOLDERS, Document, generate
+from .pdf_layout_generator import (
+    ALLOWED_PLACEHOLDERS,
+    CLINICAL_CORPUS,
+    VOCABULARY,
+    Document,
+    generate,
+    split_lines,
+)
 
-#: Rendered once for the whole module: 540 documents cost ~2.5s to generate and
-#: nothing about them varies per test.
+#: Rendered once for the whole module: nothing about the documents varies per
+#: test, and generating them dominates the cost.
 DOCUMENTS: list[Document] = generate()
 
 _PLACEHOLDER = re.compile(r"\[([A-Z_]+)\]")
@@ -48,17 +55,31 @@ def _ids(documents: list[Document]) -> list[str]:
 
 
 def _lines(text: str) -> list[str]:
-    return text.split("\n")
+    """Split on ANY line terminator.
+
+    `text.split("\\n")` is what the first round used, and CRLF turned out to
+    disable the whole labelled path — a test that cannot see `\\r` cannot see
+    that defect either.
+    """
+    return split_lines(text)
 
 
 class TestTheGeneratorItself:
     """A fuzzer that generates nothing proves nothing."""
 
     def test_it_produces_a_broad_population(self) -> None:
-        assert len(DOCUMENTS) > 400, f"only {len(DOCUMENTS)} layouts generated"
+        assert len(DOCUMENTS) > 2000, f"only {len(DOCUMENTS)} layouts generated"
 
     def test_every_axis_is_actually_exercised(self) -> None:
-        for axis in ("separator", "order", "columns", "orphans", "clinical", "field_set"):
+        for axis in (
+            "separator",
+            "order",
+            "columns",
+            "orphans",
+            "clinical",
+            "field_set",
+            "transport",
+        ):
             values = {getattr(document.layout, axis) for document in DOCUMENTS}
             assert len(values) > 1, f"axis {axis} collapsed to {values}"
 
@@ -69,6 +90,26 @@ class TestTheGeneratorItself:
     def test_every_document_carries_a_live_identifier(self) -> None:
         for document in DOCUMENTS:
             assert document.identifiers, document.id
+
+    def test_every_name_in_the_corpus_actually_renders(self) -> None:
+        """Round 2. Non-ASCII names were added because the matcher was
+        ASCII-only — but Helvetica cannot draw them, so an unrenderable name
+        would silently drop out of the ground truth and the coverage it was
+        added for would be fake instead of failing."""
+        placed = {field.value for document in DOCUMENTS for field, _ in document.placed}
+        missing = [value for _, value in VOCABULARY["NAME"] if value not in placed]
+        assert not missing, f"these names never survived extraction: {missing}"
+
+    def test_the_clinical_corpus_includes_titlecase_noun_phrases(self) -> None:
+        """A Titlecase clinical noun phrase is the same SHAPE as a person's
+        name, and is the case a stop-list of clinical words loses against."""
+        titlecase = [
+            line
+            for line in CLINICAL_CORPUS
+            if len(line.split()) >= 2
+            and all(word[:1].isupper() for word in line.split()[:2])
+        ]
+        assert len(titlecase) >= 10, f"only {len(titlecase)} such phrases"
 
 
 class TestNoRawIdentifierSurvives:

@@ -61,6 +61,7 @@ import unicodedata
 
 from mao.core.deident.freetext import redact_by_shape
 from mao.core.deident.layout import redact_labelled_fields
+from mao.core.deident.text import strip_leading_bom
 
 __all__ = ["scrub_pii"]
 
@@ -70,11 +71,18 @@ def scrub_pii(text: str) -> str:
 
     Placeholders keep the field's *shape* so the model can still tell that a
     patient name or record number was present without learning whose. The line
-    structure of the input is preserved exactly: no line is joined, split or
-    removed, so nothing the clinician wrote can disappear on this path.
+    structure of the input is preserved exactly — every terminator, CRLF
+    included — so nothing the clinician wrote can disappear on this path.
+
+    A leading byte-order mark is detached and restored rather than removed. It
+    is not whitespace to `str.strip()`, so left in place it made the first line
+    unrecognisable as a label line and disabled the labelled path for the whole
+    document; but it is not an identifier either, and the invariant is that the
+    output differs from the input ONLY where an identifier was removed.
     """
     if not text:
         return text
+    bom, text = strip_leading_bom(text)
     text = unicodedata.normalize("NFKC", text)
     text = redact_labelled_fields(text)
-    return redact_by_shape(text)
+    return bom + redact_by_shape(text)
