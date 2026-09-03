@@ -207,6 +207,10 @@ class TestTheSupervisionCallSites:
 
     Importing `_ROLE` alongside `_MAX_TOKENS` means the probe cannot drift from
     the call site again: moving a supervisor to another role moves its probe.
+
+    Wave 11 / NB4: this was the only class in the file not wrapped in `_probe`,
+    so a daily-quota error here FAILED the run instead of skipping it, and a
+    provider ceiling would have been reported as a call-site defect.
     """
 
     def test_the_domain_supervisor_returns_parseable_json(self) -> None:
@@ -216,11 +220,13 @@ class TestTheSupervisionCallSites:
             _parse_ungrounded_claims,
         )
 
-        raw = _complete(
-            _ROLE,
-            "domain_supervisor.reconcile",
-            f"RAG CHUNKS:\n{PREMISE}\nDRAFT ANSWER:\n{ANSWER}",
-            _MAX_TOKENS,
+        raw = _probe(
+            lambda: _complete(
+                _ROLE,
+                "domain_supervisor.reconcile",
+                f"RAG CHUNKS:\n{PREMISE}\nDRAFT ANSWER:\n{ANSWER}",
+                _MAX_TOKENS,
+            )
         )
         assert raw.strip(), (
             f"empty completion at role={_ROLE.value} max_tokens={_MAX_TOKENS}"
@@ -231,11 +237,13 @@ class TestTheSupervisionCallSites:
     def test_the_senior_supervisor_returns_parseable_json(self) -> None:
         from mao.agents.senior_supervisor import _MAX_TOKENS, _ROLE, _parse_missing
 
-        raw = _complete(
-            _ROLE,
-            "senior_supervisor.completeness",
-            f'SUB-QUESTIONS:\n["what does donepezil do?"]\n\nANSWER:\n{ANSWER}',
-            _MAX_TOKENS,
+        raw = _probe(
+            lambda: _complete(
+                _ROLE,
+                "senior_supervisor.completeness",
+                f'SUB-QUESTIONS:\n["what does donepezil do?"]\n\nANSWER:\n{ANSWER}',
+                _MAX_TOKENS,
+            )
         )
         assert raw.strip(), (
             f"empty completion at role={_ROLE.value} max_tokens={_MAX_TOKENS}"

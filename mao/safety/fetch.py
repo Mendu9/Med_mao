@@ -18,9 +18,27 @@ addresses.
 
 The DNS resolution is the load-bearing part. Checking the literal hostname
 would pass `http://internal.example.com` that resolves to 10.0.0.5, and would
-pass every public DNS name an attacker points at a private address. The bytes
-are fetched from the address that was checked, so name resolution cannot be
-raced between the check and the request.
+pass every public DNS name an attacker points at a private address.
+
+## Known residual: a DNS-rebinding window (NB1)
+
+This module used to claim that "name resolution cannot be raced between the
+check and the request". That was FALSE and is corrected here rather than left
+standing: `fetch_image_bytes` validates the URL and then calls
+`requests.get(url)`, which resolves the name a SECOND time. An attacker who
+controls the authoritative DNS for a name can answer the first lookup with a
+public address and the second with a private one.
+
+The window is real, and closing it properly means resolving once and connecting
+to the resolved IP while still sending the original Host header and validating
+the certificate against the original name — which is a change to how every fetch
+is made, not a change to this guard. It is recorded as NB1 against a later phase.
+
+What this guard does close, and was measured closing in 20 of 20 adversarial
+attempts, is the whole trivial class: `file://`, `gopher://`, `dict://`, literal
+`169.254.169.254`, `metadata.google.internal`, decimal/octal/hex IP encodings,
+IPv4-mapped IPv6, credentials-in-URL, every RFC1918 and CGNAT range, redirects
+to any of the above, and unbounded reads.
 """
 from __future__ import annotations
 

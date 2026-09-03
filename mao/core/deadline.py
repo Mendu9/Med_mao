@@ -2,7 +2,28 @@
 
 The rate-limit policy in `mao/core/retry.py` is right to wait: a burst limit
 clears in seconds, and a slower correct answer beats a spurious refusal for
-clinical decision support. What was missing is a ceiling on the *total*.
+clinical decision support. What was missing is a ceiling on the total time a
+request may spend WAITING TO RETRY.
+
+## What this does and does not bound (NB2 / ADV-3)
+
+It bounds the SLEEPS. It does not bound total worker hold time, and this file
+used to say it was "a ceiling on the total", which is not true and is corrected
+here rather than left standing. Measured under a 1.0s budget, `run_graph`
+returned after 6.02s in one probe and 3.00s in another, with
+`remaining_seconds()` reading 0.0 INSIDE the worker: the budget was visibly
+exhausted and the work ran to completion anyway. The deadline is consulted only
+in `with_groq_retry`'s decision to sleep; `run_in_executor` is never wrapped in
+`asyncio.wait_for`.
+
+So `REQUEST_DEADLINE_SECONDS = 180` does not mean "a request finishes within
+180 seconds". It means "a request does not SLEEP past 180 seconds". The residual
+is bounded by the provider SDK's own timeouts rather than by anything here, and
+one live clinical chain took 276s. Closing the gap needs the executor future
+wrapped in `asyncio.wait_for` and an explicit `timeout=` on the provider client;
+that is recorded as NB2 against a later phase.
+
+What this DID close is real, and is the finding it was written for:
 
 A clinical `/chat` makes seven sequential gateway calls. Each could wait up to
 `MAX_RATE_LIMIT_WAIT_SECONDS` per attempt, and only the council leg was bounded,

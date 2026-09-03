@@ -202,20 +202,81 @@ class TestTheApplicationLogNeverHoldsTheRawQuery:
     decision to "persist the de-identified query only". It is an independent
     sink: fixing the scorer call site does not close it."""
 
-    def test_the_chat_route_logs_no_raw_query(self, caplog) -> None:
+    def test_the_chat_route_logs_no_raw_query(
+        self, sdk_recorder: SdkRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wave 11 / NB5 — REWRITTEN. The old version could not fail.
+
+        It built its own `logging.getLogger("mao.api.main").info(...)` call with
+        an already-scrubbed argument and asserted no PHI in the output. That
+        asserts a property of the test, not of the route: it passed identically
+        whatever `main.py` did, including logging the raw query on the line
+        above. Mutating `safe_query[:80]` back to `request.query[:80]` left it
+        green.
+
+        The replacement POSTs to the real route. It attaches its OWN handler to
+        the root logger rather than using `caplog`, because `caplog` did not see
+        the mutated route either — a capture fixture is one more seam that can
+        be blind to the defect, which is precisely the failure mode this finding
+        is about. A plain root handler is verified to catch it: with the
+        mutation in place this test fails, and without it, it passes.
+        """
         import logging
 
-        from mao.core.pii_scrubber import scrub_pii
+        from fastapi.testclient import TestClient
 
-        with caplog.at_level(logging.INFO, logger="mao.api.main"):
-            logging.getLogger("mao.api.main").info(
-                "request_id=%s user_id=%s query=%r",
-                "req-1",
-                "phi-probe",
-                scrub_pii(QUERY_WITH_PHI)[:80],
-            )
+        from mao.agents import clinical_agent
+        from mao.api.main import app
+        from mao.memory.interface import reset_memory_store, set_memory_store
+        from mao.safety import verification
+
+        class _NoMemory:
+            def recall(self, query, user_id):
+                return ""
+
+            def remember(self, query, response, user_id):
+                return None
+
+        class _Capture(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__(level=logging.DEBUG)
+                self.messages: list[str] = []
+
+            def emit(self, record: logging.LogRecord) -> None:
+                try:
+                    self.messages.append(record.getMessage())
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+        set_memory_store(_NoMemory())
+        monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
+        monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
+        monkeypatch.setattr(verification, "check_all_claims", lambda claims, premise: [])
+
+        capture = _Capture()
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(capture)
+        root.setLevel(logging.DEBUG)
+        try:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/chat", json={"query": QUERY_WITH_PHI, "user_id": "phi-probe"}
+                )
+        finally:
+            root.removeHandler(capture)
+            root.setLevel(previous_level)
+            reset_memory_store()
+
+        assert response.status_code == 200
+        logged = "\n".join(capture.messages)
+        assert any("request_id=" in message for message in capture.messages), (
+            "the route's own request log was never captured — the probe is vacuous"
+        )
         for identifier in PHI:
-            assert identifier not in caplog.text
+            assert identifier not in logged, (
+                f"the application log holds the raw identifier {identifier!r}"
+            )
 
     @pytest.mark.parametrize("route", ["chat", "chat_stream"])
     def test_no_route_logs_the_query_before_scrubbing_it(self, route: str) -> None:
