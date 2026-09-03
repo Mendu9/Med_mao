@@ -82,8 +82,21 @@ class TestGenuineLowRiskStillWorks:
     def test_none_metadata_is_not_treated_as_an_attachment(self) -> None:
         assert resolve_risk({"risk_level": "low", "metadata": None}) is RiskLevel.LOW
 
-    def test_empty_attachment_values_do_not_escalate(self) -> None:
+    def test_an_empty_attachment_KEY_still_escalates(self) -> None:
+        """Wave 11 / NB3 — INVERTED. This asserted LOW for `{"image_b64": ""}`.
+
+        Classification was being decided by the value's truthiness, so a scan
+        whose payload was lost in serialisation resolved exactly like a request
+        that never carried one. The key is the declaration; escalating costs one
+        needless safety chain, and not escalating skips every control that
+        patient data requires.
+        """
         assert resolve_risk({"risk_level": "low", "metadata": {"image_b64": ""}}) is (
+            RiskLevel.HIGH
+        )
+
+    def test_a_harmless_key_with_an_empty_value_stays_low(self) -> None:
+        assert resolve_risk({"risk_level": "low", "metadata": {"domain": ""}}) is (
             RiskLevel.LOW
         )
 

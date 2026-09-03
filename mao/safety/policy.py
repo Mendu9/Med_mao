@@ -107,6 +107,13 @@ def has_attachment(metadata: object) -> bool:
       implies patient data and therefore HIGH risk" — but this answered from a
       fixed six-key list, so `{"dicom_b64": <scan>}` classified LOW and the
       claimed invariant was simply false. See `NON_ATTACHMENT_KEYS`.
+
+    The answer comes from the KEY alone, never from the value's truthiness.
+    `{"dicom_b64": ""}` and `{"scan_b64": 0}` used to classify LOW, which decides
+    a safety question from a serialisation accident: the key is the caller's
+    declaration that a scan is attached, and an empty value is evidence about the
+    payload, not about intent. This is the same falsy-elision defect as N2, fixed
+    in `cache_key.py` in Wave 9 and left standing here until Wave 11.
     """
     if metadata is None:
         return False
@@ -116,9 +123,7 @@ def has_attachment(metadata: object) -> bool:
             type(metadata).__name__,
         )
         return True
-    return any(
-        value for key, value in metadata.items() if key not in NON_ATTACHMENT_KEYS
-    )
+    return any(key not in NON_ATTACHMENT_KEYS for key in metadata)
 
 
 @dataclass(frozen=True)

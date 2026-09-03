@@ -82,10 +82,20 @@ class TestKnownHarmlessKeysDoNotEscalate:
         state = {"intent": "evidence_qa", "metadata": {"domain": "alzheimer"}}
         assert resolve_risk(state) is not RiskLevel.HIGH
 
-    def test_an_empty_value_does_not_escalate(self) -> None:
-        """A key present but empty is not an upload."""
-        assert has_attachment({"dicom_b64": ""}) is False
-        assert has_attachment({"image_b64": None}) is False
+    def test_an_empty_value_still_escalates(self) -> None:
+        """Wave 11 / ADV-5 — INVERTED. These asserted False.
+
+        "A key present but empty is not an upload" reads reasonably and is the
+        wrong test: it makes an empty string decide a safety question. The same
+        falsy-elision defect was fixed in `cache_key.py` as N2 in Wave 9 and left
+        standing in the policy that N2's reasoning came from.
+        """
+        assert has_attachment({"dicom_b64": ""}) is True
+        assert has_attachment({"image_b64": None}) is True
+
+    def test_a_harmless_key_with_an_empty_value_does_not_escalate(self) -> None:
+        assert has_attachment({"domain": ""}) is False
+        assert has_attachment({"locale": None}) is False
 
 
 class TestThePreviouslyKnownKeysStillWork:

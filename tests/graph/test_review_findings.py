@@ -88,8 +88,29 @@ class TestH1AttachmentCoverage:
         assert has_attachment({}) is False
         assert has_attachment({"domain": "alzheimer"}) is False
 
-    def test_empty_attachment_value_does_not_count(self) -> None:
-        assert has_attachment({"image_b64": ""}) is False
+    def test_an_attachment_key_counts_whatever_its_value(self) -> None:
+        """Wave 11 / NB3 + ADV-5 — INVERTED, deliberately.
+
+        This asserted `has_attachment({"image_b64": ""}) is False`, so
+        classification was decided by the VALUE's truthiness. That is the same
+        falsy-elision defect as N2, which Wave 9 fixed in `cache_key.py` — and
+        it survived here, in the policy N2's reasoning came from.
+
+        `{"dicom_b64": 0}` and `{"scan_b64": []}` are not "no attachment"; they
+        are an attachment key whose payload did not survive whatever produced
+        the request. Answering LOW there decides a safety question from a
+        serialisation accident. The key is the declaration; the value is
+        evidence about the payload, not about intent.
+
+        Being wrong in this direction costs one needless escalation to HIGH.
+        """
+        for value in ("", 0, False, [], None):
+            assert has_attachment({"image_b64": value}) is True, value
+
+    def test_a_known_harmless_key_still_does_not_count(self) -> None:
+        """The inversion above must not escalate every ordinary request."""
+        for value in ("", 0, "alzheimer"):
+            assert has_attachment({"domain": value}) is False, value
 
     def test_has_attachment_tolerates_a_non_dict(self) -> None:
         assert has_attachment(None) is False

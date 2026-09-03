@@ -11,9 +11,12 @@ one corner of the same function. Presence is what matters for a cache key:
 "scoped to patient 0" and "not scoped at all" are different questions and may
 have different answers.
 
-Distinct from `has_attachment`, which correctly still uses truthiness: an
-attachment key with an empty value is not an upload. Different question, and
-`mao/api/cache_key.py` already explains why the two must not be conflated.
+`has_attachment` had the identical defect and kept it until Wave 11, where NB3
+and ADV-5 recorded it independently: `{"dicom_b64": ""}` classified LOW, so an
+empty string decided a safety question. It answers presence now too. The two
+questions stay separate — risk versus cache scope, and `mao/api/cache_key.py`
+explains why they must not be conflated — they just no longer disagree about
+what "present" means.
 """
 from __future__ import annotations
 

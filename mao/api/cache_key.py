@@ -95,9 +95,10 @@ class CacheKeyInputs:
         # and shared an entry with no metadata at all. "Scoped to patient 0" and
         # "not scoped" are different questions with different answers.
         #
-        # `has_attachment` deliberately still uses truthiness, because an
-        # attachment key with an empty value genuinely is not an upload. That is
-        # the risk question; this is the cache question.
+        # `has_attachment` answers presence too, since Wave 11 — the same defect
+        # was still standing in the policy this reasoning came from. The two
+        # questions remain separate (risk versus cache scope) and must not be
+        # conflated; they simply no longer disagree about what "present" means.
         present = dict(sorted(self.metadata.items()))
         if not present:
             return "none"
