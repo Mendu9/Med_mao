@@ -29,8 +29,13 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-#: Any of the three terminators, captured so it can be put back.
-_TERMINATOR = re.compile(r"\r\n|\r|\n")
+#: Every character Unicode treats as a line break, not just the three ASCII
+#: ones. `str.splitlines()` breaks on all of these, and so does a PDF viewer —
+#: but `re.split(r"\r\n|\r|\n")` did not, so a document using U+2028 LINE
+#: SEPARATOR, U+2029, VT, FF or U+0085 NEL arrived as ONE line, no label line
+#: was recognisable, and the whole labelled path was disabled exactly as CRLF
+#: had disabled it.
+_TERMINATOR = re.compile("\r\n|[\n\r\v\f  ]")
 
 #: Invisible characters that are not whitespace to Python but are not content
 #: either: BOM, zero-width space/non-joiner/joiner, word joiner, soft hyphen.

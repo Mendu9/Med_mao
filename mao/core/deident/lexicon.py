@@ -75,6 +75,11 @@ _MEDICATIONS = {
     "codeine", "paracetamol", "ibuprofen", "omeprazole", "lansoprazole",
     "prednisolone", "insulin", "gabapentin", "pregabalin", "levetiracetam",
     "lamotrigine", "sodium", "valproate", "carbamazepine", "phenytoin",
+    "anticholinergic", "cholinergic", "antipsychotic", "antidepressant",
+    "anticoagulant", "anticoagulation", "antiplatelet", "antihypertensive",
+    "antibiotic", "antiemetic", "analgesic", "sedative", "hypnotic", "diuretic",
+    "statin", "statins", "opioid", "opiate", "benzodiazepine", "ssri", "snri",
+    "inhibitor", "inhibitors", "agonist", "antagonist", "blocker", "blockers",
     "medication", "medications", "meds", "prescription", "prescribed", "dose",
     "doses", "dosage", "titrate", "titration", "tablet", "tablets", "capsule",
     "oral", "daily", "nocte", "mane", "bd", "tds", "qds", "prn", "po", "iv",
@@ -91,6 +96,12 @@ _CLINICAL = {
     "hallucination", "hallucinations", "delusion", "delusions", "insomnia",
     "incontinence", "continence", "swallowing", "dysphagia", "weight", "loss",
     "appetite", "sleep", "fatigue", "pain", "infection", "sepsis", "pneumonia",
+    "sick", "unwell", "heart", "kidney", "liver", "lung", "lungs", "brain",
+    "blood", "bone", "skin", "joint", "muscle", "nerve", "vein", "artery",
+    "bowel", "bladder", "stomach", "spine", "spinal", "complete", "partial",
+    "transient", "persistent", "intermittent", "bilateral", "unilateral",
+    "proximal", "distal", "superficial", "primary", "secondary", "benign",
+    "malignant", "active", "inactive", "mixed", "probable", "definite",
     "diabetes", "diabetic", "thyroid", "renal", "hepatic", "cardiac", "chest",
     "abdominal", "respiratory", "diagnosis", "diagnoses", "differential",
     "impression", "findings", "finding", "history", "examination", "assessment",
@@ -161,6 +172,66 @@ PARTICLES: frozenset[str] = frozenset(
 
 #: Generational suffixes, which may end a value.
 SUFFIXES: frozenset[str] = frozenset({"jr", "jnr", "sr", "snr", "ii", "iii", "iv"})
+
+# --- Clinical head nouns ----------------------------------------------------
+#
+# A clinical noun phrase has a CLINICAL HEAD. `Sick Sinus Syndrome`, `Clock
+# Drawing Test`, `Carer Strain Index`, `Chronic Kidney Disease` — the last word
+# says what kind of thing the phrase names, and a person's name never ends in
+# one of these. This is a small closed set of head nouns rather than an attempt
+# to enumerate clinical English, which is why it generalises to phrases nobody
+# listed: any `<Adjective> <Noun> Syndrome` is caught by `syndrome`.
+#
+# It is the rule that lets the person test be a REJECT test. Requiring positive
+# proof of personhood instead — a gazetteer hit — leaked 49.3% of names, because
+# a gazetteer of given names cannot be complete either. Rejecting what is
+# positively clinical and accepting the rest fails in the safe direction for
+# both invariants: an unrecognised clinical phrase is redacted (recoverable, and
+# the placeholder still tells the model a field was there), while an
+# unrecognised name is REMOVED rather than leaked.
+CLINICAL_HEADS: frozenset[str] = frozenset(
+    {
+        # what a condition is called
+        "syndrome", "disease", "disorder", "deficiency", "insufficiency",
+        "failure", "attack", "infection", "infarction", "infarct", "thrombosis",
+        "embolism", "haemorrhage", "hemorrhage", "stenosis", "sclerosis",
+        "fibrosis", "atrophy", "degeneration", "dysfunction", "impairment",
+        "injury", "lesion", "tumour", "tumor", "carcinoma", "neoplasm",
+        "palsy", "paresis", "plegia", "pathy", "itis", "osis", "aemia", "emia",
+        "bleeding", "ulcer", "oedema", "edema", "effusion", "necrosis",
+        "arrest", "block", "murmur", "fibrillation", "flutter", "tachycardia",
+        "bradycardia", "hypotension", "hypertension", "hypoxia", "sepsis",
+        # what an instrument or measurement is called
+        "test", "scale", "index", "score", "battery", "questionnaire",
+        "inventory", "assessment", "examination", "screen", "profile",
+        "grade", "stage", "category", "rating", "measure", "count", "level",
+        "ratio", "load", "burden", "status", "reserve", "threshold",
+        # what a document or process is called
+        "summary", "report", "letter", "referral", "review", "plan", "record",
+        "history", "impression", "findings", "recommendation", "discharge",
+        "admission", "consultation", "attorney", "capacity",
+        "living", "care", "package", "placement", "intake", "output",
+    }
+)
+
+
+def has_clinical_head(tokens: list[str]) -> bool:
+    """Whether this phrase ends in a word that names a clinical kind of thing.
+
+    Also matches common morphological endings, so `Encephalopathy`,
+    `Neuropathy`, `Osteoarthritis` and `Hypercalcaemia` are caught without being
+    listed: a person's surname does not end in `-itis`, `-osis` or `-aemia`.
+    """
+    if not tokens:
+        return False
+    last = tokens[-1].lower().rstrip("s")
+    if last in CLINICAL_HEADS:
+        return True
+    return any(
+        last.endswith(ending)
+        for ending in ("itis", "osis", "aemia", "emia", "pathy", "plegia", "paresis")
+    )
+
 
 # --- The positive signal ----------------------------------------------------
 #

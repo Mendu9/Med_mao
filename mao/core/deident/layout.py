@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from .fields import FieldType, find_labels, is_ambiguous_person_label, type_of
 from .text import INVISIBLE, join_lines, split_lines
 from .values import (
+    is_clinical_phrase,
     longest_value_at,
     matches_exclusively,
     name_tokens,
@@ -411,8 +412,15 @@ def _pair_in_direction(
     return paired
 
 
-#: A line that already carries a placeholder has had its value removed.
-_PLACEHOLDER = re.compile(r"\[[A-Z_]+\]")
+#: A line that already carries a placeholder of OURS has had its value removed.
+#:
+#: Matching `\[[A-Z_]+\]` matched anything in square brackets, so an editorial
+#: `[SIC]`, `[NB]` or `[X]` beside a name made the line look already-scrubbed
+#: and disabled cross-line association for it — the name AND the record number
+#: below it then leaked. Only the placeholders this module emits count.
+_PLACEHOLDER = re.compile(
+    "|".join(rf"\[{field.value}\]" for field in FieldType if field is not FieldType.STRUCTURAL)
+)
 
 
 def _is_free_cell(
@@ -483,13 +491,16 @@ def _name_is_credible(
     tokens = name_tokens(line, 0) or name_tokens(line, len(line) - len(line.lstrip()))
     if not tokens:
         return False
+    if is_clinical_phrase(line, tokens):
+        return False
     if person_evidence(line, tokens):
         return True
     if ambiguous:
-        # `Carer`, `Patient`, `Mother` are ordinary clinical words. Form
-        # evidence is not enough for one of those; only the value itself is.
-        return False
-    return near and len(tokens) <= 2 and form_evidence >= 2
+        # `Carer`, `Patient`, `Mother` are ordinary clinical words, so the label
+        # itself carries no weight. The value must look like a person, or the
+        # document must be a form and the value must be nearby and short.
+        return near and len(tokens) <= 2 and form_evidence >= 2
+    return True
 
 
 #: How far from a PERSON label a value may be found when position has broken

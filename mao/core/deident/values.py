@@ -34,6 +34,7 @@ from .fields import ANY_LABEL, IMPROVISED_LABEL, FieldType, type_of
 from .lexicon import (
     GIVEN_NAMES,
     NOT_A_NAME,
+    has_clinical_head,
     NOT_A_NAME_RE,
     PARTICLES,
     SUFFIXES,
@@ -69,7 +70,14 @@ _LETTER = r"[^\W\d_]"
 # Written as `letters (punct letters)*` rather than `letter (punct letters | letter)*`:
 # the second form lets two alternatives match the same character, which is the
 # shape that backtracks catastrophically. This one is unambiguous.
-_NAME_TOKEN_RE = re.compile(rf"{_LETTER}+(?:[’'\-]{_LETTER}+)*")
+#
+# The invisible characters are inside the token, not between tokens: a soft
+# hyphen or zero-width space survives a real reportlab -> pypdf round trip, and
+# splitting `Nkem<U+00AD>dirim` into two tokens produced `[NAME]<U+00AD>dirim` —
+# a placeholder asserting de-identification beside the still-legible surname.
+_NAME_TOKEN_RE = re.compile(
+    rf"{_LETTER}+(?:[’'\-{INVISIBLE}]{_LETTER}+)*"
+)
 #: Whitespace, optionally after a comma: `MACDONALD, Fiona` is one name.
 _NAME_GAP_RE = re.compile(r"[ \t]*,?[ \t]+")
 
@@ -92,7 +100,8 @@ def _fold(word: str) -> str:
     `Jürgen` must find `jurgen` and `José` must find `jose`, or the positive
     signal misses exactly the names the ASCII matcher already missed.
     """
-    plain = unicodedata.normalize("NFKD", word.translate(_FOLD).lower())
+    stripped = "".join(ch for ch in word if ch not in INVISIBLE)
+    plain = unicodedata.normalize("NFKD", stripped.translate(_FOLD).lower())
     return "".join(ch for ch in plain if not unicodedata.combining(ch))
 
 
@@ -177,6 +186,36 @@ def name_tokens(
     while tokens and tokens[-1][0] in ("title", "particle"):
         tokens.pop()
     return tokens
+
+
+def is_clinical_phrase(line: str, tokens: list[tuple[str, int, int]]) -> bool:
+    """Whether this span is positively a CLINICAL phrase rather than a name.
+
+    This replaces `person_evidence` as the decision for cross-line association,
+    and the inversion is the whole point. Requiring positive proof of personhood
+    — a given name in a gazetteer — leaked 49.3% of names over 186,624 generated
+    documents, because `Gordon Whitfield` and `Esme Fairhurst` are perfectly
+    ordinary names that no gazetteer of any size reliably contains. That was a
+    REGRESSION introduced by the fix for the destroy direction: the two halves
+    of the invariant traded places for the fifth time.
+
+    Asking the opposite question does not have that failure mode. A clinical
+    noun phrase is recognisable from its own vocabulary and morphology:
+
+      - any token in the clinical lexicon (`Sinus`, `Frontal`, `Geriatric`);
+      - a clinical head noun (`... Syndrome`, `... Test`, `... Index`), which
+        generalises to phrases nobody enumerated;
+      - a morphological ending (`-itis`, `-osis`, `-aemia`, `-pathy`).
+
+    A name that matches none of those is redacted, which is the safe direction:
+    an unrecognised clinical phrase becomes a placeholder that still tells the
+    model a field was present, while an unrecognised name would otherwise reach
+    a third-party provider in the clear.
+    """
+    words = [line[start:end] for _, start, end in tokens]
+    if any(part in NOT_A_NAME for word in words for part in _parts(word) if part):
+        return True
+    return has_clinical_head([_fold(word) for word in words])
 
 
 def person_evidence(line: str, tokens: list[tuple[str, int, int]]) -> bool:
@@ -297,13 +336,47 @@ def uncapitalised(line: str) -> bool:
     return not any(character.isupper() for character in line)
 
 
+#: How many NAME WORDS a value may take from a line that continues past it.
+#:
+#: A header field's value runs to the end of its line, so a six-token name is
+#: fine there. A name embedded in a sentence is a forename and a surname, and
+#: being greedy past that ate the clinician's words in 77 of 87 measured
+#: phrases: `Name: Mary Okonkwo Sick Sinus Syndrome` became `Name: [NAME] Sinus
+#: Syndrome`. Titles, initials, particles and suffixes do not count against the
+#: bound — `Dr`, `A.`, `van der` and `Jr` belong to the name, not to the
+#: sentence — so `GP: Dr Patel ...` still takes both of its tokens.
+_EMBEDDED_NAME_WORDS = 2
+
+
 def value_at(
     field_type: FieldType, line: str, position: int, *, any_case: bool = False
 ) -> tuple[int, int] | None:
     """The span of a value of `field_type` starting exactly at `position`."""
     if field_type is FieldType.NAME:
         tokens = name_tokens(line, position, any_case=any_case)
-        return (tokens[0][1], tokens[-1][2]) if tokens else None
+        if not tokens:
+            return None
+        # Greedy to the end of the line is right for a header — a six-token name
+        # is one field. Greedy in the MIDDLE of a line is wrong: `Name: Mary
+        # Okonkwo Sick Sinus Syndrome` swallowed `Sick` and left `Sinus
+        # Syndrome`, and 77 of 87 clinical phrases were mutilated this way.
+        # Reaching the end of the line is what tells the two apart, and it needs
+        # no vocabulary at all.
+        if line[tokens[-1][2] :].strip(" \t\r" + INVISIBLE):
+            kept: list[tuple[str, int, int]] = []
+            words = 0
+            for token in tokens:
+                if token[0] == "word":
+                    if words == _EMBEDDED_NAME_WORDS:
+                        break
+                    words += 1
+                kept.append(token)
+            tokens = kept
+            while tokens and tokens[-1][0] in ("title", "particle"):
+                tokens.pop()
+            if not tokens:
+                return None
+        return tokens[0][1], tokens[-1][2]
     pattern = _AT.get(field_type)
     if pattern is None:
         return None
@@ -334,13 +407,23 @@ def longest_value_at(
     return best
 
 
+#: An editorial annotation appended to a column cell: `[SIC]`, `[NB]`, `[?]`.
+#: Left in the content span it made the cell fail every whole-line value test,
+#: so a name carrying one was never associated with its label and leaked.
+_ANNOTATION = re.compile(r"[ \t]*\[[A-Za-z? ]{1,12}\][ \t]*\Z")
+
+
 def _content_span(line: str) -> tuple[int, int] | None:
-    """The line minus surrounding whitespace and invisible characters."""
-    stripped = line.strip(" \t" + INVISIBLE)
+    """The line minus surrounding whitespace, invisibles and any annotation."""
+    stripped = line.strip(" \t\r" + INVISIBLE)
     if not stripped:
         return None
     start = line.index(stripped)
-    return start, start + len(stripped)
+    end = start + len(stripped)
+    annotation = _ANNOTATION.search(line, start, end)
+    if annotation is not None and annotation.start() > start:
+        end = annotation.start()
+    return start, end
 
 
 def whole_value(field_type: FieldType, line: str) -> tuple[int, int] | None:

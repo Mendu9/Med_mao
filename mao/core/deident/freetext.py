@@ -45,6 +45,23 @@ _STREET = (
     r"|crescent|gardens?|square|highway|parkway|st|rd|ave|blvd|ln|hwy|pkwy)"
 )
 
+def _nhs_number(match: re.Match[str]) -> str:
+    """Redact ten digits only when they check out as an NHS number.
+
+    Modulus 11: weight the first nine digits by 10..2, sum, take 11 minus the
+    remainder mod 11; 11 means 0 and 10 means the number is invalid. A column of
+    lab values passes the SHAPE and fails this, which is the whole point.
+    """
+    digits = [int(character) for character in match.group() if character.isdigit()]
+    if len(digits) != 10:
+        return match.group()
+    total = sum(digit * weight for digit, weight in zip(digits[:9], range(10, 1, -1), strict=True))
+    check = (11 - total % 11) % 11
+    if check == 10 or check != digits[9]:
+        return match.group()
+    return "[NHS]"
+
+
 def _cued_name(match: re.Match[str]) -> str:
     """Redact a name introduced by a relationship or an encounter — but only
     when the cue is unambiguous, or the name itself looks like one.
@@ -75,7 +92,17 @@ _RULES: list[tuple[str, str | Callable[[re.Match[str]], str]]] = [
     # referral letters. Redacting a near-miss costs nothing; missing a real one
     # is a disclosure.
     (rf"\b{values.NI_NUMBER}", "[NI_NUMBER]"),
-    (r"\b(?:\d{3}[ \t]){2}\d{4}\b", "[NHS]"),
+    # An NHS number is ten digits with a modulus-11 check digit. Validating it
+    # is what separates a real one from a column of lab values: `138 102 2024`
+    # became `[NHS]`, which deletes three clinical numbers and asserts a removal
+    # that never happened. De-identification is not validation in general — a
+    # near-miss NI number is still redacted, because missing a real one is a
+    # disclosure — but here the shape is SO common in clinical data that the
+    # false-positive cost is the larger one.
+    (r"\b(?:\d{3}[ \t]){2}\d{4}\b", _nhs_number),
+    # The closed-up form keeps its unconditional rule. Ten CONTIGUOUS digits is
+    # not a clinical quantity — the spaced 3-3-4 form is the one that collides
+    # with a column of lab values, and it is the only one gated on the checksum.
     (r"\b\d{10}\b", "[NHS_ID]"),
     # Nine bare digits is not a clinical quantity — doses, scores and lab values
     # are orders of magnitude shorter — so the false-positive cost is low.
@@ -127,7 +154,15 @@ _RULES: list[tuple[str, str | Callable[[re.Match[str]], str]]] = [
     (r"\+44[ \t]?\(?0?\)?[ \t]?\d{3,4}[ \t]?\d{6}\b", "[PHONE]"),
     (r"\b0\d{3,4}[ \t]?\d{6}\b", "[PHONE]"),
     (r"\b0\d{3}[ \t]\d{3}[ \t]\d{4}\b", "[PHONE]"),
-    (r"(?:\+?1[-. \t]?)?\(?\d{3}\)?[-. \t]\d{3}[-. \t]\d{4}\b", "[PHONE]"),
+    # A North American number needs a real telephone separator — parentheses, a
+    # dash, a dot, or a +1 country code. SPACE-separated 3-3-4 is not accepted,
+    # because that is also what a column of lab values looks like: `138 102 2024`
+    # became `[PHONE]`, deleting three clinical numbers and asserting a removal
+    # that never happened. UK numbers are unaffected; they start 0 or +44 and
+    # have their own rules above.
+    (r"\+1[-. \t]?\(?\d{3}\)?[-. \t]?\d{3}[-. \t]?\d{4}\b", "[PHONE]"),
+    (r"\(\d{3}\)[-. \t]?\d{3}[-. \t]?\d{4}\b", "[PHONE]"),
+    (r"\b\d{3}[-.]\d{3}[-.]\d{4}\b", "[PHONE]"),
     (r"\b[A-Z]{1,2}\d{1,2}[A-Z]?[ \t]?\d[A-Z]{2}\b", "[POSTCODE]"),
 
     # --- addresses ---
