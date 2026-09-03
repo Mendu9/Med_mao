@@ -242,6 +242,68 @@ class TestNamesInProseWithNoLabel:
         assert "[NAME]" not in scrub_pii(text)
 
 
+class TestTabularLayoutsWithNoColonAnywhere:
+    """Wave 11 / A2 — a header row and a data row, each on ONE line.
+
+    Neither line is `label \\n value` and neither is label-only, so before Wave
+    11 nothing in the scrubber saw this shape at all and both the name and the
+    record number reached the provider untouched.
+
+    Tab-separated rows are asserted here rather than in the generated layouts
+    because reportlab draws `\\t` as a notdef glyph, not whitespace — a tab in a
+    generated PDF would test the renderer. Tabs reach `scrub_pii` from a
+    clinician pasting a table into `/chat`, through the same call.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "text"),
+        [
+            (
+                "spaced_columns",
+                "Patient Name    MRN    DOB\n"
+                "Harold Nkemdirim    RGT/44219/B    12/03/1948\n",
+            ),
+            (
+                "tab_columns",
+                "Patient Name\tMRN\tDOB\nHarold Nkemdirim\tRGT/44219/B\t12/03/1948\n",
+            ),
+            (
+                "data_row_above_header",
+                "Harold Nkemdirim    RGT/44219/B\nPatient Name    MRN\n",
+            ),
+            (
+                "labels_carry_colons",
+                "Patient Name:    MRN:\nHarold Nkemdirim    RGT/44219/B\n",
+            ),
+        ],
+    )
+    def test_no_identifier_survives_a_table(self, name: str, text: str) -> None:
+        scrubbed = scrub_pii(text)
+        for identifier in ("Harold Nkemdirim", "RGT/44219/B", "12/03/1948"):
+            if identifier in text:
+                assert identifier not in scrubbed, f"{identifier!r} leaked from {name}"
+
+    def test_a_header_column_with_no_data_gets_no_placeholder(self) -> None:
+        """Three header columns, two data cells. The third names nobody."""
+        scrubbed = scrub_pii(
+            "Patient Name    MRN    Telephone\nHarold Nkemdirim    RGT/44219/B\n"
+        )
+        assert "[PHONE]" not in scrubbed
+        assert scrubbed.split("\n")[1] == "[NAME]    [MRN]"
+
+    def test_clinical_lines_below_a_table_are_untouched(self) -> None:
+        text = (
+            "Patient Name    MRN\n"
+            "Harold Nkemdirim    RGT/44219/B\n"
+            "Bradycardia 48 bpm untreated\n"
+            "Warfarin INR 2.4\n"
+        )
+        scrubbed = scrub_pii(text)
+        assert "Bradycardia 48 bpm untreated" in scrubbed
+        assert "Warfarin INR 2.4" in scrubbed
+        assert len(scrubbed.split("\n")) == len(text.split("\n"))
+
+
 class TestClinicalContentIsNeverDestroyed:
     """The over-matching direction, held as its own property."""
 
