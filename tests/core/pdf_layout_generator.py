@@ -203,6 +203,31 @@ _NEEDS_CID = frozenset({"fullwidth_colon"})
 #: document arriving over a different transport.
 TRANSPORTS: tuple[str, ...] = ("lf", "crlf", "cr", "bom")
 
+#: What follows a field's value on the SAME line.
+#:
+#: The first generation of this fuzzer produced NONE of these: 0 of 2592
+#: documents put content after a name value on its own line, so the entire class
+#: in which a value's END must be established was untested. Both a CRITICAL leak
+#: (a truncated name leaving the surname legible beside `[NAME]`) and a CRITICAL
+#: destruction (a clinical phrase absorbed into the name) lived in exactly that
+#: hole, and two independent reviewers found them there.
+#:
+#:   none      `Patient Name: Harold Nkemdirim`
+#:   sentence  `Patient Name: Harold Nkemdirim. Please review.`
+#:   clinical  `Patient Name: Harold Nkemdirim Rockwood Frailty Scale`
+TRAILINGS: tuple[str, ...] = ("none", "sentence", "clinical")
+
+#: Clinical phrases used as same-line trailing content. Chosen to END in a
+#: clinical head noun, which is the signal the boundary rule relies on.
+TRAILING_CLINICAL: tuple[str, ...] = (
+    "Rockwood Frailty Scale",
+    "Waterlow Score",
+    "Abbey Pain Scale",
+    "Charlson Comorbidity Index",
+    "Barthel Index",
+    "Mobitz Type II Block",
+)
+
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 
@@ -241,12 +266,14 @@ class Layout:
     clinical: str
     field_set: str
     transport: str
+    trailing: str
 
     @property
     def name(self) -> str:
         return (
             f"{self.field_set}-{self.columns}-{self.separator}-{self.order}"
             f"-orphan{self.orphans}-clinical_{self.clinical}-{self.transport}"
+            f"-trail_{self.trailing}"
         )
 
 
@@ -361,6 +388,15 @@ def _clinical_for(index: int) -> tuple[str, ...]:
     return tuple(CLINICAL_CORPUS[(index + k) % n] for k in range(3))
 
 
+def _trailing_for(layout: Layout, position: int) -> str:
+    """Content appended AFTER the value on its own line."""
+    if layout.trailing == "sentence":
+        return ". Please review at the next appointment."
+    if layout.trailing == "clinical":
+        return " " + TRAILING_CLINICAL[position % len(TRAILING_CLINICAL)]
+    return ""
+
+
 def _draw(
     layout: Layout,
     fields: tuple[Field, ...],
@@ -393,8 +429,8 @@ def _draw(
         return f"{text}:"
 
     if layout.columns == "inline":
-        for left, right in rows:
-            header.append((60.0, y, f"{left}{sep}{right}"))
+        for position, (left, right) in enumerate(rows):
+            header.append((60.0, y, f"{left}{sep}{right}{_trailing_for(layout, position)}"))
             y -= 18
         for label in orphans:
             header.append((60.0, y, f"{label}{sep.rstrip()}".rstrip()))
@@ -524,6 +560,18 @@ def _build(layout: Layout, index: int) -> Document | None:
         placed.append((field, at))
         identifiers.append(field.value)
 
+    # Same-line trailing clinical content is ground truth too: it is exactly the
+    # text a greedy name value absorbs, and the class the first generator could
+    # not produce at all.
+    trailing_phrases = (
+        tuple(
+            _trailing_for(layout, position).strip()
+            for position in range(len(fields))
+        )
+        if layout.trailing == "clinical"
+        else ()
+    )
+    clinical = clinical + trailing_phrases
     surviving_clinical = tuple(line for line in clinical if line in extracted)
     surviving_orphans = tuple(label for label in orphans if label in extracted)
 
@@ -572,6 +620,9 @@ def layouts() -> Iterator[Layout]:
                     for orphans in (0, 1, 2):
                         for clinical in ("after", "before", "interleaved"):
                             for transport in TRANSPORTS:
+                              for trailing in (
+                                  TRAILINGS if columns == "inline" else ("none",)
+                              ):
                                 yield Layout(
                                     separator=separator,
                                     order=order,
@@ -580,6 +631,7 @@ def layouts() -> Iterator[Layout]:
                                     clinical=clinical,
                                     field_set=field_set,
                                     transport=transport,
+                                    trailing=trailing,
                                 )
 
 

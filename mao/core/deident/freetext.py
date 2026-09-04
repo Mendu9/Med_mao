@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 from . import values
 from .fields import is_ambiguous_person_label
-from .lexicon import NOT_A_NAME_RE
+from .lexicon import NOT_A_NAME_RE, has_clinical_head
 from .text import map_lines
 
 _TITLES = r"(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof(?:essor)?|Sir|Dame|Lord|Lady|Rev)"
@@ -75,10 +75,33 @@ def _cued_name(match: re.Match[str]) -> str:
     """
     cue, gap = match.group(1), match.group(2)
     name = match.group()[len(cue) + len(gap) :]
-    if is_ambiguous_person_label(cue):
-        tokens = values.name_tokens(name, 0)
-        if not tokens or not values.person_evidence(name, tokens):
-            return match.group()
+    tokens = values.name_tokens(name, 0)
+    if not tokens:
+        return match.group()
+
+    # The clinical head may sit just OUTSIDE the match, because `_NAME_WORD`
+    # excludes clinical vocabulary and so stops before it: in `Next of Kin
+    # Rockwood Frailty Scale` the rule matched `Rockwood Frailty` and `Scale`
+    # was already excluded. Looking one token past the match is what tells a
+    # relative's name from the instrument named after its author.
+    #
+    # The following word must be CAPITALISED to count. An instrument's name is
+    # a title-case noun phrase — `Rockwood Frailty Scale` — whereas `Her
+    # daughter Sarah Okonjo reports increasing confusion` continues into a
+    # lower-case VERB that happens to share a stem with the head noun `report`.
+    # Without the case test this rule stopped redacting real relatives' names.
+    tail = match.string[match.end() :].lstrip(" \t")
+    following = re.match(r"[^\W\d_]+", tail)
+    if (
+        following is not None
+        and following.group()[:1].isupper()
+        and has_clinical_head([following.group().lower()])
+    ):
+        return match.group()
+    if values.is_clinical_phrase(name, tokens):
+        return match.group()
+    if is_ambiguous_person_label(cue) and not values.person_evidence(name, tokens):
+        return match.group()
     return f"{cue}{gap}[NAME]"
 
 
@@ -151,9 +174,16 @@ _RULES: list[tuple[str, str | Callable[[re.Match[str]], str]]] = [
         r"(?<![a-zA-Z0-9_.+-])[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+",
         "[EMAIL]",
     ),
-    (r"\+44[ \t]?\(?0?\)?[ \t]?\d{3,4}[ \t]?\d{6}\b", "[PHONE]"),
-    (r"\b0\d{3,4}[ \t]?\d{6}\b", "[PHONE]"),
-    (r"\b0\d{3}[ \t]\d{3}[ \t]\d{4}\b", "[PHONE]"),
+    # Any UK area-code length: 020 (London), 028 (Belfast), 029 (Cardiff) all
+    # leaked because the rule demanded 3-4 digits after the leading zero.
+    (r"\+44[ \t]?\(?0?\)?[ \t]?(?:\d[ \t]?){9,10}\d\b", "[PHONE]"),
+    (r"\b0(?:[ \t]?\d){9,10}\b", "[PHONE]"),
+    # Space-separated North American form. Removing it to stop `138 102 2024`
+    # becoming `[PHONE]` traded a false placeholder for a RAW DISCLOSURE: real
+    # US numbers in prose then leaked, 186/200. Under the agreed policy an
+    # ambiguous shape is redacted, not left; the lab-value collision is bounded
+    # by requiring a plausible NANP area and exchange code (neither starts 0 or 1).
+    (r"\b[2-9]\d{2}[ \t][2-9]\d{2}[ \t]\d{4}\b", "[PHONE]"),
     # A North American number needs a real telephone separator — parentheses, a
     # dash, a dot, or a +1 country code. SPACE-separated 3-3-4 is not accepted,
     # because that is also what a column of lab values looks like: `138 102 2024`

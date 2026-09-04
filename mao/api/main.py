@@ -31,6 +31,7 @@ from mao.graph import get_graph
 from mao.api.executor import get_executor, restart_executor, shutdown_executor
 from mao.api.finalize import finalize_response
 from mao.api.invocation import run_graph
+from mao.core.deident.ambiguity import AmbiguousDocument
 from mao.api.routes import ALL_ROUTERS
 from mao.api import sse
 from mao.guardrails import apply_input_guardrails
@@ -347,8 +348,30 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     state["metadata"] = request.metadata
 
     # Run graph in thread pool to keep async loop unblocked
-    with request_deadline(REQUEST_DEADLINE_SECONDS):
-        result = await run_graph(state, request_id)
+    try:
+        with request_deadline(REQUEST_DEADLINE_SECONDS):
+            result = await run_graph(state, request_id)
+    except AmbiguousDocument as exc:
+        # An uploaded report whose patient header cannot be de-identified
+        # confidently is REFUSED, not guessed at. Processing it either leaks a
+        # surname to a third party or deletes a contraindication before the
+        # model reads it, and the caller never sees which — the document is
+        # processed unseen. Ask for the patient fields instead of inferring
+        # them. See mao/core/deident/ambiguity.py.
+        logger.warning(
+            "request_id=%s refusing an ambiguous report header: %s",
+            request_id, exc.report.describe(),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The patient header in this report could not be de-identified "
+                "unambiguously, so it was not processed. Send the patient "
+                "identifiers as structured metadata fields instead of relying "
+                "on them being detected in the document text. Ambiguous fields: "
+                + exc.report.describe()
+            ),
+        ) from exc
 
     result = await finalize_response(result, request_id)
 

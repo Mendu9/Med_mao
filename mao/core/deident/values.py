@@ -277,10 +277,15 @@ NHS = r"(?:\d{3}[ \t\-]\d{3}[ \t\-]\d{4}|\d{10}(?!\d))(?![A-Za-z0-9])"
 NI_NUMBER = rf"{_NI_SHAPE}(?![A-Za-z0-9])"
 
 # --- contact ----------------------------------------------------------------
+# UK numbers are 10 or 11 digits after the leading 0, but the AREA CODE is 2, 3,
+# 4 or 5 digits: London is 020, Belfast 028, Cardiff 029. Requiring 3-4 digits
+# after the 0 missed every one of them, so `Telephone: 020 7946 0958` leaked even
+# with its label attached. Written as "leading 0, then 9 or 10 more digits in any
+# grouping" instead of guessing the split.
 PHONE = (
-    r"(?:\+\d{1,3}[ \t]?\(?0?\)?[ \t]?\d{2,5}[ \t]?\d{3}[ \t]?\d{3,4}"
-    r"|\b0\d{3,4}[ \t]?\d{3}[ \t]?\d{3,4}"
-    r"|\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4})"
+    r"(?:\+\d{1,3}[ \t]?\(?0?\)?[ \t]?(?:\d[ \t]?){9,11}"
+    r"|\b0(?:[ \t]?\d){9,10}"
+    r"|\(?\d{3}\)?[-. \t]\d{3}[-. \t]\d{4})"
     r"(?![A-Za-z0-9])"
 )
 EMAIL = r"[A-Za-z0-9_.+\-]+@[A-Za-z0-9\-]+\.[A-Za-z0-9.\-]*[A-Za-z0-9]"
@@ -293,7 +298,21 @@ POSTCODE = r"[A-Z]{1,2}\d{1,2}[A-Z]?[ \t]?\d[A-Z]{2}(?![A-Za-z0-9])"
 # reliably starts with.
 _HOUSE = r"(?:(?i:flat|apt|apartment|unit|suite)[ \t]*\d{1,4}[A-Za-z]?[, \t]+)?"
 _ADDRESS_WORD = rf"(?:{_NAME_WORD}|\d{{1,5}}[A-Za-z]?)"
-ADDRESS = rf"{_HOUSE}\d{{1,5}}[A-Za-z]?(?:{_JOIN}{_ADDRESS_WORD}){{1,5}}"
+#: An address ENDS at its street type. Without this the generic run kept going
+#: and swallowed whatever followed on the line: `Home Address: 148 Beckett Road
+#: Waterlow Score` became `[ADDRESS] Score`, deleting the name of the pressure-
+#: ulcer risk assessment. The street-type form is tried FIRST so it wins; the
+#: open-ended run remains for an address that has no street type at all.
+_STREET_TYPE = (
+    r"(?i:street|road|avenue|lane|drive|boulevard|court|close|way|place|terrace"
+    r"|crescent|gardens?|square|highway|parkway|row|walk|rise|view|park|hill"
+    r"|green|grove|mews|parade|vale|wharf|st|rd|ave|blvd|ln|hwy|pkwy)"
+)
+ADDRESS = (
+    rf"(?:{_HOUSE}\d{{1,5}}[A-Za-z]?(?:{_JOIN}{_ADDRESS_WORD}){{0,4}}"
+    rf"{_JOIN}{_STREET_TYPE}(?![A-Za-z])"
+    rf"|{_HOUSE}\d{{1,5}}[A-Za-z]?(?:{_JOIN}{_ADDRESS_WORD}){{1,5}})"
+)
 
 #: NAME is deliberately ABSENT: it is matched by `name_tokens`, not by a regex.
 #: A regex cannot express "a Unicode letter run that is not lower-case unless
@@ -336,16 +355,22 @@ def uncapitalised(line: str) -> bool:
     return not any(character.isupper() for character in line)
 
 
-#: How many NAME WORDS a value may take from a line that continues past it.
-#:
-#: A header field's value runs to the end of its line, so a six-token name is
-#: fine there. A name embedded in a sentence is a forename and a surname, and
-#: being greedy past that ate the clinician's words in 77 of 87 measured
-#: phrases: `Name: Mary Okonkwo Sick Sinus Syndrome` became `Name: [NAME] Sinus
-#: Syndrome`. Titles, initials, particles and suffixes do not count against the
-#: bound — `Dr`, `A.`, `van der` and `Jr` belong to the name, not to the
-#: sentence — so `GP: Dr Patel ...` still takes both of its tokens.
-_EMBEDDED_NAME_WORDS = 2
+# A NAME VALUE IS NEVER TRUNCATED TO A PREFIX.
+#
+# Bounding an embedded name at two words looked like a way to stop it eating the
+# clinician's sentence. It was worse than the disease: a three-part name lost its
+# last part and the SURNAME stayed legible beside the `[NAME]` that claimed to
+# have removed it — 300/300 measured, and proven on the wire at the Groq egress
+# (`PHI REACHING THE PROVIDER: ['Ogunlana']`). A placeholder covering PART of an
+# identifier is the worst outcome available: the name leaks AND the output
+# asserts it did not.
+#
+# So the run ends where a CLINICAL signal says it ends — a lexicon word, a
+# clinical head noun, a digit, a lower-case word, a sentence terminator, the
+# next label — or it is taken whole. Where no signal is found the value is
+# genuinely ambiguous, and under the agreed policy that resolves by REDACTING on
+# the chat path (the clinician sees the result) and by QUARANTINING on the upload
+# path (see `ambiguity`), never by guessing a boundary.
 
 
 def value_at(
@@ -362,20 +387,6 @@ def value_at(
         # Syndrome`, and 77 of 87 clinical phrases were mutilated this way.
         # Reaching the end of the line is what tells the two apart, and it needs
         # no vocabulary at all.
-        if line[tokens[-1][2] :].strip(" \t\r" + INVISIBLE):
-            kept: list[tuple[str, int, int]] = []
-            words = 0
-            for token in tokens:
-                if token[0] == "word":
-                    if words == _EMBEDDED_NAME_WORDS:
-                        break
-                    words += 1
-                kept.append(token)
-            tokens = kept
-            while tokens and tokens[-1][0] in ("title", "particle"):
-                tokens.pop()
-            if not tokens:
-                return None
         return tokens[0][1], tokens[-1][2]
     pattern = _AT.get(field_type)
     if pattern is None:

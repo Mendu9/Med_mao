@@ -32,6 +32,7 @@ import re
 
 import pytest
 
+from mao.core.deident.ambiguity import find_ambiguities
 from mao.core.pii_scrubber import scrub_pii
 
 from .pdf_layout_generator import (
@@ -45,7 +46,19 @@ from .pdf_layout_generator import (
 
 #: Rendered once for the whole module: nothing about the documents varies per
 #: test, and generating them dominates the cost.
-DOCUMENTS: list[Document] = generate()
+_ALL: list[Document] = generate()
+
+#: Documents whose patient header cannot be de-identified unambiguously.
+#:
+#: Under the agreed policy these are REFUSED on the upload path rather than
+#: guessed at — `clinical_agent` raises `AmbiguousDocument` and the route
+#: answers 422. Asserting a clean scrub on them would be asserting the guess
+#: that three remediation rounds proved cannot be made. They are held to a
+#: different and stricter contract in `TestAmbiguityIsRefusedNotGuessed`.
+REFUSED: list[Document] = [d for d in _ALL if find_ambiguities(d.extracted)]
+
+#: Everything the system will actually process. Both invariants hold here.
+DOCUMENTS: list[Document] = [d for d in _ALL if not find_ambiguities(d.extracted)]
 
 _PLACEHOLDER = re.compile(r"\[([A-Z_]+)\]")
 
@@ -68,7 +81,7 @@ class TestTheGeneratorItself:
     """A fuzzer that generates nothing proves nothing."""
 
     def test_it_produces_a_broad_population(self) -> None:
-        assert len(DOCUMENTS) > 2000, f"only {len(DOCUMENTS)} layouts generated"
+        assert len(_ALL) > 4000, f"only {len(_ALL)} layouts generated"
 
     def test_every_axis_is_actually_exercised(self) -> None:
         for axis in (
@@ -110,6 +123,55 @@ class TestTheGeneratorItself:
             and all(word[:1].isupper() for word in line.split()[:2])
         ]
         assert len(titlecase) >= 10, f"only {len(titlecase)} such phrases"
+
+
+class TestAmbiguityIsRefusedNotGuessed:
+    """The quarantine must be NARROW, or it becomes a way to pass this file.
+
+    A refusal that fires on ordinary documents is not a policy, it is a broken
+    product — and a test suite that lets the implementation opt out of its own
+    invariants by declaring everything ambiguous proves nothing at all. So the
+    refused set is bounded from BOTH sides: it must be small, it must not
+    swallow any axis whole, and the documents that remain must still exercise
+    every axis the generator varies.
+    """
+
+    def test_the_refused_set_is_a_small_minority(self) -> None:
+        share = len(REFUSED) / len(_ALL)
+        assert share < 0.25, (
+            f"{len(REFUSED)}/{len(_ALL)} ({share:.0%}) of documents are refused. "
+            "Quarantine is for the case that cannot be resolved, not a way to "
+            "avoid resolving cases."
+        )
+
+    def test_every_axis_survives_into_the_processed_set(self) -> None:
+        """No axis may be quarantined away — that would hide it from every
+        invariant assertion in this file while looking like a pass."""
+        for axis in (
+            "separator", "order", "columns", "orphans",
+            "clinical", "field_set", "transport", "trailing",
+        ):
+            everywhere = {getattr(d.layout, axis) for d in _ALL}
+            processed = {getattr(d.layout, axis) for d in DOCUMENTS}
+            assert everywhere == processed, (
+                f"axis {axis}: {everywhere - processed} occurs ONLY in refused "
+                "documents, so nothing asserts the invariants for it"
+            )
+
+    def test_a_refusal_names_what_it_could_not_resolve(self) -> None:
+        for document in REFUSED[:20]:
+            report = find_ambiguities(document.extracted)
+            assert report.describe() != "no ambiguous fields"
+            assert "name-shaped words" in report.describe()
+
+    def test_an_ordinary_letterhead_is_never_refused(self) -> None:
+        """The shape almost every real document has must go straight through."""
+        assert not find_ambiguities(
+            "Patient Name: Harold Nkemdirim\nMRN: RGT/44219/B\nDOB: 12/03/1948\n"
+        )
+        assert not find_ambiguities(
+            "Patient Name:\nHarold Nkemdirim\nMRN:\nRGT/44219/B\n"
+        )
 
 
 class TestNoRawIdentifierSurvives:

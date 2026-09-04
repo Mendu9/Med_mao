@@ -57,11 +57,9 @@ Normalising inside the scrubber makes it impossible for a caller to forget.
 """
 from __future__ import annotations
 
-import unicodedata
-
 from mao.core.deident.freetext import redact_by_shape
 from mao.core.deident.layout import redact_labelled_fields
-from mao.core.deident.text import strip_leading_bom
+from mao.core.deident.text import normalise, strip_leading_bom
 
 __all__ = ["scrub_pii"]
 
@@ -83,6 +81,6 @@ def scrub_pii(text: str) -> str:
     if not text:
         return text
     bom, text = strip_leading_bom(text)
-    text = unicodedata.normalize("NFKC", text)
+    text = normalise(text)
     text = redact_labelled_fields(text)
     return bom + redact_by_shape(text)

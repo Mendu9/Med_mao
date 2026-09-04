@@ -65,6 +65,17 @@ from .values import (
 _SEPARATORS = " \t\r:：|=#–—-" + INVISIBLE
 
 
+#: A line that already carries a placeholder of OURS has had its value removed.
+#:
+#: Matching `\[[A-Z_]+\]` matched anything in square brackets, so an editorial
+#: `[SIC]`, `[NB]` or `[X]` beside a name made the line look already-scrubbed
+#: and disabled cross-line association for it — the name AND the record number
+#: below it then leaked. Only the placeholders this module emits count.
+_PLACEHOLDER = re.compile(
+    "|".join(rf"\[{field.value}\]" for field in FieldType if field is not FieldType.STRUCTURAL)
+)
+
+
 @dataclass(frozen=True)
 class _Claim:
     """A span on one line that will become a placeholder."""
@@ -118,6 +129,24 @@ def _value_before(line: str, label_start: int, field_type: FieldType) -> tuple[i
     return whole_value(field_type, prefix)
 
 
+def _already_redacted(line: str, start: int, end: int) -> bool:
+    """Whether this label's value has already been replaced by a placeholder.
+
+    `/chat` scrubs twice — `apply_input_guardrails` and then `query_decomposer`
+    — so a second pass is a real code path, not a curiosity. Without this check
+    the first pass turned `Jonathan Aldred-Whitmore: Name Rockwood Frailty
+    Scale` into `[NAME]: Name Rockwood Frailty Scale`, and then the second pass
+    could no longer parse the prefix as a value, fell through to the text AFTER
+    the label, and redacted the clinical instrument instead: `[NAME]: Name
+    [NAME] Scale`. Scrubbing an already-scrubbed string must be a no-op.
+    """
+    before = line[:start].rstrip(_SEPARATORS)
+    if before.endswith("]") and _PLACEHOLDER.search(before[-16:]):
+        return True
+    after = line[end:].lstrip(_SEPARATORS)
+    return bool(_PLACEHOLDER.match(after))
+
+
 def _is_label_only(line: str, labels: list[tuple[int, int, FieldType]]) -> bool:
     """A line holding exactly one label and no value — a letterhead's left column."""
     if len(labels) != 1:
@@ -143,11 +172,13 @@ def _same_line_claims(
         for start, end, field_type in labels[index]:
             if field_type is FieldType.STRUCTURAL:
                 continue
+            if _already_redacted(line, start, end):
+                continue
             if field_type is FieldType.NAME:
                 deferred.append((index, start, end, field_type))
                 continue
             span, _ = _value_after(line, end, field_type)
-            if span is None and not line[end:].strip(_SEPARATORS):
+            if span is None:
                 span = _value_before(line, start, field_type)
             if span is not None:
                 claims.append(_Claim(index, span[0], span[1], field_type))
@@ -155,10 +186,19 @@ def _same_line_claims(
     form_evidence = _form_evidence(lines, claims)
     for index, start, end, field_type in deferred:
         line = lines[index]
-        span, explicit = _value_after(line, end, field_type)
-        if span is None and not line[end:].strip(_SEPARATORS):
-            span = _value_before(line, start, field_type)
-            explicit = True
+        if _already_redacted(line, start, end):
+            continue
+        # BEFORE first, for a person label only. `_value_before` demands that the
+        # ENTIRE prefix parse as one value; `_value_after` takes a greedy run
+        # from wherever the label ends. When both can match, the first is much
+        # the stronger evidence — and preferring the second got it exactly
+        # backwards: `Jonathan Aldred-Whitmore: Name Rockwood Frailty Scale`
+        # redacted `Rockwood Frailty` as the name and left the real one, in the
+        # clear, at the start of the line.
+        span = _value_before(line, start, field_type)
+        explicit = True
+        if span is None:
+            span, explicit = _value_after(line, end, field_type)
         if span is None:
             continue
         if not explicit and not _person_label_may_claim(
@@ -410,17 +450,6 @@ def _pair_in_direction(
                 )
                 taken.add(candidate)
     return paired
-
-
-#: A line that already carries a placeholder of OURS has had its value removed.
-#:
-#: Matching `\[[A-Z_]+\]` matched anything in square brackets, so an editorial
-#: `[SIC]`, `[NB]` or `[X]` beside a name made the line look already-scrubbed
-#: and disabled cross-line association for it — the name AND the record number
-#: below it then leaked. Only the placeholders this module emits count.
-_PLACEHOLDER = re.compile(
-    "|".join(rf"\[{field.value}\]" for field in FieldType if field is not FieldType.STRUCTURAL)
-)
 
 
 def _is_free_cell(

@@ -9,6 +9,7 @@ import logging
 
 from mao.agents.multimodal_agent import handle_audio, handle_image
 from mao.core.config import MRI_CONFIDENCE_GATE
+from mao.core.deident.ambiguity import AmbiguousDocument, find_ambiguities
 from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
@@ -357,6 +358,16 @@ def _handle_pdf_report(
     # of the report — summarisation, structured extraction, the retrieval seed,
     # the final synthesis prompt — reads the scrubbed text, so there is no path
     # from an uploaded report to a third party carrying direct identifiers.
+    # An uploaded report is processed UNSEEN, so a wrong guess about where a
+    # patient's name ends is silent — it either leaks the surname to a third
+    # party or deletes a contraindication before the model reads it. Three
+    # remediation rounds proved no rule settles that reliably, so this path does
+    # not guess: an unresolvable header is refused and the caller is asked for
+    # structured patient fields. See mao/core/deident/ambiguity.py.
+    ambiguities = find_ambiguities(raw_report_text)
+    if ambiguities:
+        raise AmbiguousDocument(ambiguities)
+
     report_text = scrub_pii(raw_report_text)
 
     # Step 2: Structured extraction

@@ -27,6 +27,7 @@ a terminator stays that way, and no rule can see across a line boundary at all.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Callable
 
 #: Every character Unicode treats as a line break, not just the three ASCII
@@ -78,6 +79,27 @@ def map_lines(text: str, transform: Callable[[str], str]) -> str:
     """
     contents, terminators = split_lines(text)
     return join_lines([transform(content) for content in contents], terminators)
+
+
+_INVISIBLE_RE = re.compile(f"[{INVISIBLE}]")
+
+
+def normalise(text: str) -> str:
+    """NFKC, and remove invisible formatting characters everywhere.
+
+    Folding invisibles inside NAME tokens only was not enough: PDF hyphenation
+    emits U+00AD, and pypdf hands it straight through, so `RGT/44219<U+00AD>/B`
+    split a record number in two and the whole identifier leaked — MRN, NHS
+    number, phone, date and postcode alike. No attacker is needed to produce it.
+
+    Removing them DOES change the text, and the invariant is that output differs
+    from input only where an identifier was removed. The invariant is therefore
+    stated against the NORMALISED input, and the generated-layout tests compare
+    against `normalise(extracted)` for exactly that reason. A soft hyphen or a
+    zero-width joiner is a rendering hint, not something a clinician wrote, and
+    every de-identification tool worth the name folds it before matching.
+    """
+    return _INVISIBLE_RE.sub("", unicodedata.normalize("NFKC", text))
 
 
 def strip_leading_bom(text: str) -> tuple[str, str]:
