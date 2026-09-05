@@ -506,8 +506,29 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
     # The agents that support streaming (graphrag/clinical/summarizer) store their
     # LLM prompt in state["_stream_messages"] and their model in state["_stream_model"]
     # instead of making the final LLM call themselves, so we can stream it below.
-    with request_deadline(REQUEST_DEADLINE_SECONDS):
-        result = await run_graph(state, request_id)
+    try:
+        with request_deadline(REQUEST_DEADLINE_SECONDS):
+            result = await run_graph(state, request_id)
+    except AmbiguousDocument as exc:
+        # The SAME refusal as `/chat`. Without this the stream route answered a
+        # bare `Internal Server Error` — no 422, no structured-fields guidance,
+        # and not even the correlation id, so it was strictly worse than the
+        # generic handler it bypassed. Two routes reaching the same graph must
+        # not disagree about what a refusal means.
+        logger.warning(
+            "stream request_id=%s refusing an ambiguous report header: %s",
+            request_id, exc.report.describe(),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The patient header in this report could not be de-identified "
+                "unambiguously, so it was not processed. Send the patient "
+                "identifiers as structured metadata fields instead of relying "
+                "on them being detected in the document text. Ambiguous fields: "
+                + exc.report.describe()
+            ),
+        ) from exc
 
     result = await finalize_response(result, request_id)
 

@@ -434,21 +434,6 @@ def _pair_in_direction(
                 candidate = (
                     run[-1] + 1 + offset if forwards else run[0] - length + offset
                 )
-                # Already satisfied by an earlier pass: this label's OWN cell
-                # holds a placeholder and nothing else. Recording it as placed
-                # is what stops it walking on to the next line and redacting a
-                # clinical one — the residual idempotence defect, which
-                # destroyed a clinical line in 880 of 82,764 documents on the
-                # second scrub `/chat` actually performs.
-                #
-                # Positional, so a decoy cannot exploit it: appending `[NAME]`
-                # to a line leaves the real value there, the cell is not
-                # placeholder-ONLY, and it is still redacted.
-                if 0 <= candidate < len(lines) and _value_is_placeholder(
-                    lines[candidate]
-                ):
-                    satisfied.add(label_line)
-                    continue
                 if not _is_free_cell(lines, labels, candidate, taken):
                     continue
                 span = matches_exclusively(field_type, lines[candidate])
@@ -507,7 +492,27 @@ def _is_free_cell(
 
 
 def _value_is_placeholder(line: str) -> bool:
-    """Whether this line holds a placeholder and nothing else of substance."""
+    """Whether this line holds a placeholder and nothing else of substance.
+
+    NOT used to decide that a label is already satisfied. It was, and that was a
+    forgery: the caller controls the input and there is no authentication on
+    `mao/api/`, so INSERTING a placeholder-only line shifted the column
+    alignment by one and the real name and record number went out in the clear.
+
+    The two properties are in genuine tension and neither is free:
+
+      - trust the marker  -> scrubbing is idempotent, and an inserted line
+                             suppresses redaction (a LEAK, caller-triggerable);
+      - distrust it       -> no forgery is possible, and a second scrub
+                             over-redacts a clinical line it cannot type
+                             (a DESTRUCTION, on a path `/chat` really takes).
+
+    Distrust wins. A leak is unrecoverable and reaches a third party; an
+    over-redaction is visible in the answer and recoverable. The residual is
+    recorded rather than hidden, and closing it properly means telling a
+    clinical phrase from a name — the vocabulary problem this module has not
+    solved and which the phase report names as the open design question.
+    """
     return bool(_PLACEHOLDER.search(line)) and not _PLACEHOLDER.sub("", line).strip(
         " \t\r.,;:" + INVISIBLE
     )

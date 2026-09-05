@@ -45,25 +45,33 @@ def _build_mem0_config() -> dict[str, Any]:
                 "model": cfg.embed_model,
             },
         },
-        # NO LLM SECTION.
+        # This block is REQUIRED FOR CONSTRUCTION and is never called.
         #
-        # This used to configure mem0 with `{"provider": "groq", "config":
-        # {"api_key": ..., "model": ...}}`, so the library built its OWN Groq
-        # client from the raw key and called it directly. That is an egress
-        # outside `mao.providers.gateway` — outside usage accounting, outside
-        # role resolution, outside the retry and rate-limit budget, and outside
-        # every test that asserts on the gateway. Phase 1 scope item 3 is
-        # "centralize model/provider selection through a model gateway", and
-        # that requirement was false while it stood.
+        # `mao.providers.gateway` must own every model call (Phase 1 scope item
+        # 3), and mem0 used to break that: it built its own Groq client from the
+        # raw key and invoked it for "fact extraction" on every write — outside
+        # usage accounting, role resolution, the retry budget, and every test
+        # that asserts on the gateway. Measured live, that call returned HTTP
+        # 413 on every single request, so it was also buying nothing.
         #
-        # It was also failing on EVERY request: measured live, mem0's extraction
-        # call returned HTTP 413 (8000 TPM ceiling) each time, so the inference
-        # it performed was buying nothing at all.
+        # The bypass is closed AT THE CALL SITE instead: `add(..., infer=False)`
+        # stores the turn verbatim and makes no model call at all. Deleting this
+        # config block outright looked cleaner and was worse — `Memory.from_config`
+        # constructs the LLM EAGERLY, so with no block mem0 fell back to its
+        # OpenAI default, raised for a missing `OPENAI_API_KEY`, and latched
+        # `_mem0_disabled = True`, killing the memory subsystem entirely.
         #
-        # `add(..., infer=False)` stores the turn verbatim and makes no model
-        # call, which removes the bypass rather than re-routing it. Recovering
-        # LLM-derived memory — if it is wanted — belongs with the durable
-        # learning data plane in Phase 5 (D2), through the gateway.
+        # So the client is constructed and never invoked. `tests/memory/` asserts
+        # that no model call is made. Recovering LLM-derived memory, if it is
+        # wanted, belongs with the durable learning data plane in Phase 5 (D2),
+        # routed through the gateway.
+        "llm": {
+            "provider": "groq",
+            "config": {
+                "api_key": cfg.groq_api_key,
+                "model": cfg.groq_model,
+            },
+        },
         # OLLAMA: "llm": {
         # OLLAMA:     "provider": "ollama",
         # OLLAMA:     "config": {

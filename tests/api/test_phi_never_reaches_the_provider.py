@@ -188,16 +188,31 @@ class TestAnUploadedReportIsDeIdentifiedBeforeItLeavesTheProcess:
     def test_no_identifier_reaches_the_memory_store(
         self, client, recording_provider
     ) -> None:
-        """The memory store is a PERSISTENT sink and was never asserted on."""
-        client.post(
+        """The memory store is a PERSISTENT sink and was never asserted on.
+
+        The query carries the identifiers, not the PDF. `remember()` receives
+        `state["user_query"]` and the response — so a probe that puts the PHI
+        only in an uploaded report can never fail, whatever the scrubber does.
+        A reviewer proved exactly that: with the scrubber disabled at all three
+        call sites and every identifier reaching the provider in the clear,
+        this assertion still saw an empty list. It is the same vacuity this
+        file was written to eliminate, reintroduced by the author.
+
+        Mutation control: neutering `apply_input_guardrails` makes this fail.
+        """
+        response = client.post(
             "/chat",
             json={
-                "query": "Summarise this discharge summary.",
+                "query": (
+                    f"Patient Name: {PATIENT_NAME} MRN: {MRN}. "
+                    "Should donepezil be titrated in sinus bradycardia?"
+                ),
                 "user_id": "phi-probe",
-                "metadata": {"report_b64": _build_pdf()},
             },
         )
+        assert response.status_code == 200
         written = "\n".join(recording_provider.memory.written)
+        assert written.strip(), "nothing was written to memory — the probe is vacuous"
         leaked = [identifier for identifier in PHI if identifier in written]
         assert leaked == [], (
             f"these identifiers were written to the memory store: {leaked}"
