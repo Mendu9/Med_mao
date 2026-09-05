@@ -180,6 +180,23 @@ def type_of(label: str) -> FieldType | None:
     return None
 
 
+#: The placeholder spellings this package emits, upper-cased.
+_PLACEHOLDER_NAMES = frozenset(
+    field.value for field in FieldType if field is not FieldType.STRUCTURAL
+)
+
+
+def _is_inside_a_placeholder(line: str, start: int, end: int) -> bool:
+    """Whether this label match is really the inside of `[NAME]`-style output."""
+    return (
+        start > 0
+        and line[start - 1] == "["
+        and end < len(line)
+        and line[end] == "]"
+        and line[start:end].upper() in _PLACEHOLDER_NAMES
+    )
+
+
 def find_labels(line: str) -> list[tuple[int, int, FieldType]]:
     """Every known label in `line`, as (start, end, type), non-overlapping.
 
@@ -191,6 +208,14 @@ def find_labels(line: str) -> list[tuple[int, int, FieldType]]:
     end_of_previous = 0
     for match in _LABEL_RE.finditer(line):
         if match.start() < end_of_previous:
+            continue
+        if _is_inside_a_placeholder(line, match.start(), match.end()):
+            # `[NAME]` is this module's OWN output, not a field label. Reading
+            # it as one made every line carrying a placeholder label-bearing,
+            # so it stopped being an unclaimed cell — and a caller who simply
+            # appended ` [NAME]` to each line of a pasted banner suppressed
+            # redaction of the real name AND the record number beside it.
+            # All ten emittable placeholders worked as decoys that way.
             continue
         field_type = type_of(match.group())
         if field_type is None:  # pragma: no cover - alternation is exhaustive

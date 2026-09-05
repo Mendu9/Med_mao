@@ -45,13 +45,25 @@ def _build_mem0_config() -> dict[str, Any]:
                 "model": cfg.embed_model,
             },
         },
-        "llm": {
-            "provider": "groq",
-            "config": {
-                "api_key": cfg.groq_api_key,
-                "model": cfg.groq_model,
-            },
-        },
+        # NO LLM SECTION.
+        #
+        # This used to configure mem0 with `{"provider": "groq", "config":
+        # {"api_key": ..., "model": ...}}`, so the library built its OWN Groq
+        # client from the raw key and called it directly. That is an egress
+        # outside `mao.providers.gateway` — outside usage accounting, outside
+        # role resolution, outside the retry and rate-limit budget, and outside
+        # every test that asserts on the gateway. Phase 1 scope item 3 is
+        # "centralize model/provider selection through a model gateway", and
+        # that requirement was false while it stood.
+        #
+        # It was also failing on EVERY request: measured live, mem0's extraction
+        # call returned HTTP 413 (8000 TPM ceiling) each time, so the inference
+        # it performed was buying nothing at all.
+        #
+        # `add(..., infer=False)` stores the turn verbatim and makes no model
+        # call, which removes the bypass rather than re-routing it. Recovering
+        # LLM-derived memory — if it is wanted — belongs with the durable
+        # learning data plane in Phase 5 (D2), through the gateway.
         # OLLAMA: "llm": {
         # OLLAMA:     "provider": "ollama",
         # OLLAMA:     "config": {
@@ -161,9 +173,11 @@ def save_memory(
             {"role": "assistant", "content": truncated_response},
         ]
         try:
-            client.add(messages, user_id=user_id)
+            client.add(messages, user_id=user_id, infer=False)
         except TypeError:
-            client.add(messages, filters={"user_id": user_id})  # type: ignore[call-arg]
+            client.add(  # type: ignore[call-arg]
+                messages, filters={"user_id": user_id}, infer=False
+            )
         logger.debug("Memory saved for user=%s", user_id)
 
     except Exception as exc:  # noqa: BLE001

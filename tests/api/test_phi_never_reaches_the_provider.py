@@ -118,14 +118,29 @@ def recording_provider(monkeypatch: pytest.MonkeyPatch):
     from mao.memory.interface import reset_memory_store, set_memory_store
     from mao.safety import verification
 
-    class _NoMemory:
+    class _RecordingMemory:
+        """Instrument the memory sink instead of stubbing it.
+
+        Both PHI tests installed a `_NoMemory` whose `remember` was `return
+        None`, so nothing in the suite had ever asserted what the memory store
+        receives — and it is a PERSISTENT sink (hosted Qdrant) that is replayed
+        as prompt context on later turns. Stubbing a sink hides it; recording it
+        is what lets the four-sink guarantee actually cover five.
+        """
+
+        def __init__(self) -> None:
+            self.written: list[str] = []
+
         def recall(self, query, user_id):
             return ""
 
         def remember(self, query, response, user_id):
+            self.written.append(f"{query}\n{response}")
             return None
 
-    set_memory_store(_NoMemory())
+    memory = _RecordingMemory()
+    provider.memory = memory
+    set_memory_store(memory)
     monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
     monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
     monkeypatch.setattr(verification, "check_all_claims", lambda claims, premise: [])
@@ -168,6 +183,24 @@ class TestAnUploadedReportIsDeIdentifiedBeforeItLeavesTheProcess:
         assert recording_provider.sent, "the provider was never called — probe is vacuous"
         assert recording_provider.leaked() == [], (
             "these identifiers were sent to the third-party provider"
+        )
+
+    def test_no_identifier_reaches_the_memory_store(
+        self, client, recording_provider
+    ) -> None:
+        """The memory store is a PERSISTENT sink and was never asserted on."""
+        client.post(
+            "/chat",
+            json={
+                "query": "Summarise this discharge summary.",
+                "user_id": "phi-probe",
+                "metadata": {"report_b64": _build_pdf()},
+            },
+        )
+        written = "\n".join(recording_provider.memory.written)
+        leaked = [identifier for identifier in PHI if identifier in written]
+        assert leaked == [], (
+            f"these identifiers were written to the memory store: {leaked}"
         )
 
     def test_the_clinical_content_still_reaches_the_provider(

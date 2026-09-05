@@ -81,7 +81,34 @@ def map_lines(text: str, transform: Callable[[str], str]) -> str:
     return join_lines([transform(content) for content in contents], terminators)
 
 
-_INVISIBLE_RE = re.compile(f"[{INVISIBLE}]")
+#: Every Unicode FORMAT character, not the handful anyone happened to notice.
+#:
+#: `INVISIBLE` above is a hand-written six-element string, and enumerating it by
+#: hand failed the same way every fixed list in this project has failed: nine
+#: further characters — U+200E/200F (directional marks), U+202A/202E (embedding
+#: and override), U+2061, U+2066, U+061C, U+FE0F, U+180E — still split every
+#: grammar, and defeated 54 of 90 field/character combinations. A `[NAME]`
+#: placeholder was emitted with the surname legible beside it.
+#:
+#: `Cf` is the Unicode category for exactly these: characters that carry
+#: formatting and no content. Using the category means the next one added to
+#: Unicode is handled without anyone noticing it. U+180E is included explicitly
+#: because it was reclassified out of `Cf` and is still a zero-width separator.
+_FORMAT_CHARACTERS = frozenset(
+    chr(code)
+    for code in range(0x110000)
+    if unicodedata.category(chr(code)) == "Cf"
+) | {"­", "᠎"} | {
+    # Variation selectors. Category `Mn`, not `Cf`, so the category test alone
+    # left U+FE0F splitting every numeric grammar — 5 of 72 probes. They select
+    # a glyph form and carry no content, which is exactly the same argument.
+    chr(code)
+    for code in [*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0)]
+}
+
+_INVISIBLE_RE = re.compile(
+    "[" + "".join(re.escape(character) for character in sorted(_FORMAT_CHARACTERS)) + "]"
+)
 
 
 def normalise(text: str) -> str:

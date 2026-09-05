@@ -122,7 +122,24 @@ _RULES: list[tuple[str, str | Callable[[re.Match[str]], str]]] = [
     # near-miss NI number is still redacted, because missing a real one is a
     # disclosure — but here the shape is SO common in clinical data that the
     # false-positive cost is the larger one.
+    # A spaced 3-3-4 ten-digit number is an NHS number AND a North American
+    # phone number. Nothing in the string distinguishes them, so the order here
+    # is a judgement, not a fact, and it is recorded as one:
+    #
+    #   NHS first  — a valid modulus-11 checksum wins. Roughly one NANP number
+    #                in eleven passes by chance and is typed `[NHS]` (measured
+    #                20/200), which is a (b4) mislabelling with no disclosure:
+    #                the digits are removed either way.
+    #   NANP first — every real NHS number in this UK clinical system is typed
+    #                `[PHONE]`, which is the same class of error against the
+    #                identifier the domain actually cares about, and far more
+    #                often.
+    #
+    # NHS wins because this is a UK clinical system and its own patient
+    # identifier should be named correctly. The residual is recorded as
+    # NON_BLOCKING rather than hidden.
     (r"\b(?:\d{3}[ \t]){2}\d{4}\b", _nhs_number),
+    (r"\b[2-9]\d{2}[ \t][2-9]\d{2}[ \t]\d{4}\b", "[PHONE]"),
     # The closed-up form keeps its unconditional rule. Ten CONTIGUOUS digits is
     # not a clinical quantity — the spaced 3-3-4 form is the one that collides
     # with a column of lab values, and it is the only one gated on the checksum.
@@ -176,8 +193,12 @@ _RULES: list[tuple[str, str | Callable[[re.Match[str]], str]]] = [
     ),
     # Any UK area-code length: 020 (London), 028 (Belfast), 029 (Cardiff) all
     # leaked because the rule demanded 3-4 digits after the leading zero.
-    (r"\+44[ \t]?\(?0?\)?[ \t]?(?:\d[ \t]?){9,10}\d\b", "[PHONE]"),
-    (r"\b0(?:[ \t]?\d){9,10}\b", "[PHONE]"),
+    # The digit separator is `[ \t.-]` and the area code may be parenthesised.
+    # Permitting only space and tab left three real UK spellings leaking —
+    # `(01234) 567890`, `020-7946-0958`, `(020) 7946 0958` — all ordinary
+    # letterhead content, none of them exotic.
+    (r"\+44[ \t.\-]?\(?0?\)?[ \t.\-]?(?:\d[ \t.\-]?){9,10}\d\b", "[PHONE]"),
+    (r"\(?\b0\)?(?:[ \t.\-]?\d\)?){9,10}\b", "[PHONE]"),
     # Space-separated North American form. Removing it to stop `138 102 2024`
     # becoming `[PHONE]` traded a false placeholder for a RAW DISCLOSURE: real
     # US numbers in prose then leaked, 186/200. Under the agreed policy an

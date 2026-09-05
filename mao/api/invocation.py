@@ -13,6 +13,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from mao.core.deident.ambiguity import AmbiguousDocument
+
 from mao.api.executor import get_executor
 from mao.core.state import MAOState
 from mao.graph import get_graph
@@ -81,6 +83,18 @@ async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
         return await loop.run_in_executor(
             get_executor(), context.run, invoke_with_usage, get_graph(), state
         )
+    except AmbiguousDocument:
+        # NOT a failure — a deliberate refusal that the route turns into a 422
+        # asking the caller for structured patient fields. Swallowing it here
+        # made the whole refusal path unreachable: `main.py`'s
+        # `except AmbiguousDocument` could never fire, every ambiguous upload
+        # answered HTTP 500, and no caller was ever asked for the fields.
+        #
+        # It must also not reach `logger.exception` below, which writes the
+        # exception's message to the application log — and that message named
+        # the very text that could not be de-identified, putting the patient's
+        # name in a log on the de-identification failure path.
+        raise
     except Exception as exc:
         # Full cause here, where it is useful and stays inside the process.
         logger.exception("Graph invocation failed request_id=%s: %s", request_id, exc)

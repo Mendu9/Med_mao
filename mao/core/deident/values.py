@@ -142,6 +142,12 @@ def _has_non_latin(token: str) -> bool:
     return any(ord(character) > 0x036F for character in token)
 
 
+def _skip_gap(line: str, position: int) -> int:
+    """Past the whitespace (and optional comma) between two value tokens."""
+    gap = _NAME_GAP_RE.match(line, position)
+    return gap.end() if gap else position
+
+
 def name_tokens(
     line: str, start: int, *, any_case: bool = False
 ) -> list[tuple[str, int, int]]:
@@ -283,8 +289,13 @@ NI_NUMBER = rf"{_NI_SHAPE}(?![A-Za-z0-9])"
 # with its label attached. Written as "leading 0, then 9 or 10 more digits in any
 # grouping" instead of guessing the split.
 PHONE = (
-    r"(?:\+\d{1,3}[ \t]?\(?0?\)?[ \t]?(?:\d[ \t]?){9,11}"
-    r"|\b0(?:[ \t]?\d){9,10}"
+    # The digit separator is `[ \t.-]`, not `[ \t]`. Permitting only space and
+    # tab left three real UK spellings leaking behind an explicit `Telephone:`
+    # label — `020-7946-0958`, `(01234) 567890`, `(020) 7946 0958` — because a
+    # hyphenated or parenthesised area code matched neither UK rule, and the
+    # NANP fallback needs 3-3-4 grouping that `(020) 7946 0958` is not.
+    r"(?:\+\d{1,3}[ \t.\-]?\(?0?\)?[ \t.\-]?(?:\d[ \t.\-]?){9,11}"
+    r"|\(?\b0\)?(?:[ \t.\-]?\d\)?){9,10}"
     r"|\(?\d{3}\)?[-. \t]\d{3}[-. \t]\d{4})"
     r"(?![A-Za-z0-9])"
 )
@@ -387,7 +398,23 @@ def value_at(
         # Syndrome`, and 77 of 87 clinical phrases were mutilated this way.
         # Reaching the end of the line is what tells the two apart, and it needs
         # no vocabulary at all.
-        return tokens[0][1], tokens[-1][2]
+        # A run stopped by a clinical word THAT IS THE LAST THING ON THE LINE is
+        # a truncation, not a boundary. The clinical lexicon is full of eponyms
+        # — Parkinson, Pick, Down, Rankin, Braak — for the obvious reason that
+        # eponyms are named after people, so those words are surnames too.
+        # `Patient Name: John Michael Parkinson` stopped at the surname and
+        # emitted `[NAME] Parkinson`: the name leaked AND the output claimed it
+        # had not, 1440/1440. A header value runs to the end of its line, so
+        # reaching the end is what tells a surname from a following phrase.
+        end = tokens[-1][2]
+        trailing = _NAME_TOKEN_RE.match(line, _skip_gap(line, end))
+        if (
+            trailing is not None
+            and not line[trailing.end() :].strip(" \t\r.,;" + INVISIBLE)
+            and trailing.group()[:1].isupper()
+        ):
+            return tokens[0][1], trailing.end()
+        return tokens[0][1], end
     pattern = _AT.get(field_type)
     if pattern is None:
         return None
@@ -421,7 +448,7 @@ def longest_value_at(
 #: An editorial annotation appended to a column cell: `[SIC]`, `[NB]`, `[?]`.
 #: Left in the content span it made the cell fail every whole-line value test,
 #: so a name carrying one was never associated with its label and leaked.
-_ANNOTATION = re.compile(r"[ \t]*\[[A-Za-z? ]{1,12}\][ \t]*\Z")
+_ANNOTATION = re.compile(r"[ \t]*\[[A-Za-z?_ ]{1,12}\][ \t]*\Z")
 
 
 def _content_span(line: str) -> tuple[int, int] | None:

@@ -418,6 +418,7 @@ def _pair_in_direction(
     """
     paired: list[tuple[int, _Claim]] = []
     taken = set(consumed)
+    satisfied: set[int] = set()
     # Non-person columns first: they are unambiguous by shape, and how many of
     # them pair is the evidence that this document is a patient banner rather
     # than a page of narrative that happens to contain a label word.
@@ -433,6 +434,21 @@ def _pair_in_direction(
                 candidate = (
                     run[-1] + 1 + offset if forwards else run[0] - length + offset
                 )
+                # Already satisfied by an earlier pass: this label's OWN cell
+                # holds a placeholder and nothing else. Recording it as placed
+                # is what stops it walking on to the next line and redacting a
+                # clinical one — the residual idempotence defect, which
+                # destroyed a clinical line in 880 of 82,764 documents on the
+                # second scrub `/chat` actually performs.
+                #
+                # Positional, so a decoy cannot exploit it: appending `[NAME]`
+                # to a line leaves the real value there, the cell is not
+                # placeholder-ONLY, and it is still redacted.
+                if 0 <= candidate < len(lines) and _value_is_placeholder(
+                    lines[candidate]
+                ):
+                    satisfied.add(label_line)
+                    continue
                 if not _is_free_cell(lines, labels, candidate, taken):
                     continue
                 span = matches_exclusively(field_type, lines[candidate])
@@ -449,6 +465,13 @@ def _pair_in_direction(
                     (label_line, _Claim(candidate, span[0], span[1], field_type))
                 )
                 taken.add(candidate)
+    # A satisfied label is PLACED with no claim, so `_cross_line_claims` does
+    # not hand it on to the type-matched fallback. The sentinel line is -1 and
+    # is filtered out before any span is applied.
+    paired.extend(
+        (label_line, _Claim(-1, 0, 0, FieldType.STRUCTURAL))
+        for label_line in satisfied
+    )
     return paired
 
 
@@ -460,20 +483,33 @@ def _is_free_cell(
 ) -> bool:
     """A line that could be an unclaimed column cell.
 
-    Non-empty, carrying no label, and carrying no placeholder. The last of those
-    is what makes scrubbing IDEMPOTENT, and `/chat` scrubs twice — once in
-    `apply_input_guardrails` and again in `query_decomposer` — so a second pass
-    that finds new work is not a theoretical concern. Without it the placeholder
-    from pass one no longer parses as a value, the orphan label re-fires, and it
-    consumes the NEXT line instead: `Patient Name:` / `[NAME]` /
-    `Clock Drawing Test` became `Patient Name:` / `[NAME]` / `[NAME]`.
+    Non-empty and carrying no label.
+
+    It deliberately does NOT reject a line merely for containing a placeholder.
+    That test was here for idempotence, and it was forgeable: the caller
+    controls the input and there is no authentication on `mao/api/`, so
+    appending ` [NAME]` to each line of a pasted banner made every line look
+    already-scrubbed and suppressed redaction of the name AND the record number
+    — 10 of 10 of this module's own placeholders worked as decoys.
+
+    A marker in the input cannot establish "this span was produced by THIS run".
+    Idempotence is established positionally instead, by `_value_is_placeholder`:
+    a label whose OWN candidate cell holds nothing but a placeholder has already
+    been satisfied. Appending a decoy leaves the real value on the line, so the
+    cell is not placeholder-only and is still redacted.
     """
     return (
         0 <= index < len(lines)
         and index not in taken
         and not labels[index]
         and bool(lines[index].strip())
-        and not _PLACEHOLDER.search(lines[index])
+    )
+
+
+def _value_is_placeholder(line: str) -> bool:
+    """Whether this line holds a placeholder and nothing else of substance."""
+    return bool(_PLACEHOLDER.search(line)) and not _PLACEHOLDER.sub("", line).strip(
+        " \t\r.,;:" + INVISIBLE
     )
 
 
@@ -640,7 +676,7 @@ def _cross_line_claims(
     )
     chosen = forwards if len(forwards) >= len(backwards) else backwards
 
-    claims = [claim for _, claim in chosen]
+    claims = [claim for _, claim in chosen if claim.line >= 0]
     placed_labels = {label_line for label_line, _ in chosen}
     taken = set(consumed) | {claim.line for claim in claims}
     unpaired = [

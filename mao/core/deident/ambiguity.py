@@ -52,10 +52,19 @@ class AmbiguousDocument(Exception):
 
 @dataclass(frozen=True)
 class Ambiguity:
-    """One decision the scrubber could not make on evidence."""
+    """One decision the scrubber could not make on evidence.
+
+    Deliberately carries NO text from the document. This object is raised as an
+    exception, and the exception's message is logged and returned to the caller
+    — so quoting the span here put the patient's name into the application log
+    and the HTTP body, on the one code path whose entire purpose is that the
+    name could not be safely handled. The position and the shape are enough to
+    act on; the content is exactly what must not travel.
+    """
 
     line: int
-    text: str
+    words: int
+    label: str
     reason: str
 
 
@@ -69,13 +78,19 @@ class AmbiguityReport:
         return bool(self.items)
 
     def describe(self) -> str:
+        """A description safe to log and to return to the caller.
+
+        Names the LINE and the FIELD, never the value. A caller who sent the
+        document can find the line; a log reader who did not, cannot learn
+        anything from it.
+        """
         if not self.items:
             return "no ambiguous fields"
-        lines = [
-            f"line {item.line + 1}: {item.text!r} — {item.reason}"
+        return "; ".join(
+            f"line {item.line + 1}, field {item.label!r}: {item.words} "
+            f"name-shaped words — {item.reason}"
             for item in self.items
-        ]
-        return "; ".join(lines)
+        )
 
 
 #: A name run this long with no clinical signal inside it and more content after
@@ -116,15 +131,24 @@ def find_ambiguities(text: str) -> AmbiguityReport:
             # end of the line. Only an unpunctuated continuation is unresolvable.
             if not tail.strip() or tail.lstrip()[:1] in _SENTENCE_END:
                 continue
+            # ...and so does the NEXT FIELD. `Patient Name: John Michael Smith
+            # MRN: RGT/44219/B` is a perfectly ordinary banner: the name ends
+            # where the next label begins, which `name_tokens` already knows.
+            # Refusing it made the quarantine fire on the shape real patient
+            # banners always have — 30/30 in review — and a refusal that common
+            # is a broken product rather than a policy.
+            if find_labels(tail):
+                continue
             if has_clinical_head([_fold(line[s:e]) for _, s, e in tokens]):
                 continue
             report.items.append(
                 Ambiguity(
                     line=index,
-                    text=line[tokens[0][1] : tokens[-1][2]],
+                    words=len(words),
+                    label=" ".join(line[_start:end].split()),
                     reason=(
-                        f"{len(words)} name-shaped words followed by more text with "
-                        "no punctuation — the end of the name cannot be established"
+                        "followed by more text with no punctuation and no "
+                        "following field — the end of the name cannot be established"
                     ),
                 )
             )
