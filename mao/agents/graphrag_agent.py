@@ -217,6 +217,12 @@ def graphrag_node(state: MAOState) -> MAOState:
     user_prompt = f"{context_block}\n\nUser question: {user_query}"
 
     # Build messages once — reused by both sync and deferred paths.
+    #
+    # The history goes to the provider verbatim, and on the deferred path it
+    # goes there through `_stream_messages` after the route has returned. Both
+    # were unscrubbed egress until the route stopped putting the caller's raw
+    # turns in state (ADV15-8); the turns on this key are minted by the
+    # protected input boundary and are not transformed a second time here.
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
     messages.extend(state.get("chat_history", [])[-4:])
     messages.append({"role": "user", "content": user_prompt})

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Optional, TypedDict
 import uuid
 from mao.core.config import TOKEN_BUDGET
 from mao.safety.policy import RiskLevel
+
+if TYPE_CHECKING:  # pragma: no cover - import kept out of the runtime cycle
+    from mao.trust.inputs.boundary import ProtectedInput
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +62,14 @@ class MAOState(TypedDict, total=False):
     memory_context: str
 
     # --- Conversation history (provided by API layer) ---
+    #
+    # De-identified, always, on any path that came from a request. Three agents
+    # read this key and hand it straight to a provider — `router`, `graphrag`
+    # and `critic` — and none of them scrubbed it, because the route put the
+    # caller's turns here verbatim (ADV15-8). The turns are now minted by
+    # `mao.trust.inputs.boundary.protect`; `initial_state_from_protected` below
+    # is the only constructor a request path may use, so there is no route-level
+    # spelling of this field that can carry raw text.
     chat_history: list[dict[str, str]]
 
     # --- Output (written by agent nodes) ---
@@ -204,6 +215,30 @@ def risk_level_of(state: dict) -> RiskLevel:
 # Factory
 # ---------------------------------------------------------------------------
 
+def initial_state_from_protected(
+    protected: ProtectedInput,
+    user_id: str,
+) -> MAOState:
+    """The only state constructor a request path may use.
+
+    It takes the boundary's OUTPUT, not strings, so there is no way to spell
+    "build a request state" that leaves a channel un-de-identified. That is the
+    whole of ADV15-8 stated as a signature: the defect was not a scrubber that
+    failed, it was a second channel — `chat_history` — that the route handed to
+    `make_initial_state` verbatim because `make_initial_state` accepted it.
+
+    `make_initial_state` below still takes plain text and is still the right
+    thing for a CLI demo or a unit test, where there is no request, no caller
+    and no patient. `tests/api/test_history_enters_the_protected_boundary.py`
+    asserts that neither chat route reaches for it.
+    """
+    return make_initial_state(
+        user_query=protected.query.text,
+        user_id=user_id,
+        chat_history=protected.history_as_messages(),
+    )
+
+
 def make_initial_state(
     user_query: str,
     user_id: str,
@@ -212,7 +247,7 @@ def make_initial_state(
     """
     Build a fresh MAOState with safe defaults.
 
-    Called by api/main.py before invoking the LangGraph graph.
+    Not for the request path — see `initial_state_from_protected`.
     """
     sid = str(uuid.uuid4())
     return MAOState(

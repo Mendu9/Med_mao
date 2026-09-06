@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from mao.core.deident.ambiguity import AmbiguousDocument
+from mao.trust.inputs import limits
 
 from mao.api.executor import get_executor
 from mao.core.state import MAOState
@@ -83,6 +84,15 @@ async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
         return await loop.run_in_executor(
             get_executor(), context.run, invoke_with_usage, get_graph(), state
         )
+    except limits.InputTooLarge:
+        # NOT a failure either — a deliberate refusal the routes turn into a
+        # 413 naming the channel, the size and the limit. It is raised where the
+        # bytes are read (`_extract_pdf_text`, `handle_audio`), which is inside
+        # the graph, so without this clause the generic handler below turned
+        # every oversized attachment into an opaque 500 and the caller was never
+        # told what to send instead. Same reasoning as `AmbiguousDocument`
+        # below, including staying out of `logger.exception`.
+        raise
     except AmbiguousDocument:
         # NOT a failure — a deliberate refusal that the route turns into a 422
         # asking the caller for structured patient fields. Swallowing it here
