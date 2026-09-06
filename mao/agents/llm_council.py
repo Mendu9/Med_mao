@@ -20,6 +20,7 @@ import re
 
 from mao.core.config import COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS
 from mao.prompts import get_prompt
+from mao.prompts.verification import build_verifier_messages
 from mao.providers import gateway
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
@@ -47,6 +48,11 @@ _MEMBER_PROMPTS = {
 
 # Members whose judgement is meaningful with no retrieved context (P1-3).
 _CONTEXT_FREE_MEMBERS = (_SAFETY,)
+
+# The framing that separates these instructions from the text they judge. Named
+# here rather than buried in the renderer because it is part of what produced
+# the verdict, so a verdict has to be able to cite its version (ADV15-10).
+_VERIFIER_PROTOCOL = "verifier.protocol"
 
 
 def _members_for(context: str) -> tuple[str, ...]:
@@ -100,16 +106,18 @@ async def _async_call_agent(
     honestly instead of attributing a rate limit to a patient-safety finding.
     """
     spec = get_prompt(_MEMBER_PROMPTS[member])
-    user_turn = get_prompt("council.user_turn").render(context=context, response=response)
+    # Instructions, evidence and answer as three messages, each untrusted blob
+    # fenced with a per-call marker. The concatenated single turn this replaces
+    # let a retrieved chunk forge the frame and redirect the review (ADV15-10).
+    messages = build_verifier_messages(
+        instructions=spec.template, evidence=context, response=response
+    )
     try:
         completion = await asyncio.wait_for(
             asyncio.to_thread(
                 gateway.complete,
                 role=ModelRole.SAFETY_JUDGE,
-                messages=[
-                    {"role": "system", "content": spec.template},
-                    {"role": "user", "content": user_turn},
-                ],
+                messages=messages,
                 purpose=EgressPurpose.SAFETY_VERIFICATION,
                 temperature=0.0,
                 max_tokens=COUNCIL_MAX_TOKENS,
@@ -157,7 +165,11 @@ async def run_council_async(response: str, context: str) -> dict:
             verdicts[member] = "VERDICT: FAIL. Missing verdict."
             unavailable.append(member)
 
-    meta: dict = {"members": list(members), "prompt_refs": _prompt_refs(members)}
+    meta: dict = {
+        "members": list(members),
+        "prompt_refs": _prompt_refs(members),
+        "protocol_ref": get_prompt(_VERIFIER_PROTOCOL).trace_ref,
+    }
     if unavailable:
         meta["unavailable_members"] = sorted(set(unavailable))
 

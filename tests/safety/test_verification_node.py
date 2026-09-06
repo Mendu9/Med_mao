@@ -138,7 +138,16 @@ def test_uses_the_registered_judge_prompt_and_the_safety_judge_role(bind_judge, 
     verification_node(_state())
 
     spec = get_prompt("judge.safety")
-    assert provider.calls[0]["messages"][0]["content"] == spec.template
+    messages = provider.calls[0]["messages"]
+    # Was `== spec.template`. Superseded by ADV15-10: the judge's system turn is
+    # now its registered template PLUS the non-forgeable protocol framing, and
+    # the evidence and the answer arrive as separate messages instead of one
+    # concatenated user turn. Equality here would forbid the fix; the property
+    # that matters is still that the call site sends the REGISTERED prompt and
+    # not inline text of its own.
+    assert messages[0]["content"].startswith(spec.template)
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
+    assert "RESPONSE_UNDER_REVIEW" in messages[-1]["content"]
     assert provider.calls[0]["model_id"] == gateway.model_id_for(ModelRole.SAFETY_JUDGE)
 
 

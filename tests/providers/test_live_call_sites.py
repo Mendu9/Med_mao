@@ -98,8 +98,32 @@ def _complete(role: ModelRole, prompt_name: str, user: str, budget: int) -> str:
     ).text
 
 
-def _council_turn() -> str:
-    return get_prompt("council.user_turn").render(context=PREMISE, response=ANSWER)
+def _verifier_messages(prompt_name: str) -> list[dict]:
+    """The real structured messages a council member and the judge now send.
+
+    `council.user_turn` is gone. It concatenated the evidence and the answer
+    into one user turn, so a retrieved chunk could forge the frame and redirect
+    the review (ADV15-10). Probing the old single turn would probe a shape
+    production no longer sends — and this file exists precisely so a probe
+    cannot drift from its call site.
+    """
+    from mao.prompts.verification import build_verifier_messages
+
+    return build_verifier_messages(
+        instructions=get_prompt(prompt_name).template,
+        evidence=PREMISE,
+        response=ANSWER,
+    )
+
+
+def _complete_verifier(role: ModelRole, prompt_name: str, budget: int) -> str:
+    return gateway.complete(
+        role=role,
+        messages=_verifier_messages(prompt_name),
+        temperature=0.0,
+        max_tokens=budget,
+        purpose=EgressPurpose.GENERAL_SYNTHESIS,
+    ).text
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +150,8 @@ class TestTheSafetyJudgeCallSite:
         )
 
         raw = _probe(
-            lambda: _complete(
-                ModelRole.SAFETY_JUDGE,
-                "judge.safety",
-                _council_turn(),
-                _JUDGE_MAX_TOKENS,
+            lambda: _complete_verifier(
+                ModelRole.SAFETY_JUDGE, "judge.safety", _JUDGE_MAX_TOKENS
             )
         )
         scores = _parse_judge(raw)
@@ -150,10 +171,7 @@ class TestTheSafetyJudgeCallSite:
         completion = _probe(
             lambda: gateway.complete(
                 role=ModelRole.SAFETY_JUDGE,
-                messages=[
-                    {"role": "system", "content": get_prompt("judge.safety").template},
-                    {"role": "user", "content": _council_turn()},
-                ],
+                messages=_verifier_messages("judge.safety"),
                 temperature=0.0,
                 max_tokens=_JUDGE_MAX_TOKENS,
                 purpose=EgressPurpose.GENERAL_SYNTHESIS,
@@ -183,8 +201,8 @@ class TestTheCouncilCallSites:
         from mao.core.config import COUNCIL_MAX_TOKENS
 
         raw = _probe(
-            lambda: _complete(
-                ModelRole.SAFETY_JUDGE, prompt_name, _council_turn(), COUNCIL_MAX_TOKENS
+            lambda: _complete_verifier(
+                ModelRole.SAFETY_JUDGE, prompt_name, COUNCIL_MAX_TOKENS
             )
         )
 
