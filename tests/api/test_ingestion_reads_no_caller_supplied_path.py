@@ -23,11 +23,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-@pytest.fixture
-def client():
-    from mao.api.main import app
+_KEY = "b6-regression-key"
 
-    with TestClient(app) as test_client:
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch):
+    """An AUTHORIZED client.
+
+    ADV15-11 put the whole ingestion router behind a shared-secret dependency,
+    so every request here now carries the key. That is not a weakening of these
+    assertions: B6 is about what an authorized caller can make the server read,
+    which is a strictly harder property than what an anonymous one can. The
+    authorization boundary itself is tested in
+    `test_ingest_requires_authorization.py`.
+    """
+    from mao.api.main import app
+    from mao.core.config import INGEST_API_KEY_ENV
+
+    monkeypatch.setenv(INGEST_API_KEY_ENV, _KEY)
+    with TestClient(app, headers={"X-MAO-Ingest-Key": _KEY}) as test_client:
         yield test_client
 
 
