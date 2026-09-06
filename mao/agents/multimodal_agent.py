@@ -19,7 +19,10 @@ from pathlib import Path
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.classes import InputChannel
 from mao.trust.egress.policy import EgressPurpose
+from mao.trust.inputs import limits
+from mao.trust.inputs.boundary import protect_channel
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -111,8 +114,30 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
     metadata: dict,
     memory_context: str,
 ) -> tuple[str, dict]:
-    """
-    Transcribe audio with Whisper, then answer user_query about the transcript.
+    r"""Transcribe audio with Whisper, protect the transcript, then answer.
+
+    ## ADV15-15 — the modality that never de-identified anything
+
+    `grep -n "scrub_pii\|find_ambiguities" mao/agents/multimodal_agent.py`
+    returned nothing. This function transcribed the upload and concatenated the
+    raw Whisper output straight into the user turn, and `result_meta` returned
+    500 characters of it to the client, where it was cached in Redis and written
+    to a trace. A recorded consultation contains spoken names, addresses and
+    dates of birth by construction, and `audio_b64` is the documented way to
+    send one.
+
+    It was never a de-identification defect: the de-identifier was not called.
+    `01_ARCHITECTURE.md` — "any existing audio/transcript path must obey the
+    same protected-input contract or be disabled" — so the transcript now enters
+    the same boundary as typed text, on the `TRANSCRIPT` channel, with the
+    identifiers it removes recorded against THIS request's protection so the
+    egress assertion covers them exactly as it covers the query.
+
+    A spoken patient header is as unresolvable as a written one, and the
+    recording is processed unseen for the same reason a PDF is, so
+    `protect_channel` refuses an ambiguous one and the route answers 422 asking
+    for structured fields. That refusal must reach the route, which is why
+    nothing here catches it.
 
     Accepts:
       - metadata["audio_path"]: local file path to audio file
@@ -133,6 +158,24 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
     if not audio_path and metadata.get("audio_b64"):
         try:
             audio_bytes = base64.b64decode(metadata["audio_b64"])
+        except Exception as exc:  # noqa: BLE001
+            return f"Failed to decode audio: {exc}", {"error": str(exc)}
+
+        # ADV15-7 on this channel. The report path bounds its decoded
+        # attachment; audio had no bound at all, so a caller could hand the
+        # transcriber an arbitrarily large recording and hold a worker thread
+        # for as long as it takes to transcribe it. Same shared cap, refused
+        # rather than truncated — a half-transcribed consultation answered as
+        # though it were complete is the failure the report path refuses too.
+        # Raised outside the broad `except` above deliberately: swallowed here
+        # it would become an answer built on no audio at all.
+        limits.check(
+            "the decoded audio",
+            len(audio_bytes),
+            limits.MAX_DECODED_ATTACHMENT_BYTES,
+        )
+
+        try:
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp.write(audio_bytes)
             tmp.close()
@@ -159,14 +202,29 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
             os.unlink(temp_file)
 
     if not transcript:
-        return "The audio appears to contain no speech.", {"transcript": ""}
+        return "The audio appears to contain no speech.", {"transcript_chars": 0}
+
+    # The transcript is a sensitive input channel like any other. Bounded first
+    # — speech is slower than typing, so an hour of dictation is well under this
+    # and anything above it is not a consultation — then de-identified exactly
+    # once, here, and never again.
+    limits.check("the transcript", len(transcript), limits.MAX_TRANSCRIPT_CHARS)
+    safe_transcript = protect_channel(transcript, InputChannel.TRANSCRIPT)
 
     # Now answer the user's question about the transcript
     system_prompt = build_system_prompt(get_prompt("multimodal.audio_transcript").template, memory_context)
     user_prompt = (
-        f"Audio transcript:\n{transcript}\n\n"
+        f"Audio transcript:\n{safe_transcript.text}\n\n"
         f"User question: {user_query}"
     )
+    # `result_meta` is echoed into the response body, cached in Redis under two
+    # keys and written to a trace, so what goes in it is an egress decision like
+    # any other. It used to carry `transcript[:500]` — the RAW Whisper output,
+    # i.e. the first 500 characters of a consultation, which is precisely where
+    # the spoken patient header is. Only the length is reported now; the
+    # transcript itself is what the answer was built from and does not need
+    # returning alongside it.
+    result_meta = {"transcript_chars": len(safe_transcript.text), "audio_model": "whisper-base"}
     try:
         answer = gateway.complete(
             role=ModelRole.GENERAL_SYNTHESIS,
@@ -178,11 +236,15 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
             temperature=0.1,
             max_tokens=512,
         ).text.strip()
-        return answer, {"transcript": transcript[:500], "audio_model": "whisper-base"}
+        return answer, result_meta
     except Exception as exc:
+        # The de-identified transcript, not the raw one. A provider outage
+        # should not throw away a transcription the clinician is waiting for,
+        # and this text is the same trust class as the de-identified query the
+        # other routes already return and persist.
         return (
-            f"Transcript:\n{transcript}\n\n(Could not synthesize answer: {exc})",
-            {"transcript": transcript[:500], "error": str(exc)},
+            f"Transcript:\n{safe_transcript.text}\n\n(Could not synthesize answer: {exc})",
+            {**result_meta, "error": str(exc)},
         )
 
 

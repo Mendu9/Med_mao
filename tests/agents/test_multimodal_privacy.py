@@ -42,10 +42,15 @@ def run_clinical(monkeypatch: pytest.MonkeyPatch):
         "handle_image",
         lambda *a, **k: ("A description of the image.", {"vision_model": "stub"}),
     )
+    # The stub returns what `handle_audio` returns now. It used to return
+    # `{"transcript": ...}` — raw Whisper output echoed into the response,
+    # cached and traced (ADV15-15). The real handler reports the length and
+    # keeps the text, so a stub that still returned the old key would describe a
+    # contract nothing implements.
     monkeypatch.setattr(
         clinical_agent,
         "handle_audio",
-        lambda *a, **k: ("A transcript summary.", {"transcript": "hello"}),
+        lambda *a, **k: ("A transcript summary.", {"transcript_chars": 5}),
     )
 
     def _run(metadata: dict) -> dict:
