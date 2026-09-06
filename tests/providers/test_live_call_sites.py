@@ -37,6 +37,7 @@ import pytest
 
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 pytestmark = pytest.mark.slow
@@ -93,6 +94,7 @@ def _complete(role: ModelRole, prompt_name: str, user: str, budget: int) -> str:
         ],
         temperature=0.0,
         max_tokens=budget,
+        purpose=EgressPurpose.GENERAL_SYNTHESIS,
     ).text
 
 
@@ -154,6 +156,7 @@ class TestTheSafetyJudgeCallSite:
                 ],
                 temperature=0.0,
                 max_tokens=_JUDGE_MAX_TOKENS,
+                purpose=EgressPurpose.GENERAL_SYNTHESIS,
             )
         )
         assert not completion.truncated, (
@@ -333,18 +336,32 @@ class TestTheSynthesisCallSites:
             "model's analysis channel"
         )
 
-    def test_report_summarisation_returns_a_summary(self) -> None:
-        """The clinical report summariser asks for 300 tokens on a model whose
-        analysis channel alone was measured at 437."""
-        from mao.agents.clinical_agent import _REPORT_SUMMARY_MAX_TOKENS
+    def test_the_clinical_synthesis_budget_answers_from_a_safe_projection(self) -> None:
+        """The report path no longer summarises the document.
 
-        completion = gateway.complete(
-            role=ModelRole.CLINICAL_SYNTHESIS,
-            messages=[{"role": "user", "content": f"Summarise:\n{PREMISE}"}],
-            temperature=0.0,
-            max_tokens=_REPORT_SUMMARY_MAX_TOKENS,
+        `_REPORT_SUMMARY_MAX_TOKENS` budgeted a call that sent the de-identified
+        report to an external model — a payload the approved M-1 policy does not
+        admit. The probe is replaced rather than deleted: what needs a live
+        budget check now is the typed synthesis, which is the only external call
+        the migrated report path makes.
+        """
+        from mao.agents.clinical_agent import _SYNTHESIS_MAX_TOKENS
+        from mao.trust.classes import PublicEvidence, SafeSynthesisContext
+
+        context = SafeSynthesisContext(
+            context_id="live-probe",
+            clinical_question="Is it safe to continue donepezil?",
+            age_group="older_adult_75_89",
+            medications_and_doses=("donepezil 10 mg once daily",),
+            clinically_relevant_findings=("bradycardia 48 bpm", "dizziness"),
+        )
+        completion = gateway.synthesise_clinical(
+            system_prompt="You are a clinical decision-support assistant.",
+            context=context,
+            evidence=(PublicEvidence(evidence_id="e1", text=PREMISE),),
+            max_tokens=_SYNTHESIS_MAX_TOKENS,
         )
         assert completion.text.strip(), (
-            f"empty summary at max_tokens={_REPORT_SUMMARY_MAX_TOKENS}"
+            f"empty synthesis at max_tokens={_SYNTHESIS_MAX_TOKENS}"
         )
         assert not completion.truncated

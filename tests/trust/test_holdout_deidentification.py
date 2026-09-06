@@ -19,6 +19,7 @@ them separately, on separate corpora, is how that kept being possible.
 from __future__ import annotations
 
 import unicodedata
+from typing import ClassVar
 
 import pytest
 
@@ -167,7 +168,9 @@ class TestNoPlaceholderCoversPartOfAnIdentifier:
     comment.
     """
 
-    _PARTIAL = middle_name_documents() + name_boundary_documents()
+    _PARTIAL: ClassVar[list[Case]] = (
+        middle_name_documents() + name_boundary_documents()
+    )
 
     @pytest.mark.parametrize("case", _PARTIAL, ids=_ids(_PARTIAL))
     def test_a_placeholder_is_never_emitted_beside_a_legible_fragment(
@@ -197,7 +200,7 @@ class TestNoClinicalContentIsDestroyed:
     de-identified" — so nothing downstream can tell that anything is missing.
     """
 
-    _PRESERVING = [case for case in _CASES if case.must_survive]
+    _PRESERVING: ClassVar[list[Case]] = [c for c in _CASES if c.must_survive]
 
     @pytest.mark.parametrize("case", _PRESERVING, ids=_ids(_PRESERVING))
     def test_clinical_content_survives_verbatim(self, case: Case) -> None:
@@ -251,7 +254,7 @@ class TestScrubbingTwiceChangesNothing:
 class TestTheAxesInteract:
     """Each finding was found one axis at a time; real inputs vary several."""
 
-    _COMBINED = combined_documents()
+    _COMBINED: ClassVar[list[Case]] = combined_documents()
 
     @pytest.mark.parametrize("case", _COMBINED, ids=_ids(_COMBINED))
     def test_a_document_deviating_on_several_axes_still_holds_both_invariants(

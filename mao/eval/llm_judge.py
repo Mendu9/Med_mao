@@ -4,6 +4,7 @@ import json
 import logging
 
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ def judge_response(question: str, response: str, context: str = "") -> dict:
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": prompt},
             ],
+            purpose=EgressPurpose.SAFETY_VERIFICATION,
             max_tokens=300,
             temperature=0.0,
         ).text.strip()

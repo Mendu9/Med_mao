@@ -18,6 +18,7 @@ import re
 
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 from mao.schemas.evidence import as_text
 
@@ -90,6 +91,7 @@ def domain_supervisor_node(state: dict) -> dict:
                 {"role": "system", "content": spec.template},
                 {"role": "user", "content": context},
             ],
+            purpose=EgressPurpose.SAFETY_VERIFICATION,
             temperature=0.0,
             max_tokens=_MAX_TOKENS,
         )

@@ -59,6 +59,7 @@ def extract_triples(text: str) -> list[tuple[str, str, str]]:
 
     from mao.providers import gateway
     from mao.providers.registry import ModelRole
+    from mao.trust.egress.policy import EgressPurpose
 
     prompt = _TRIPLE_PROMPT.format(text=text[:1500])  # cap to avoid token overflow
 
@@ -66,6 +67,7 @@ def extract_triples(text: str) -> list[tuple[str, str, str]]:
         completion = gateway.complete(
             role=ModelRole.EXTRACTION_FAST,
             messages=[{"role": "user", "content": prompt}],
+            purpose=EgressPurpose.EXTRACTION,
             temperature=0.0,
             max_tokens=_EXTRACT_MAX_TOKENS,
         )

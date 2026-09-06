@@ -57,11 +57,31 @@ Normalising inside the scrubber makes it impossible for a caller to forget.
 """
 from __future__ import annotations
 
-from mao.core.deident.freetext import redact_by_shape
-from mao.core.deident.layout import redact_labelled_fields
+from mao.core.deident.freetext import redact_by_shape_with_report
+from mao.core.deident.layout import redact_labelled_fields_with_report
+from mao.core.deident.report import Removal, ScrubResult
 from mao.core.deident.text import normalise, strip_leading_bom
 
-__all__ = ["scrub_pii"]
+__all__ = ["ScrubResult", "scrub_pii", "scrub_with_report"]
+
+
+def scrub_with_report(text: str) -> ScrubResult:
+    """`scrub_pii`, plus the record of every span it replaced.
+
+    The record is what lets the egress boundary assert, at the real sink, that
+    no identifier THIS request's boundary removed is in an outgoing payload.
+    That check is a lookup against what was actually found, not another grammar
+    applied to the characters — which is the difference between it and the six
+    detectors that preceded it. See `mao/core/deident/report.py`.
+    """
+    if not text:
+        return ScrubResult(text=text)
+    bom, body = strip_leading_bom(text)
+    body = normalise(body)
+    body, labelled = redact_labelled_fields_with_report(body)
+    body, shaped = redact_by_shape_with_report(body)
+    removals: list[Removal] = [*labelled, *shaped]
+    return ScrubResult(text=bom + body, removals=tuple(removals))
 
 
 def scrub_pii(text: str) -> str:
@@ -78,9 +98,4 @@ def scrub_pii(text: str) -> str:
     document; but it is not an identifier either, and the invariant is that the
     output differs from the input ONLY where an identifier was removed.
     """
-    if not text:
-        return text
-    bom, text = strip_leading_bom(text)
-    text = normalise(text)
-    text = redact_labelled_fields(text)
-    return bom + redact_by_shape(text)
+    return scrub_with_report(text).text

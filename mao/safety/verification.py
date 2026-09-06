@@ -40,6 +40,7 @@ import re
 from mao.eval.nli_checker import check_all_claims
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 from mao.safety.policy import get_policy, resolve_risk
 from mao.schemas.evidence import Claim, VerificationStatus, as_text
@@ -262,6 +263,7 @@ def _run_judge(response: str, premise: str) -> dict:
                 {"role": "system", "content": spec.template},
                 {"role": "user", "content": user_turn},
             ],
+            purpose=EgressPurpose.SAFETY_VERIFICATION,
             temperature=0.0,
             max_tokens=_JUDGE_MAX_TOKENS,
         )

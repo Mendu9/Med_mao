@@ -83,15 +83,22 @@ def _minimal_state(metadata: dict) -> dict:
 
 
 @patch("mao.agents.clinical_agent.retrieve", return_value=[])
-@patch("mao.agents.clinical_agent._call_llm", return_value="Test LLM response.")
-@patch("mao.agents.clinical_agent._extract_structured_fields", return_value={})
-@patch("mao.agents.clinical_agent._summarize_report", return_value="Report summary.")
+@patch("mao.agents.clinical_agent._synthesise", return_value="Test LLM response.")
 @patch("mao.agents.clinical_agent._web_search_clinical", return_value="No web results.")
+@patch(
+    "mao.agents.clinical_agent._extract_pdf_text",
+    return_value="Aged 78\nDonepezil 10 mg once daily\nBradycardia 48 bpm untreated\n",
+)
 def test_clinical_node_routes_to_pdf_mode(
-    mock_web, mock_summary, mock_extract,
-    mock_llm, mock_retrieve,
+    mock_extract, mock_web, mock_synth, mock_retrieve,
 ):
-    """When report_b64 is present, clinical_node uses pdf_report mode."""
+    """When report_b64 is present, clinical_node uses pdf_report mode.
+
+    `_summarize_report` and `_extract_structured_fields` are gone: both sent the
+    de-identified report to an external model, which the approved M-1 policy
+    does not permit. The stubs they needed are replaced by `_synthesise`, which
+    is the one external call the migrated path makes.
+    """
     from mao.agents.clinical_agent import clinical_node
 
     encoded = base64.b64encode(_make_minimal_pdf()).decode()
@@ -119,14 +126,9 @@ def test_clinical_node_routes_to_text_mode(
 
 
 @patch("mao.agents.clinical_agent.retrieve", return_value=[])
-@patch("mao.agents.clinical_agent._call_llm", return_value="Fallback LLM response.")
-@patch("mao.agents.clinical_agent._extract_structured_fields", return_value={})
-@patch("mao.agents.clinical_agent._summarize_report", return_value="")
+@patch("mao.agents.clinical_agent._synthesise", return_value="Fallback LLM response.")
 @patch("mao.agents.clinical_agent._web_search_clinical", return_value="")
-def test_clinical_node_invalid_pdf_no_crash(
-    mock_web, mock_summary, mock_extract,
-    mock_llm, mock_retrieve,
-):
+def test_clinical_node_invalid_pdf_no_crash(mock_web, mock_synth, mock_retrieve):
     """Invalid PDF bytes → graceful response, no exception raised."""
     from mao.agents.clinical_agent import clinical_node
 
@@ -210,28 +212,63 @@ _IDENTIFIERS = [
 ]
 
 
-def test_pdf_report_text_is_scrubbed_before_any_provider_call():
-    """Text lifted out of an uploaded PDF must be de-identified before it is
-    sent to Groq — the provider is a third party and the report is patient data."""
+def test_no_part_of_the_report_document_reaches_the_provider():
+    """Strengthened for the approved M-1 policy.
+
+    This test used to assert that the SCRUBBED REPORT reaching the provider
+    carried no identifiers — that is, it asserted the scrubber was the wall.
+    Under the approved policy a scrubbed free-text clinical report is not a
+    payload any external model may receive at all, so the assertion is now the
+    stronger one: no line of the document goes out, and what does go out is the
+    typed projection, which still carries the clinical fact.
+
+    Bound at the REAL provider seam rather than by patching `gateway.complete`.
+    Patching `complete` would have replaced the egress authorisation this test
+    depends on, and would have missed `synthesise_clinical` entirely — it does
+    not go through `complete()`.
+    """
     from mao.agents.clinical_agent import _handle_pdf_report
+    from mao.providers import gateway
 
-    sent: list[str] = []
+    from tests.trust.recorders import RecordingProvider
 
-    def _recording_chat(messages, **kwargs):
-        sent.extend(str(m.get("content", "")) for m in messages)
-        return "{}"
+    recorder = RecordingProvider()
+    gateway.set_provider(recorder)
+    try:
+        with patch("mao.agents.clinical_agent._extract_pdf_text", return_value=_RAW_REPORT), \
+             patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
+             patch("mao.agents.clinical_agent._web_search_clinical", return_value=""):
+            _handle_pdf_report("Summarise this report", {"report_b64": "x"}, "")
+    finally:
+        gateway.reset_provider()
 
-    with patch("mao.agents.clinical_agent._extract_pdf_text", return_value=_RAW_REPORT), \
-         patch("mao.providers.gateway.complete", side_effect=_completing(_recording_chat)), \
-         patch("mao.agents.clinical_agent.retrieve", return_value=[]), \
-         patch("mao.agents.clinical_agent._web_search_clinical", return_value=""):
-        _handle_pdf_report("Summarise this report", {"report_b64": "x"}, "")
+    assert recorder.calls, "the provider was never called — the probe is vacuous"
+    blob = recorder.text()
 
-    assert sent, "expected at least one provider call to record"
-    blob = "\n".join(sent)
-    for identifier in _IDENTIFIERS:
-        assert identifier not in blob, f"{identifier!r} leaked to the provider"
-    assert "hippocampal atrophy" in blob, "clinical content must survive scrubbing"
+    assert not recorder.leaked(_IDENTIFIERS), (
+        f"{recorder.leaked(_IDENTIFIERS)} reached the provider"
+    )
+    # ...and not the document's identifier structure either, redacted or not.
+    #
+    # The list is the LABELLED HEADER and the PLACEHOLDERS, not every line of
+    # the source. A document title carrying clinical vocabulary — `MEMORY CLINIC
+    # REPORT` — does survive into the findings, and that is the correct error to
+    # make: the only rule that would drop it is "an all-capitals line is a
+    # heading", and `BRADYCARDIA PRESENT` is an all-capitals line that is a
+    # cardiac finding. Carrying a title costs a few tokens; dropping a finding
+    # is the failure this whole phase is about. Recorded as a residual.
+    #
+    # A placeholder is the decisive one: `[NAME]` in an outgoing payload means
+    # the redacted DOCUMENT is being sent, which is what the policy forbids.
+    for structural in ("Patient Name:", "MRN:", "Address:", "[NAME]", "[MRN]", "[DOB]"):
+        assert structural not in blob, (
+            f"{structural!r} reached the provider: the report document is being "
+            "sent, and the approved M-1 policy admits only a SafeSynthesisContext"
+        )
+    assert "hippocampal atrophy" in blob, (
+        "the clinical fact must survive into the safe projection — excluding "
+        "identifiers may not be bought by dropping the finding"
+    )
 
 
 def test_pdf_report_text_is_scrubbed_before_retrieval_seed():

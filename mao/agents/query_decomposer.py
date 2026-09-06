@@ -13,9 +13,9 @@ import logging
 import re
 import time
 
-from mao.core.pii_scrubber import scrub_pii
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,9 @@ def _chat_with_retry(messages: list[dict], *, max_retries: int = 2, **kwargs) ->
     """
     for attempt in range(max_retries + 1):
         try:
-            return gateway.complete(messages=messages, **kwargs).text
+            return gateway.complete(
+                messages=messages, purpose=EgressPurpose.ROUTING, **kwargs
+            ).text
         except Exception as exc:  # noqa: BLE001
             if attempt == max_retries:
                 raise
@@ -210,7 +212,24 @@ def decompose_query(query: str) -> list[str]:
 
 
 def decomposer_node(state: dict) -> dict:
-    clean_query = scrub_pii(state.get("user_query", ""))
+    """Decompose the query the protected boundary already produced.
+
+    This used to call `scrub_pii` again. `state["user_query"]` is the boundary's
+    output, so the second pass was a second semantic transformation of an
+    already-transformed string, and it over-redacted a clinical line the first
+    pass had correctly left alone:
+
+        'Patient Name:\\nMRN:\\nHarold Nkemdirim\\nRockwood Frailty\\n'
+          x1 -> 'Patient Name:\\nMRN:\\n[NAME]\\nRockwood Frailty\\n'
+          x2 -> 'Patient Name:\\nMRN:\\n[NAME]\\n[NAME]\\n'
+
+    Two mechanisms were tried to make the second pass a no-op, and both had to
+    recognise the first pass's output from a marker or a position in text the
+    caller controls — so both were forgeable, and removing the forgeable one
+    reopened the destruction. The property is not achievable while a second pass
+    exists, so there is no second pass. See `mao/trust/inputs/boundary.py`.
+    """
+    clean_query = state.get("user_query", "")
     sub_queries = decompose_query(clean_query)
     return {
         **state,

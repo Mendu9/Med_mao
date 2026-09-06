@@ -18,6 +18,7 @@ from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,7 @@ def _call_llm(messages: list[dict[str, str]]) -> str:
             role=ModelRole.GENERAL_SYNTHESIS,
             messages=messages,
             temperature=0.0,
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
             max_tokens=512,
         ).text.strip()
     except Exception as exc:  # noqa: BLE001

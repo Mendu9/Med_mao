@@ -101,6 +101,7 @@ async def _check_groq() -> str:
     try:
         from mao.providers import gateway
         from mao.providers.registry import ModelRole
+        from mao.trust.egress.policy import EgressPurpose
 
         loop = asyncio.get_running_loop()
         completion = await loop.run_in_executor(
@@ -108,6 +109,11 @@ async def _check_groq() -> str:
             lambda: gateway.complete(
                 role=ModelRole.ROUTER_FAST,
                 messages=[{"role": "user", "content": "Reply with: ok"}],
+                purpose=EgressPurpose.HEALTH_PROBE,
+                # Carries nothing from any request: a fixed string. `None`
+                # rather than a trust class, so "carries no request data" stays
+                # distinguishable from "carries something harmless".
+                trust_class=None,
                 temperature=0.0,
                 max_tokens=64,
             ),

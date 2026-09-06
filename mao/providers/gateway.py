@@ -1,18 +1,43 @@
-"""Model gateway — the single entry point for role-addressed LLM calls.
+r"""Model gateway — the single entry point for role-addressed LLM calls.
 
-Agents call `complete(role=..., messages=...)`. They never name a model id and
-never import a provider SDK. Provider-specific code stays behind
+Agents call `complete(role=..., messages=..., purpose=...)`. They never name a
+model id and never import a provider SDK. Provider-specific code stays behind
 `mao.providers.llm`.
+
+## Why `purpose` is required and has no default
+
+This function is the seam every byte of model traffic crosses, so it is where
+the egress policy can actually be enforced rather than described. A default
+purpose would defeat that immediately: whichever value was chosen would become
+the one every new call site silently inherits, and "no trust class reaches an
+unnamed destination by default" would be false the first time somebody added an
+agent. A call that cannot say why it is talking to a third party does not talk
+to a third party.
+
+## Why clinical synthesis is a different function
+
+`complete()` takes free-text messages. The approved M-1 decision says external
+clinical synthesis receives `SafeSynthesisContext` plus `PublicEvidence` and
+nothing else — so for that purpose there must be no parameter through which
+free text can arrive at all. `synthesise_clinical()` takes the typed projection
+and renders the user turn itself; `complete()` refuses the purpose outright.
+
+That is the difference between a rule and a type. The previous six waves each
+enforced a rule of this shape by remembering to call a scrubber, and each was
+defeated by a call site that did not.
 """
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from mao.providers import usage
 from mao.providers.llm.base import ChatProvider
 from mao.providers.registry import ModelRecord, ModelRegistry, ModelRole
+from mao.trust.classes import PublicEvidence, SafeSynthesisContext, TrustClass
+from mao.trust.egress.gateway import EgressRefused, authorise
+from mao.trust.egress.policy import Destination, EgressPurpose
 
 logger = logging.getLogger(__name__)
 
@@ -102,14 +127,43 @@ def reset_provider() -> None:
     _provider = None
 
 
+def _outgoing_text(messages: list[dict]) -> list[str]:
+    """Every string a message carries, including inside multipart content.
+
+    Multipart content is how the vision role sends `{"type": "text", ...}`
+    alongside an image part. Reading only `str` contents would have skipped the
+    text half of exactly the request most likely to carry a patient's details.
+    """
+    texts: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    texts.append(part["text"])
+    return texts
+
+
 def complete(
     *,
     role: ModelRole,
     messages: list[dict],
+    purpose: EgressPurpose,
+    trust_class: TrustClass | None = TrustClass.SAFE_DERIVED_TEXT,
+    evidence: Sequence[PublicEvidence] = (),
     temperature: float = 0.2,
     max_tokens: int = 1024,
 ) -> Completion:
     """Run a completion for a capability role.
+
+    `purpose` is required and is checked against the egress policy before the
+    provider is touched. `trust_class` declares what the messages carry; the
+    default is `SAFE_DERIVED_TEXT`, which is the honest name for text that has
+    been through the protected input boundary, and the policy table decides
+    whether that is admissible for this purpose. It is not admissible for
+    clinical synthesis — see `synthesise_clinical`.
 
     `max_tokens` is the budget for the **answer**. The bound model's analysis
     channel is paid for on top of it, from the record's declared
@@ -140,6 +194,22 @@ def complete(
     able to bypass role resolution and hand a raw (possibly retired) id to a
     provider.
     """
+    if purpose is EgressPurpose.CLINICAL_SYNTHESIS:
+        raise EgressRefused(
+            "clinical synthesis does not accept free-text messages. Build a "
+            "SafeSynthesisContext through the Safe Handoff Compiler and call "
+            "gateway.synthesise_clinical(). Under the approved M-1 policy an "
+            "external synthesis model receives SafeSynthesisContext plus "
+            "PublicEvidence and nothing else — a scrubbed report is not a "
+            "synthesis payload."
+        )
+    authorise(
+        destination=Destination.MODEL_PROVIDER,
+        purpose=purpose,
+        trust_class=trust_class,
+        texts=_outgoing_text(messages),
+        evidence=evidence,
+    )
     record = resolve(role)
     active = provider()
     raw = active.complete(
@@ -199,22 +269,126 @@ def complete(
     return completion
 
 
+#: The system instruction for a typed clinical synthesis.
+#:
+#: The model is told what it is receiving, because it is receiving something
+#: different from what it used to: a minimum-necessary projection rather than a
+#: de-identified document. Telling it the case description is deliberately
+#: partial is what stops it filling the gaps — the previous prompt said the
+#: report "has already been de-identified", which invited exactly that.
+_CLINICAL_SYNTHESIS_FRAMING = (
+    "The case below is a minimum-necessary projection of a patient record. It "
+    "contains no identifiers and it is not the full record: facts that could "
+    "not be carried safely are absent rather than summarised. Reason only from "
+    "what is stated and from the evidence supplied. Where a fact you would need "
+    "is missing, say which fact and do not assume it."
+)
+
+
+def synthesise_clinical(
+    *,
+    system_prompt: str,
+    context: SafeSynthesisContext,
+    evidence: Sequence[PublicEvidence] = (),
+    role: ModelRole = ModelRole.CLINICAL_SYNTHESIS,
+    temperature: float = 0.1,
+    max_tokens: int = 1024,
+) -> Completion:
+    """External clinical synthesis, from typed facts only.
+
+    The user turn is rendered HERE, from `context.render()` and the evidence.
+    There is no parameter through which a caller can add free text, so the
+    approved M-1 policy is a property of the signature rather than a rule a call
+    site has to remember — which is the difference between this and every
+    previous attempt at the same guarantee.
+    """
+    if not isinstance(context, SafeSynthesisContext):
+        raise EgressRefused(
+            "clinical synthesis requires a SafeSynthesisContext built by the "
+            f"Safe Handoff Compiler, not {type(context).__name__}."
+        )
+
+    rendered_evidence = "\n\n".join(
+        f"[{index}] {item.title or item.source_id or item.evidence_id}\n{item.text}"
+        for index, item in enumerate(evidence, 1)
+    )
+    user_turn = (
+        f"{_CLINICAL_SYNTHESIS_FRAMING}\n\n"
+        f"## Case\n{context.render()}\n\n"
+        f"## Evidence\n{rendered_evidence or 'No evidence was retrieved.'}"
+    )
+
+    authorise(
+        destination=Destination.MODEL_PROVIDER,
+        purpose=EgressPurpose.CLINICAL_SYNTHESIS,
+        trust_class=TrustClass.SAFE_SYNTHESIS_CONTEXT,
+        # Only the case half is asserted against this request's identifiers.
+        # The evidence came from outside the boundary before the request began.
+        texts=[context.render()],
+        payload=context,
+        evidence=tuple(evidence),
+    )
+
+    record = resolve(role)
+    active = provider()
+    raw = active.complete(
+        model_id=record.model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_turn},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens + record.reasoning_overhead_tokens,
+    )
+    completion = Completion(
+        text=raw.text,
+        model_id=record.model_id,
+        provider=active.name,
+        role=role,
+        input_tokens=raw.input_tokens,
+        output_tokens=raw.output_tokens,
+        truncated=raw.truncated,
+    )
+    usage.record(
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        cost_usd=completion.estimated_cost_usd,
+    )
+    return completion
+
+
 def stream(
     *,
     role: ModelRole,
     messages: list[dict],
+    purpose: EgressPurpose,
+    trust_class: TrustClass | None = TrustClass.SAFE_DERIVED_TEXT,
     temperature: float = 0.2,
     max_tokens: int = 1024,
 ) -> Iterator[str]:
     """Stream a completion for a capability role.
 
-    Same contract as `complete`, including the reasoning-overhead budgeting: a
-    caller asks for the answer it needs and the analysis channel is paid for on
-    top. Streaming exists on the gateway so the API layer never has to reach
-    past it into `mao.core.llm` to get incremental delivery — which it did, and
-    which also meant that path resolved its model from a config alias rather
-    than from the registry.
+    Same contract as `complete`, including the egress authorisation and the
+    reasoning-overhead budgeting. Streaming exists on the gateway so the API
+    layer never has to reach past it into `mao.core.llm` to get incremental
+    delivery — which it did, and which also meant that path resolved its model
+    from a config alias rather than from the registry.
+
+    A streamed response is subject to the SAME egress policy as a buffered one.
+    Transport is not a safety input, and a purpose that may not send free text
+    when the answer is buffered may not send it when the answer is streamed.
     """
+    if purpose is EgressPurpose.CLINICAL_SYNTHESIS:
+        raise EgressRefused(
+            "clinical synthesis does not accept free-text messages on the "
+            "streaming path either. Transport is not a safety input."
+        )
+    authorise(
+        destination=Destination.MODEL_PROVIDER,
+        purpose=purpose,
+        trust_class=trust_class,
+        texts=_outgoing_text(messages),
+    )
     record = resolve(role)
     return provider().stream(
         model_id=record.model_id,

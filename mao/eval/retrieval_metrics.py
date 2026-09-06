@@ -9,6 +9,7 @@ from typing import Any
 
 from mao.core.retry import with_groq_retry
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,7 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
                     {"role": "system", "content": _QUESTION_GEN_SYSTEM},
                     {"role": "user", "content": text},
                 ],
+                purpose=EgressPurpose.EXTRACTION,
                 temperature=0.3,
                 max_tokens=120,
             ).text.strip()

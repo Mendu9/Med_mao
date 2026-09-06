@@ -14,6 +14,7 @@ import re
 
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -76,6 +77,7 @@ def senior_supervisor_node(state: dict) -> dict:
                 {"role": "system", "content": spec.template},
                 {"role": "user", "content": prompt},
             ],
+            purpose=EgressPurpose.SAFETY_VERIFICATION,
             temperature=0.0,
             max_tokens=_MAX_TOKENS,
         )

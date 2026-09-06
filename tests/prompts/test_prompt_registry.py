@@ -89,7 +89,12 @@ class TestProductionPromptsAreRegistered:
         "senior_supervisor.completeness",
         "graphrag.synthesis",
         "clinical.synthesis",
-        "clinical.extraction",
+        # `clinical.extraction` was here. It instructed an external model to
+        # pull structured fields out of a de-identified report, and the approved
+        # M-1 policy does not admit a scrubbed free-text report as an external
+        # payload. The call is gone and the prompt with it; extraction now runs
+        # in-process. Removed from the required list rather than left asserting
+        # the registration of something nothing reads.
     )
 
     @pytest.mark.parametrize("name", REQUIRED)

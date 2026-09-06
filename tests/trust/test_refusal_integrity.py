@@ -39,6 +39,8 @@ Size and shape are not the property. This file asserts the property.
 """
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from mao.core.deident.ambiguity import find_ambiguities
@@ -212,7 +214,7 @@ class TestTheRefusalDoesNotHideFailures:
 class TestTheRefusalSwallowsNoAxis:
     """Kept from the predecessor: necessary, and never sufficient."""
 
-    _AXES = (
+    _AXES: ClassVar[tuple[str, ...]] = (
         "separator", "order", "columns", "orphans",
         "clinical", "field_set", "transport", "trailing",
     )

@@ -111,8 +111,11 @@ class TestEveryAttachmentTypeReachesACapability:
             "_extract_pdf_text",
             lambda metadata: "Patient was started on donepezil.",
         )
-        monkeypatch.setattr(clinical_agent, "_summarize_report", lambda *a: "summary")
-        monkeypatch.setattr(clinical_agent, "_extract_structured_fields", lambda t: {})
+        # `_summarize_report` and `_extract_structured_fields` are gone: both
+        # sent the de-identified report to an external model, which the approved
+        # M-1 policy does not admit. `_synthesise` is the one external call the
+        # migrated report path makes.
+        monkeypatch.setattr(clinical_agent, "_synthesise", lambda *a, **k: "answer")
 
         out = run_clinical({key: "payload"})
         assert out["metadata"]["mode"] == expected_mode

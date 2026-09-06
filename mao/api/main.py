@@ -36,6 +36,7 @@ from mao.api.routes import ALL_ROUTERS
 from mao.api import sse
 from mao.guardrails import apply_input_guardrails
 from mao.safety.policy import SERVER_LOCATOR_KEYS
+from mao.trust.egress.policy import EgressPurpose
 from mao.monitoring.metrics import (
     record_request,
     record_reranker_score,
@@ -581,11 +582,23 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         # was routed to — the same class of drift as naming a literal model id.
         _stream_role = ModelRole(result.get("_stream_role") or ModelRole.GENERAL_SYNTHESIS.value)
 
+        # ...and likewise the PURPOSE. The egress policy is the same on both
+        # transports: a purpose that may not send free text when the answer is
+        # buffered may not send it when the answer is streamed. Deferring the
+        # purpose alongside the role is what stops the streaming route
+        # authorising something the non-streaming route would refuse — the
+        # class of drift that let `/chat/stream` answer 500 where `/chat`
+        # answered 422.
+        _stream_purpose = EgressPurpose(
+            result.get("_stream_purpose") or EgressPurpose.GENERAL_SYNTHESIS.value
+        )
+
         return StreamingResponse(
             sse.raw_token_stream(
                 produce_tokens=lambda: gateway.stream(
                     role=_stream_role,
                     messages=stream_messages,
+                    purpose=_stream_purpose,
                     temperature=0.1,
                     max_tokens=768,
                 ),

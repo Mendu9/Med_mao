@@ -29,12 +29,40 @@ def test_decomposer_node_updates_state():
     assert new_state["sub_queries"] == ["What is amyloid?"]
     assert new_state["missing_sub_queries"] == ["What is amyloid?"]
 
-def test_decomposer_node_scrubs_pii():
-    state = {"user_query": "Patient john.doe@example.com asks about amyloid", "pii_scrubbed_query": "", "sub_queries": []}
-    with patch("mao.agents.query_decomposer._llm_decompose") as mock_llm:
+def test_decomposer_node_does_not_scrub_a_second_time():
+    """Inverted deliberately. The decomposer used to call `scrub_pii` again.
+
+    `state["user_query"]` is already the protected input boundary's output, so
+    the second call was a second SEMANTIC TRANSFORMATION of an
+    already-transformed string, and it over-redacted a clinical line the first
+    pass had correctly left alone:
+
+        'Patient Name:\nMRN:\nHarold Nkemdirim\nRockwood Frailty\n'
+          x1 -> 'Patient Name:\nMRN:\n[NAME]\nRockwood Frailty\n'
+          x2 -> 'Patient Name:\nMRN:\n[NAME]\n[NAME]\n'
+
+    Two mechanisms were tried to make a second pass a no-op, and both had to
+    recognise the first pass's output from a marker or a position in
+    caller-controlled text — so both were forgeable, and removing the forgeable
+    one reopened the destruction. The property is not achievable while a second
+    pass exists, so this test asserts there is not one.
+
+    The de-identification itself is asserted where it now happens, at the
+    boundary: see tests/trust/.
+    """
+    from unittest.mock import MagicMock
+
+    protected = "Patient [EMAIL] asks about amyloid"
+    state = {"user_query": protected, "pii_scrubbed_query": "", "sub_queries": []}
+    scrubber = MagicMock(side_effect=AssertionError("the decomposer scrubbed again"))
+    with patch("mao.agents.query_decomposer._llm_decompose") as mock_llm,          patch("mao.core.pii_scrubber.scrub_pii", scrubber):
         mock_llm.return_value = ["What is amyloid?"]
         new_state = decomposer_node(state)
-    assert "john.doe@example.com" not in new_state["pii_scrubbed_query"]
+
+    scrubber.assert_not_called()
+    assert new_state["pii_scrubbed_query"] == protected, (
+        "the decomposer must carry the boundary's result through unchanged"
+    )
 
 
 # ---------------------------------------------------------------------------

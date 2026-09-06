@@ -36,6 +36,7 @@ from __future__ import annotations
 import pytest
 
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.llm.base import ProviderResponse
 from mao.providers.registry import ModelRole, ModelStatus
 
@@ -112,6 +113,7 @@ class TestTheGatewayBudgetsForTheBoundModel:
             role=ModelRole.SAFETY_JUDGE,
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=200,
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
         )
         assert recording.max_tokens_seen == [200 + overhead]
 
@@ -123,6 +125,7 @@ class TestTheGatewayBudgetsForTheBoundModel:
             role=ModelRole.CLINICAL_SYNTHESIS,
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=1024,
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
         )
         assert recording.max_tokens_seen[0] - overhead == 1024
 
@@ -147,6 +150,7 @@ class TestTruncationIsDistinguishableFromSilence:
                 role=ModelRole.SAFETY_JUDGE,
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=10,
+                purpose=EgressPurpose.GENERAL_SYNTHESIS,
             )
             assert completion.truncated is True
         finally:
@@ -157,6 +161,7 @@ class TestTruncationIsDistinguishableFromSilence:
             role=ModelRole.SAFETY_JUDGE,
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=10,
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
         )
         assert completion.truncated is False
 
@@ -179,6 +184,7 @@ class TestATruncatedEmptyReplyIsRetriedNotAccepted:
                 role=ModelRole.SAFETY_JUDGE,
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=300,
+                purpose=EgressPurpose.GENERAL_SYNTHESIS,
             )
         finally:
             gateway.reset_provider()
@@ -195,6 +201,7 @@ class TestATruncatedEmptyReplyIsRetriedNotAccepted:
                 role=ModelRole.SAFETY_JUDGE,
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=300,
+                purpose=EgressPurpose.GENERAL_SYNTHESIS,
             )
         finally:
             gateway.reset_provider()
@@ -206,6 +213,7 @@ class TestATruncatedEmptyReplyIsRetriedNotAccepted:
             role=ModelRole.SAFETY_JUDGE,
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=300,
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
         )
         assert len(recording.max_tokens_seen) == 1
 
@@ -219,6 +227,7 @@ class TestATruncatedEmptyReplyIsRetriedNotAccepted:
                 role=ModelRole.SAFETY_JUDGE,
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=300,
+                purpose=EgressPurpose.GENERAL_SYNTHESIS,
             )
         finally:
             gateway.reset_provider()

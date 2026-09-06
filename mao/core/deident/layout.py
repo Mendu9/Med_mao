@@ -43,6 +43,7 @@ import re
 from dataclasses import dataclass
 
 from .fields import FieldType, find_labels, is_ambiguous_person_label, type_of
+from .report import Removal
 from .text import INVISIBLE, join_lines, split_lines
 from .values import (
     is_clinical_phrase,
@@ -693,8 +694,16 @@ def _cross_line_claims(
     return claims + _pair_by_type(lines, labels, unpaired, taken, form_evidence)
 
 
-def _apply(lines: list[str], claims: list[_Claim]) -> list[str]:
-    """Replace each claimed span with its placeholder. Lines are never joined."""
+def _apply(
+    lines: list[str], claims: list[_Claim], removed: list[Removal] | None = None
+) -> list[str]:
+    """Replace each claimed span with its placeholder. Lines are never joined.
+
+    `removed` collects what was actually replaced. The spans are already here
+    and already correct; returning only the rewritten text threw them away and
+    forced every downstream control to re-derive them with a grammar of its own.
+    See `mao/core/deident/report.py`.
+    """
     by_line: dict[int, list[_Claim]] = {}
     for claim in claims:
         by_line.setdefault(claim.line, []).append(claim)
@@ -709,14 +718,22 @@ def _apply(lines: list[str], claims: list[_Claim]) -> list[str]:
                 continue
             rebuilt.append(line[cursor : claim.start])
             rebuilt.append(f"[{claim.field_type.value}]")
+            if removed is not None:
+                removed.append(
+                    Removal(
+                        kind=claim.field_type.value,
+                        value=line[claim.start : claim.end],
+                        line=index,
+                    )
+                )
             cursor = claim.end
         rebuilt.append(line[cursor:])
         out[index] = "".join(rebuilt)
     return out
 
 
-def redact_labelled_fields(text: str) -> str:
-    """Redact every value that a field label identifies, in place."""
+def redact_labelled_fields_with_report(text: str) -> tuple[str, list[Removal]]:
+    """Redact every value that a field label identifies, and say which."""
     lines, terminators = split_lines(text)
     labels = [find_labels(line) for line in lines]
 
@@ -726,4 +743,10 @@ def redact_labelled_fields(text: str) -> str:
     claims += _cross_line_claims(
         lines, labels, consumed, _form_evidence(lines, claims)
     )
-    return join_lines(_apply(lines, claims), terminators)
+    removed: list[Removal] = []
+    return join_lines(_apply(lines, claims, removed), terminators), removed
+
+
+def redact_labelled_fields(text: str) -> str:
+    """Redact every value that a field label identifies, in place."""
+    return redact_labelled_fields_with_report(text)[0]

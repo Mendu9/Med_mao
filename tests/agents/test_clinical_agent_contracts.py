@@ -41,12 +41,38 @@ class TestPromptsComeFromTheRegistry:
     def test_the_synthesis_prompt_is_the_registered_one(self) -> None:
         assert clinical_agent._clinical_system() == get_prompt("clinical.synthesis").template
 
-    def test_the_extraction_prompt_is_the_registered_one(self) -> None:
-        assert clinical_agent._extraction_system() == get_prompt("clinical.extraction").template
+    def test_the_extraction_prompt_is_gone_with_the_call_it_instructed(self) -> None:
+        """The registered `clinical.extraction` spec is deregistered.
 
-    def test_the_de_identification_instruction_actually_reaches_the_model(self) -> None:
-        """The exact divergence the architecture review found."""
-        assert "already been de-identified" in clinical_agent._extraction_system()
+        It told an external model that a report "has already been
+        de-identified" and asked it for JSON — so the whole scrubbed document
+        was the payload. The approved M-1 policy does not admit a scrubbed
+        free-text report for any external model, so the CALL is gone and the
+        prompt goes with it; extraction now runs in-process.
+
+        Asserted in both directions. A prompt left registered with nothing
+        reading it is the shape the registry test exists to catch: this exact
+        spec had already diverged from the inline text the agent really used,
+        while the test asserting its registration passed.
+        """
+        assert not hasattr(clinical_agent, "_extraction_system")
+        with pytest.raises(KeyError):
+            get_prompt("clinical.extraction")
+
+    def test_the_report_path_makes_no_extraction_call_at_all(self) -> None:
+        """The stronger statement: no external model sees the report."""
+        assert not hasattr(clinical_agent, "_extract_structured_fields")
+        assert not hasattr(clinical_agent, "_summarize_report")
+        # ...and no call to either survives in an executable line. Comments
+        # explaining the removal are expected and are not a call site.
+        code = [
+            line.split("#")[0]
+            for line in inspect.getsource(clinical_agent).splitlines()
+        ]
+        for name in ("_extract_structured_fields(", "_summarize_report("):
+            assert not [line for line in code if name in line], (
+                f"{name} is still called on the report path"
+            )
 
 
 class TestAttachmentIdentifiersDoNotSurvive:

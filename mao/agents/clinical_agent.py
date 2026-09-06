@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 
 
 from mao.agents.multimodal_agent import handle_audio, handle_image
 from mao.core.config import MRI_CONFIDENCE_GATE
-from mao.core.deident.ambiguity import AmbiguousDocument, find_ambiguities
-from mao.core.pii_scrubber import scrub_pii
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
@@ -20,6 +17,17 @@ from mao.rag.retriever import retrieve
 from mao.report.report_card import SourceEntry, build_report_card
 from mao.safety.verification import CLINICAL_DISCLAIMER
 from mao.schemas.evidence import from_chunk as evidence_from_chunk
+from mao.trust.classes import (
+    InputChannel,
+    PublicEvidence,
+    SafeDerivedText,
+    SafeSynthesisContext,
+)
+from mao.trust.egress.gateway import current_protection
+from mao.trust.egress.policy import EgressPurpose
+from mao.trust.handoff.compiler import compile_handoff
+from mao.trust.inputs import limits
+from mao.trust.inputs.boundary import protect_channel
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +39,6 @@ _DISCLAIMER = CLINICAL_DISCLAIMER
 # Answer budgets, named so the live call-site probe can assert against the
 # values this module really uses. The bound model's analysis channel is paid for
 # on top of these by the gateway — see mao/providers/registry.py.
-_REPORT_SUMMARY_MAX_TOKENS = 300
-_EXTRACTION_MAX_TOKENS = 512
 _SYNTHESIS_MAX_TOKENS = 1024
 
 # ---------------------------------------------------------------------------
@@ -49,9 +55,6 @@ _SYNTHESIS_MAX_TOKENS = 1024
 def _clinical_system() -> str:
     return get_prompt("clinical.synthesis").template
 
-
-def _extraction_system() -> str:
-    return get_prompt("clinical.extraction").template
 
 # ---------------------------------------------------------------------------
 # Main node
@@ -343,70 +346,70 @@ def _handle_pdf_report(
     memory_context: str,
     domain: str = "alzheimer",
 ) -> tuple[str, dict]:
-    """Extract PDF text → summarize → structured extraction → research → web → synthesize."""
+    r"""Protected text -> typed facts -> SafeEvidenceQuery -> SafeSynthesisContext.
 
-    # Step 1: Get PDF text
-    raw_report_text = _extract_pdf_text(metadata)
-    if not raw_report_text:
+    The shape of this function is the M-1 migration. It used to be:
+
+        extract PDF -> scrub -> send the scrubbed note to a model three times
+
+    and the scrubbed note WAS the payload — for the summary, for the structured
+    extraction, and for the final synthesis prompt. Under the approved policy a
+    scrubbed free-text report is not a payload any external model may receive,
+    so the note now stops here. What crosses the boundary is a typed projection
+    the Safe Handoff Compiler built field by field, and if it cannot build one
+    the request is refused with the fields that would resolve it.
+    """
+    protected = _protected_report(metadata)
+    if protected is None:
         return (
             "Could not extract text from the provided PDF. "
             "Please ensure the file is a readable PDF.",
             {"mode": "pdf_report", "error": "pdf_extraction_failed"},
         )
+    report_text = protected.text
 
-    # P0-4: de-identify BEFORE anything leaves the process. Every downstream use
-    # of the report — summarisation, structured extraction, the retrieval seed,
-    # the final synthesis prompt — reads the scrubbed text, so there is no path
-    # from an uploaded report to a third party carrying direct identifiers.
-    # An uploaded report is processed UNSEEN, so a wrong guess about where a
-    # patient's name ends is silent — it either leaks the surname to a third
-    # party or deletes a contraindication before the model reads it. Three
-    # remediation rounds proved no rule settles that reliably, so this path does
-    # not guess: an unresolvable header is refused and the caller is asked for
-    # structured patient fields. See mao/core/deident/ambiguity.py.
-    ambiguities = find_ambiguities(raw_report_text)
-    if ambiguities:
-        raise AmbiguousDocument(ambiguities)
+    # The safe projections. `HandoffRefused` is a deliberate outcome, not a
+    # failure: it means no payload could be built that both excludes the
+    # identifiers and carries enough of the case to answer, and the caller is
+    # told which structured fields would resolve that.
+    handoff = compile_handoff(
+        report_text,
+        question=user_query,
+        structured=_structured_fields(metadata),
+        provenance=("report",),
+    )
 
-    report_text = scrub_pii(raw_report_text)
-
-    # Step 2: Structured extraction
-    extracted = _extract_structured_fields(report_text)
-
-    # Step 3: Summarize
-    summary = _summarize_report(report_text, memory_context)
-
-    # Step 4: GraphRAG retrieval on report content
-    retrieval_query = report_text[:500]  # first 500 chars as retrieval seed
-    if extracted.get("diagnosis"):
-        retrieval_query = f"{extracted['diagnosis']} {retrieval_query}"
+    # Retrieval is seeded from the SAFE EVIDENCE QUERY, not from the first 500
+    # characters of the note. The old seed was a slice of a patient document
+    # sent to the vector store; this one is the concepts the case is about.
+    retrieval_query = " ".join(
+        [
+            handoff.evidence_query.search_intent,
+            *handoff.evidence_query.condition,
+            *handoff.evidence_query.intervention,
+            *handoff.evidence_query.findings,
+        ]
+    ).strip()
     try:
         ranked_chunks = retrieve(retrieval_query, domain=domain)
     except Exception as exc:  # noqa: BLE001
         logger.error("GraphRAG retrieval failed: %s", exc)
         ranked_chunks = []
 
-    research_block = _format_sources(ranked_chunks)
-
-    # Step 5: Web search for guidelines
-    search_query = f"{extracted.get('diagnosis', 'Alzheimer disease')} clinical guidelines treatment 2024"
-    web_block = _web_search_clinical(search_query)
-
-    # Step 6: Synthesize
-    system_prompt = build_system_prompt(_clinical_system(), memory_context)
-
-    extracted_text = json.dumps(extracted, indent=2) if extracted else "(extraction failed)"
-    user_prompt = (
-        f"User request: {user_query}\n\n"
-        f"## Report Summary\n{summary}\n\n"
-        f"## Extracted Clinical Data\n```json\n{extracted_text}\n```\n\n"
-        f"## Relevant Research Papers\n{research_block}\n\n"
-        f"## Clinical Guidelines (Web)\n{web_block}\n\n"
-        "Provide a structured clinical decision-support response with sections:\n"
-        "## Summary\n## Key Findings\n## Relevant Research\n## Clinical Guidance\n"
-        "Always cite research papers by their filename and chunk ID."
+    web_results = _web_search_clinical(
+        " ".join(
+            [
+                *handoff.evidence_query.condition[:2],
+                *handoff.evidence_query.intervention[:2],
+                "clinical guidelines",
+            ]
+        ).strip()
+        or "Alzheimer disease clinical guidelines"
     )
-    response = _call_llm(system_prompt, user_prompt)
+
+    evidence = _public_evidence(ranked_chunks, web_results)
+    system_prompt = build_system_prompt(_clinical_system(), memory_context)
+    response = _synthesise(system_prompt, handoff.synthesis_context, evidence)
 
     top_score = ranked_chunks[0].score if ranked_chunks else 0.0
     sources = [
@@ -417,7 +420,11 @@ def _handle_pdf_report(
     ]
     return response, {
         "mode": "pdf_report",
-        "extracted": extracted,
+        # The safe projection's own fields, never the note. This dictionary is
+        # echoed into the response metadata, cached in Redis and written to a
+        # trace, so what goes in it is an egress decision like any other.
+        "safe_case_fields": sorted(handoff.evidence_query.provenance),
+        "clinical_coverage": round(handoff.facts.coverage(), 3),
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
@@ -429,7 +436,19 @@ def _handle_pdf_report(
 
 
 def _extract_pdf_text(metadata: dict) -> str:
-    """Extract text from PDF in metadata (base64 or file path)."""
+    """Extract text from PDF in metadata (base64 or file path), size-capped.
+
+    Two caps, both before any expensive work, both refusing rather than
+    truncating. A 194 KB request extracted to 520,318 characters and held one of
+    eight worker threads for 34 seconds inside `find_ambiguities` and
+    `scrub_pii`, and doubling the page count roughly quadrupled the cost;
+    `ChatRequest.query` was capped at 8,000 characters while `metadata` was an
+    unvalidated dict, so the cap was on the one channel that did not need it.
+
+    The remaining quadratic in `layout._pair_by_type` is deferred. The cap is
+    what makes deferring it safe, which is why the review called it the minimum
+    viable fix and why it is Phase 1 scope while the rewrite is not.
+    """
     try:
         from pypdf import PdfReader
         import io
@@ -440,73 +459,146 @@ def _extract_pdf_text(metadata: dict) -> str:
     try:
         if metadata.get("report_b64"):
             pdf_bytes = base64.b64decode(metadata["report_b64"])
+            limits.check(
+                "the decoded report",
+                len(pdf_bytes),
+                limits.MAX_DECODED_ATTACHMENT_BYTES,
+            )
             reader = PdfReader(io.BytesIO(pdf_bytes))
         elif metadata.get("report_path"):
             reader = PdfReader(metadata["report_path"])
         else:
             return ""
 
-        pages = []
+        pages: list[str] = []
+        extracted = 0
         for page in reader.pages:
             try:
                 text = page.extract_text() or ""
                 if text.strip():
                     pages.append(text)
+                    extracted += len(text)
+                    # Checked per page rather than once at the end, so an
+                    # oversized document costs the pages read so far and not the
+                    # whole extraction.
+                    limits.check(
+                        "the extracted report text",
+                        extracted,
+                        limits.MAX_EXTRACTED_TEXT_CHARS,
+                    )
+            except limits.InputTooLarge:
+                raise
             except Exception:  # noqa: BLE001
                 continue
         return "\n\n".join(pages)
+    except limits.InputTooLarge:
+        # A refusal, not a failure. It must reach the route, which turns it into
+        # a 413 telling the caller what to do; swallowing it here would answer
+        # the request from an empty report and say nothing about why.
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.error("PDF extraction failed: %s", exc)
         return ""
 
 
-def _summarize_report(report_text: str, memory_context: str) -> str:
-    """Map-reduce summarization of a medical report."""
-    if not report_text.strip():
-        return ""
-    text = report_text[:3000]
-    prompt = (
-        "Summarise the following medical report in 3-5 sentences, "
-        "focusing on the primary diagnosis, key findings, and current treatment.\n\n"
-        f"Report:\n{text}"
-    )
-    try:
-        return gateway.complete(
-            role=ModelRole.CLINICAL_SYNTHESIS,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=_REPORT_SUMMARY_MAX_TOKENS,
-        ).text.strip()
-    except Exception as exc:
-        logger.error("Report summarization failed: %s", exc)
-        return text[:500]
+def _protected_report(metadata: dict) -> SafeDerivedText | None:
+    """The report, de-identified exactly once, recorded against this request.
 
-
-def _extract_structured_fields(report_text: str) -> dict:
-    """Extract structured clinical data from report text.
-
-    The system prompt is the registered `clinical.extraction` spec. This used to
-    build its own inline instruction, so the registered version — the one
-    carrying "The report has already been de-identified; do not attempt to infer
-    patient identity." — never reached a model at all, and the prompt test that
-    asserted its registration passed regardless.
+    Returns None when there was no readable report. Raises `AmbiguousDocument`
+    when the patient header cannot be resolved — the upload path refuses rather
+    than guessing, because the document is processed unseen and a wrong guess is
+    silent either way it goes wrong.
     """
-    try:
-        raw = gateway.complete(
-            role=ModelRole.CLINICAL_SYNTHESIS,
-            messages=[
-                {"role": "system", "content": _extraction_system()},
-                {"role": "user", "content": f"Report:\n{report_text[:2000]}"},
-            ],
-            temperature=0.0,
-            max_tokens=_EXTRACTION_MAX_TOKENS,
-        ).text.strip()
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        return json.loads(raw[start:end]) if start >= 0 else {}
-    except Exception as exc:
-        logger.error("Structured extraction failed: %s", exc)
+    raw = _extract_pdf_text(metadata)
+    if not raw:
+        return None
+    return protect_channel(raw, InputChannel.REPORT, refuse_ambiguity=True)
+
+
+#: Metadata keys carrying caller-supplied structured patient fields.
+#:
+#: This is the pathway a refusal points at. A caller told "send the patient
+#: identifiers as structured metadata fields" needs somewhere to send them, and
+#: without this key the advice was unactionable.
+_STRUCTURED_KEY = "patient_fields"
+
+
+def _structured_fields(metadata: dict) -> dict[str, str]:
+    """The caller's structured patient fields, if any, as strings."""
+    fields = metadata.get(_STRUCTURED_KEY)
+    if not isinstance(fields, dict):
         return {}
+    return {str(k): str(v) for k, v in fields.items() if v is not None}
+
+
+def _public_evidence(ranked_chunks, web_results: str) -> list[PublicEvidence]:
+    """Retrieved evidence as the trust class it is.
+
+    Registered with this request's protection as it is built, so the egress
+    assertion masks it out before looking for identifiers. A memory clinic's
+    corpus says `Parkinson` on almost every page, and refusing an answer because
+    the evidence mentions Parkinson's disease while the patient is also called
+    Parkinson would be a false refusal on the clinical path — a patient-safety
+    cost paid for no privacy gain.
+    """
+    protection = current_protection()
+    evidence: list[PublicEvidence] = []
+    for index, chunk in enumerate(ranked_chunks or [], 1):
+        item = PublicEvidence(
+            evidence_id=str(chunk.metadata.get("chunk_id", f"chunk-{index}")),
+            text=chunk.text,
+            source_id=str(chunk.metadata.get("source", "")),
+            title=str(chunk.metadata.get("title", "")),
+        )
+        evidence.append(item)
+        if protection is not None:
+            protection.register_evidence(item.text)
+    if web_results and web_results != "No web results found.":
+        item = PublicEvidence(evidence_id="web", text=web_results, source_id="web_search")
+        evidence.append(item)
+        if protection is not None:
+            protection.register_evidence(item.text)
+    return evidence
+
+
+def _synthesise(
+    system_prompt: str,
+    context: SafeSynthesisContext,
+    evidence: list[PublicEvidence],
+) -> str:
+    """External clinical synthesis, from the typed projection only."""
+    try:
+        return gateway.synthesise_clinical(
+            system_prompt=system_prompt,
+            context=context,
+            evidence=evidence,
+            max_tokens=_SYNTHESIS_MAX_TOKENS,
+        ).text.strip()
+    except Exception as exc:
+        logger.error("Clinical synthesis failed: %s", exc)
+        return f"Response generation failed: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# `_summarize_report` and `_extract_structured_fields` are GONE, not moved.
+#
+# Both sent the de-identified report text to an external `CLINICAL_SYNTHESIS`
+# model — one to summarise it, one to ask it for JSON. The approved M-1 policy
+# names "raw/scrubbed free-text clinical reports" among the payloads no external
+# model may receive, so migrating only the FINAL synthesis call would have left
+# the whole document leaving the process one call earlier, twice.
+#
+# The extraction they performed still happens; it happens in-process, in
+# `mao.trust.handoff.extract`, where sending the document nowhere is the whole
+# point. That extractor is deliberately conservative: it carries what has a
+# shape and REPORTS what it could not carry, and the compiler refuses rather
+# than letting an answer be built on a minority of a clinical document.
+#
+# The summary is not replaced. It existed to compress the report for a prompt
+# that no longer receives the report — `SafeSynthesisContext` is already the
+# minimum-necessary projection, so summarising it would be compressing a
+# compression, and the thing lost would be clinical detail.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +682,20 @@ def _web_search_clinical(query: str) -> str:
 
 
 def _call_llm(system_prompt: str, user_prompt: str) -> str:
-    """Clinical synthesis, through the gateway on the clinical role."""
+    """Synthesis for the paths whose payload is a de-identified QUESTION.
+
+    The MODEL role stays `CLINICAL_SYNTHESIS` — that is a statement about which
+    model is capable of the reasoning. The EGRESS purpose is
+    `GENERAL_SYNTHESIS`, which is a statement about what is being sent, and the
+    two are deliberately separate: the payload here is the caller's own question
+    after the protected boundary, plus public evidence, and neither is a patient
+    document.
+
+    The report path does not come through here. It carries a patient document,
+    so it goes through `gateway.synthesise_clinical` with a typed projection,
+    and `complete()` refuses `CLINICAL_SYNTHESIS` outright so the two cannot be
+    confused by a later edit.
+    """
     try:
         return gateway.complete(
             role=ModelRole.CLINICAL_SYNTHESIS,
@@ -598,6 +703,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
             temperature=0.1,
             max_tokens=_SYNTHESIS_MAX_TOKENS,
         ).text.strip()

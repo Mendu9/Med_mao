@@ -23,29 +23,22 @@ Core rules:
 """,
 )
 
-CLINICAL_EXTRACTION = PromptSpec(
-    name="clinical.extraction",
-    version="1.0.0",
-    output_contract=(
-        'JSON: {"diagnosis": str|null, "biomarkers": dict, "medications": [str], '
-        '"recommended_tests": [str], "key_findings": [str]}'
-    ),
-    required_variables=(),
-    description="Structured field extraction from a de-identified medical report.",
-    template="""\
-You are a medical data extraction assistant.
-Extract structured information from the medical report below.
-The report has already been de-identified; do not attempt to infer patient identity.
-Respond ONLY with valid JSON matching this schema (use null for missing fields):
-{
-  "diagnosis": "string or null",
-  "biomarkers": {"marker_name": "value_with_unit"},
-  "medications": ["list of current medications"],
-  "recommended_tests": ["list of recommended tests"],
-  "key_findings": ["list of key clinical findings"]
-}
-""",
-)
+# `CLINICAL_EXTRACTION` is DEREGISTERED, not disabled.
+#
+# It instructed an external model to pull structured fields out of a
+# de-identified medical report, and the approved M-1 policy does not admit a
+# scrubbed free-text clinical report as a payload for any external model. The
+# extraction it performed now happens in-process, in `mao.trust.handoff.extract`,
+# where the document is sent nowhere.
+#
+# Removed rather than left registered and unused. `tests/prompts/
+# test_registry_is_actually_consumed.py` exists precisely because a registered
+# prompt nothing reads is a prompt whose contract nothing enforces — the
+# registered copy of THIS spec had already diverged from the inline text the
+# agent really used, and the test that asserted its registration passed anyway.
+#
+# Its output contract is the record of what the safe projection must carry:
+# diagnosis, biomarkers, medications, recommended tests and key findings.
 
 VISION_ANALYSIS = PromptSpec(
     name="clinical.vision",
@@ -60,4 +53,4 @@ VISION_ANALYSIS = PromptSpec(
     ),
 )
 
-PROMPTS = (CLINICAL_SYNTHESIS, CLINICAL_EXTRACTION, VISION_ANALYSIS)
+PROMPTS = (CLINICAL_SYNTHESIS, VISION_ANALYSIS)

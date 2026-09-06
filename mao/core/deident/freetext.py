@@ -20,7 +20,8 @@ from collections.abc import Callable
 from . import values
 from .fields import is_ambiguous_person_label
 from .lexicon import NOT_A_NAME_RE, has_clinical_head
-from .text import map_lines
+from .report import Removal
+from .text import join_lines, map_lines, split_lines
 
 _TITLES = r"(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof(?:essor)?|Sir|Dame|Lord|Lady|Rev)"
 
@@ -249,10 +250,55 @@ _COMPILED: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
 ]
 
 
-def _redact_line(line: str) -> str:
+_PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)\]")
+
+
+def _redact_line(line: str, removed: list[Removal] | None = None, index: int = 0) -> str:
+    """Apply every shape rule to one line, recording what each one removed.
+
+    The removal is captured by comparing the match against its replacement, so
+    a rule that declines to substitute — `_nhs_number` returning the digits
+    unchanged when the checksum fails, `_cued_name` returning an instrument's
+    name — records nothing. That is the correct behaviour: a placeholder was not
+    emitted, so nothing was removed, and claiming otherwise would put clinical
+    text into a record that downstream treats as identifiers.
+    """
     for pattern, replacement in _COMPILED:
-        line = pattern.sub(replacement, line)
+        if removed is None:
+            line = pattern.sub(replacement, line)
+            continue
+
+        # `rule` is bound as a default rather than closed over. The call below
+        # happens inside this iteration so the closure would be correct today,
+        # but a rule that captured the loop variable is one refactor away from
+        # applying the LAST rule's replacement to every pattern — and a silent
+        # mis-typed placeholder is a (b4) failure.
+        def _substitute(match: re.Match[str], rule=replacement) -> str:
+            produced = rule(match) if callable(rule) else rule
+            if produced != match.group():
+                kind = _PLACEHOLDER_RE.search(produced)
+                removed.append(
+                    Removal(
+                        kind=kind.group(1) if kind else "UNKNOWN",
+                        value=match.group(),
+                        line=index,
+                    )
+                )
+            return produced
+
+        line = pattern.sub(_substitute, line)
     return line
+
+
+def redact_by_shape_with_report(text: str) -> tuple[str, list[Removal]]:
+    """`redact_by_shape`, plus the record of what it replaced."""
+    removed: list[Removal] = []
+    contents, terminators = split_lines(text)
+    rewritten = [
+        _redact_line(content, removed, index)
+        for index, content in enumerate(contents)
+    ]
+    return join_lines(rewritten, terminators), removed
 
 
 def redact_by_shape(text: str) -> str:

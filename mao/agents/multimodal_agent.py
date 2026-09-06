@@ -19,6 +19,7 @@ from pathlib import Path
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ def handle_image(  # public: shared with `clinical_agent`
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
                 ]},
             ],
+            purpose=EgressPurpose.IMAGE_ANALYSIS,
             temperature=0.1,
             max_tokens=512,
         )
@@ -172,6 +174,7 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": user_prompt},
             ],
+            purpose=EgressPurpose.GENERAL_SYNTHESIS,
             temperature=0.1,
             max_tokens=512,
         ).text.strip()

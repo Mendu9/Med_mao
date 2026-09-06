@@ -84,16 +84,17 @@ class TestTheLiveProbeNamesNoLiteralBudgetOrRole:
 
 class TestTheBudgetsThemselvesAreCoherent:
     def test_every_probed_budget_is_positive(self) -> None:
-        from mao.agents.clinical_agent import (
-            _REPORT_SUMMARY_MAX_TOKENS,
-            _SYNTHESIS_MAX_TOKENS,
-        )
+        from mao.agents.clinical_agent import _SYNTHESIS_MAX_TOKENS
         from mao.agents.graphrag_agent import (
             _SYNTHESIS_MAX_TOKENS as _GRAPHRAG_SYNTHESIS,
         )
 
+        # `_REPORT_SUMMARY_MAX_TOKENS` is gone with the summariser it budgeted.
+        # That call sent the de-identified report to an external model, which
+        # the approved M-1 policy does not permit; the report path now builds a
+        # SafeSynthesisContext in-process instead. A budget for a call that no
+        # longer exists is not a budget to keep coherent.
         for budget in (
-            _REPORT_SUMMARY_MAX_TOKENS,
             _SYNTHESIS_MAX_TOKENS,
             _GRAPHRAG_SYNTHESIS,
         ):
