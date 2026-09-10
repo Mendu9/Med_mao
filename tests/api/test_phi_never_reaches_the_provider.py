@@ -159,27 +159,84 @@ def client(recording_provider):
         yield test_client
 
 
-class TestAnUploadedReportIsDeIdentifiedBeforeItLeavesTheProcess:
-    def test_the_request_succeeds(self, client, recording_provider) -> None:
+#: The upload body, using the pathway the refusal names.
+#:
+#: `Patient Name: Arthur Neville Kowalczyk` is three name-shaped words alone on
+#: a line, and nothing in the text establishes where the name ends — the same
+#: shape as `Patient Name: Harold Nkemdirim Rockwood Frailty`, where taking the
+#: run deletes an instrument. `00_RULES.md` forbids guessing such a header and
+#: lists the remedies in order: structured fields first, then refusal.
+#:
+#: So this body supplies the field. That is not a way around the assertion — it
+#: is the assertion getting STRONGER: with the name stated, it is removed by
+#: exact match, nothing is guessed in either direction, and the test now proves
+#: the documented pathway actually works. The refusal for a caller who supplies
+#: nothing is asserted separately, in
+#: `TestAnAmbiguousHeaderIsRefusedWithActionableGuidance`.
+def _upload_body() -> dict:
+    return {
+        "query": "Summarise this discharge summary.",
+        "user_id": "phi-probe",
+        "metadata": {
+            "report_b64": _build_pdf(),
+            "patient_fields": {
+                "patient_name": PATIENT_NAME,
+                "mrn": MRN,
+                "next_of_kin": NEXT_OF_KIN,
+                "date_of_birth": DOB,
+                "nhs_number": NHS_NUMBER,
+                "postcode": POSTCODE,
+            },
+        },
+    }
+
+
+class TestAnAmbiguousHeaderIsRefusedWithActionableGuidance:
+    """The other half of the policy, asserted so it cannot quietly regress.
+
+    A caller who supplies no structured fields gets a 422 that NAMES what it
+    needs, on both routes. `/chat` and `/chat/stream` answered 422 and a bare
+    500 for this same condition once, so the equivalence is asserted rather
+    than assumed.
+    """
+
+    @pytest.mark.parametrize("route", ["/chat", "/chat/stream"])
+    def test_the_route_refuses_and_asks_for_structured_fields(
+        self, client, recording_provider, route: str
+    ) -> None:
         response = client.post(
-            "/chat",
+            route,
             json={
                 "query": "Summarise this discharge summary.",
                 "user_id": "phi-probe",
                 "metadata": {"report_b64": _build_pdf()},
             },
         )
+        assert response.status_code == 422, (
+            "an unresolvable patient header must be refused, not guessed"
+        )
+        detail = response.json()["detail"]
+        assert "structured" in detail.lower(), (
+            f"the refusal does not tell the caller what to do: {detail!r}"
+        )
+        assert not any(identifier in detail for identifier in PHI), (
+            "the refusal message quotes the identifier it could not handle"
+        )
+
+    def test_supplying_the_fields_makes_the_same_document_process(
+        self, client, recording_provider
+    ) -> None:
+        """The refusal must be a request, not a wall."""
+        assert client.post("/chat", json=_upload_body()).status_code == 200
+
+
+class TestAnUploadedReportIsDeIdentifiedBeforeItLeavesTheProcess:
+    def test_the_request_succeeds(self, client, recording_provider) -> None:
+        response = client.post("/chat", json=_upload_body())
         assert response.status_code == 200
 
     def test_no_identifier_reaches_the_provider(self, client, recording_provider) -> None:
-        client.post(
-            "/chat",
-            json={
-                "query": "Summarise this discharge summary.",
-                "user_id": "phi-probe",
-                "metadata": {"report_b64": _build_pdf()},
-            },
-        )
+        client.post("/chat", json=_upload_body())
         assert recording_provider.sent, "the provider was never called — probe is vacuous"
         assert recording_provider.leaked() == [], (
             "these identifiers were sent to the third-party provider"
@@ -223,14 +280,7 @@ class TestAnUploadedReportIsDeIdentifiedBeforeItLeavesTheProcess:
     ) -> None:
         """De-identification must not gut the report — otherwise the answer is
         based on nothing and the test above passes for the wrong reason."""
-        client.post(
-            "/chat",
-            json={
-                "query": "Summarise this discharge summary.",
-                "user_id": "phi-probe",
-                "metadata": {"report_b64": _build_pdf()},
-            },
-        )
+        client.post("/chat", json=_upload_body())
         blob = "\n".join(recording_provider.sent)
         assert "donepezil" in blob
         assert "Scheltens" in blob or "atrophy" in blob

@@ -84,8 +84,134 @@ def _protect_channel(
     return SafeDerivedText(text=result.text, origin=channel)
 
 
+#: How a structured identifier is spelled once it has been removed by name.
+#:
+#: Typed rather than generic, so the placeholder still tells a reader — and a
+#: model — which KIND of field was present, exactly as the detected ones do.
+_STRUCTURED_PLACEHOLDER = {
+    "patient_name": "[NAME]", "name": "[NAME]", "surname": "[NAME]",
+    "forename": "[NAME]", "family_name": "[NAME]", "given_name": "[NAME]",
+    "next_of_kin": "[NAME]", "carer_name": "[NAME]", "consultant": "[NAME]",
+    "mrn": "[MRN]", "hospital_number": "[MRN]",
+    "medical_record_number": "[MRN]", "case_no": "[MRN]",
+    "nhs_number": "[NHS]", "nhs_no": "[NHS]",
+    "ni_number": "[NI_NUMBER]", "national_insurance": "[NI_NUMBER]",
+    "date_of_birth": "[DOB]", "dob": "[DOB]", "born": "[DOB]",
+    "address": "[ADDRESS]", "home_address": "[ADDRESS]",
+    "postcode": "[POSTCODE]", "post_code": "[POSTCODE]",
+    "telephone": "[PHONE]", "phone": "[PHONE]", "mobile": "[PHONE]",
+    "contact_number": "[PHONE]", "email": "[EMAIL]",
+}
+
+
+def remove_known_identifiers(
+    text: str, structured: dict[str, str], protection: RequestProtection | None
+) -> str:
+    r"""Remove identifiers the caller NAMED, by exact match. No guessing at all.
+
+    ## Why this is the first thing the boundary does
+
+    The hard case in this whole subsystem is a patient header whose extent
+    cannot be established from the text:
+
+        'Patient Name: Harold Nkemdirim Rockwood Frailty'
+
+    Taking the run deletes an instrument's name; stopping short leaves half a
+    surname beside a placeholder claiming it was removed. `00_RULES.md` says
+    such content "must not be guessed into a supposedly safe form", and lists
+    the remedies in order — **structured fields first**, then refusal.
+
+    A caller who states `patient_name: "Harold Nkemdirim"` has removed the
+    question. There is no boundary to establish: the identifier is known, it is
+    removed by exact match, and what remains on the line is clinical content
+    that survives untouched. Both directions of the invariant are satisfied at
+    once, by not having to decide anything.
+
+    This is what makes the 422 an actionable request rather than a wall. The
+    refusal names the fields it wants; supplying them makes the same document
+    process correctly.
+
+    Longest value first, so a full name is removed before a forename that is a
+    prefix of it and cannot leave a dangling remainder.
+
+    ## Why a sentinel and not the placeholder
+
+    Substituting `[NAME]` here and then scrubbing does not work, and the reason
+    is instructive: `layout._skip_noise` deliberately STEPS OVER a placeholder
+    rather than believing it, because a caller can write one. So
+    `Patient Name: [NAME] Rockwood Frailty` had the label reach past the
+    placeholder, find a name-shaped run behind it, and redact the instrument —
+    reintroducing the exact destruction this pathway exists to prevent.
+
+    Distrusting a marker in caller-controlled text is correct. But a span THIS
+    RUN has just decided is not caller-controlled, and the difference has to be
+    carried out of band rather than in the characters. So the removal leaves a
+    private-use sentinel that no value grammar can match and no name token can
+    contain, and the typed placeholders are substituted back after the scrub.
+    """
+    if not structured:
+        return text
+    named = sorted(
+        (
+            (str(value).strip(), _STRUCTURED_PLACEHOLDER[key])
+            for key, value in (
+                (k.strip().lower().replace(" ", "_").replace("-", "_"), v)
+                for k, v in structured.items()
+            )
+            if key in _STRUCTURED_PLACEHOLDER and str(value).strip()
+        ),
+        key=lambda pair: len(pair[0]),
+        reverse=True,
+    )
+    for index, (value, placeholder) in enumerate(named):
+        if value in text:
+            text = text.replace(value, _sentinel(index))
+            if protection is not None:
+                protection.record_identifier(
+                    placeholder.strip("[]"), value, InputChannel.STRUCTURED_FIELDS
+                )
+    return text
+
+
+#: Private-use codepoints. `\w` does not match category `Co`, so `values._LETTER`
+#: cannot take one into a name token, and no identifier grammar admits one — the
+#: span is inert to every rule in the scrubber. `text.normalise` leaves them
+#: alone because they are neither zero-width nor a control character.
+_SENTINEL_OPEN = ""
+_SENTINEL_CLOSE = ""
+
+
+def _sentinel(index: int) -> str:
+    return f"{_SENTINEL_OPEN}{index}{_SENTINEL_CLOSE}"
+
+
+def restore_known_identifiers(text: str, structured: dict[str, str]) -> str:
+    """Swap each sentinel for the typed placeholder its field deserves."""
+    if not structured:
+        return text
+    named = sorted(
+        (
+            (str(value).strip(), _STRUCTURED_PLACEHOLDER[key])
+            for key, value in (
+                (k.strip().lower().replace(" ", "_").replace("-", "_"), v)
+                for k, v in structured.items()
+            )
+            if key in _STRUCTURED_PLACEHOLDER and str(value).strip()
+        ),
+        key=lambda pair: len(pair[0]),
+        reverse=True,
+    )
+    for index, (_, placeholder) in enumerate(named):
+        text = text.replace(_sentinel(index), placeholder)
+    return text
+
+
 def protect_channel(
-    text: str, channel: InputChannel, *, refuse_ambiguity: bool = True
+    text: str,
+    channel: InputChannel,
+    *,
+    refuse_ambiguity: bool = True,
+    structured: dict[str, str] | None = None,
 ) -> SafeDerivedText:
     """Take one channel through the boundary, inside an established request.
 
@@ -95,6 +221,11 @@ def protect_channel(
     protection, so the egress assertion covers them exactly as it covers the
     query and the history.
 
+    `structured` is applied FIRST and by exact match, and the ambiguity check
+    then runs on what is left. That ordering is the point: a header the caller
+    has already named is not ambiguous, so the refusal fires only where nothing
+    has told us the answer. See `remove_known_identifiers`.
+
     Outside a request there is no protection to record against and no patient to
     protect: a CLI run or an ingestion job still gets the de-identified text,
     and the egress assertion has nothing to assert, which `authorise` reports
@@ -102,20 +233,28 @@ def protect_channel(
     """
     from mao.trust.egress.gateway import current_protection
 
+    protection = current_protection()
+    fields = structured or {}
+    masked = remove_known_identifiers(text, fields, protection)
+
     if refuse_ambiguity:
-        report = find_ambiguities(text)
+        report = find_ambiguities(masked)
         if report:
             raise AmbiguousDocument(report)
 
-    protection = current_protection()
     if protection is None:
-        result = scrub_with_report(text)
+        result = scrub_with_report(masked)
         logger.debug(
             "no request protection bound — %s de-identified without recording",
             channel.value,
         )
-        return SafeDerivedText(text=result.text, origin=channel)
-    return _protect_channel(text, channel, protection)
+        return SafeDerivedText(
+            text=restore_known_identifiers(result.text, fields), origin=channel
+        )
+    protected = _protect_channel(masked, channel, protection)
+    return SafeDerivedText(
+        text=restore_known_identifiers(protected.text, fields), origin=channel
+    )
 
 
 def protect(

@@ -508,11 +508,22 @@ def _protected_report(metadata: dict) -> SafeDerivedText | None:
     when the patient header cannot be resolved — the upload path refuses rather
     than guessing, because the document is processed unseen and a wrong guess is
     silent either way it goes wrong.
+
+    The caller's structured patient fields go in FIRST, by exact match. That is
+    the remedy the refusal itself names, and it is what makes the 422 an
+    actionable request: a header the caller has already stated needs no boundary
+    to be established, so the same document processes correctly once the fields
+    are supplied.
     """
     raw = _extract_pdf_text(metadata)
     if not raw:
         return None
-    return protect_channel(raw, InputChannel.REPORT, refuse_ambiguity=True)
+    return protect_channel(
+        raw,
+        InputChannel.REPORT,
+        refuse_ambiguity=True,
+        structured=_structured_fields(metadata),
+    )
 
 
 #: Metadata keys carrying caller-supplied structured patient fields.
