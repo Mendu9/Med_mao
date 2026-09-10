@@ -39,10 +39,26 @@ class CouncilFakeProvider:
     def complete(self, *, model_id, messages, temperature, max_tokens) -> ProviderResponse:
         if self.raises:
             raise RuntimeError("groq unreachable")
-        system = messages[0]["content"]
-        member = _TEMPLATE_TO_MEMBER[system]
+        member = self._member_for(messages[0]["content"])
         self.members_called.append(member)
         return ProviderResponse(text=self.verdicts.get(member, _PASS))
+
+    @staticmethod
+    def _member_for(system: str) -> str:
+        """Which member this system turn belongs to.
+
+        Was `_TEMPLATE_TO_MEMBER[system]`, an exact dict lookup. Superseded by
+        ADV15-10: a council system turn is now the registered member template
+        PLUS the non-forgeable protocol framing that separates the instructions
+        from the text they judge, so equality would pin the defect in place.
+        Prefix matching keeps the property this fake exists for — that each
+        member is dispatched by its own REGISTERED prompt rather than by call
+        order — and still raises rather than defaulting on an unknown turn.
+        """
+        for template, member in _TEMPLATE_TO_MEMBER.items():
+            if system.startswith(template):
+                return member
+        raise KeyError(f"unrecognised council system turn: {system[:120]!r}")
 
 
 @pytest.fixture

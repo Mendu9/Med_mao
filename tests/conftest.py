@@ -57,8 +57,11 @@ DEFAULT_REPLIES: dict[str, str] = {
     "senior_supervisor.completeness": '{"missing": []}',
 }
 
-# Prompts rendered as the *user* turn carry no system template of their own.
-_USER_TURN_PROMPTS = frozenset({"router.user_turn", "council.user_turn"})
+# Prompts that are not an evaluator's own system template and so must not be
+# dispatch keys. `router.user_turn` is a user turn. `verifier.protocol` is the
+# ADV15-10 framing appended to every council/judge system message; it is longer
+# than the member templates, and dispatch takes the longest match.
+_NOT_DISPATCHABLE = frozenset({"router.user_turn", "verifier.protocol"})
 
 
 @dataclass
@@ -91,7 +94,7 @@ class ScriptedProvider:
             (
                 (registry().get(n).template, n)
                 for n in registry().names()
-                if n not in _USER_TURN_PROMPTS
+                if n not in _NOT_DISPATCHABLE
             ),
             key=lambda pair: len(pair[0]),
             reverse=True,

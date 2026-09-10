@@ -64,6 +64,23 @@ class MAOConfig:
 
 cfg = MAOConfig()
 
+# ---------------------------------------------------------------------------
+# Write-ingestion authorization — ADV15-11
+#
+# Deliberately NOT a field on `cfg`. `cfg` is a frozen dataclass built once at
+# import, so a key configured or rotated after startup would never be seen —
+# and the refusal branch that matters most, "no key configured", could not be
+# exercised against the running app at all. A control whose fail-closed path is
+# untestable is the same class of thing as a control that is not there.
+# ---------------------------------------------------------------------------
+INGEST_API_KEY_ENV = "MAO_INGEST_API_KEY"
+
+
+def ingest_api_key() -> str:
+    """The configured shared secret for corpus writes; empty when unconfigured."""
+    return os.getenv(INGEST_API_KEY_ENV, "").strip()
+
+
 # Token budget (per clinical call)
 TOKEN_BUDGET: int = 32000
 

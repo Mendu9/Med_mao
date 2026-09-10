@@ -39,6 +39,7 @@ import re
 
 from mao.eval.nli_checker import check_all_claims
 from mao.prompts import get_prompt
+from mao.prompts.verification import build_verifier_messages
 from mao.providers import gateway
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
@@ -62,8 +63,13 @@ __all__ = [
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 _JUDGE_PROMPT = "judge.safety"
-_JUDGE_USER_PROMPT = "council.user_turn"
 _JUDGE_MAX_TOKENS = 300
+
+# The judge shared `council.user_turn` with the council, so it inherited the
+# same defect and failed the same way: a poisoned chunk that forged "RESPONSE TO
+# EVALUATE:" scored 10/10 live on an answer the same model had scored 0. It now
+# shares the structural separation instead (ADV15-10).
+_VERIFIER_PROTOCOL = "verifier.protocol"
 
 # Claim extraction: sentences long enough to assert something, capped so a long
 # answer cannot turn one request into a hundred cross-encoder passes.
@@ -256,13 +262,11 @@ def _run_judge(response: str, premise: str) -> dict:
     """Score the response for patient harm and groundedness. Never raises."""
     try:
         spec = get_prompt(_JUDGE_PROMPT)
-        user_turn = get_prompt(_JUDGE_USER_PROMPT).render(context=premise, response=response)
         completion = gateway.complete(
             role=ModelRole.SAFETY_JUDGE,
-            messages=[
-                {"role": "system", "content": spec.template},
-                {"role": "user", "content": user_turn},
-            ],
+            messages=build_verifier_messages(
+                instructions=spec.template, evidence=premise, response=response
+            ),
             purpose=EgressPurpose.SAFETY_VERIFICATION,
             temperature=0.0,
             max_tokens=_JUDGE_MAX_TOKENS,
@@ -311,10 +315,14 @@ def verification_node(state: dict) -> dict:
             judge = _run_judge(response, _premise_from(docs))
             judge_ran = True
             prompt_ref = get_prompt(_JUDGE_PROMPT).trace_ref
+            # The framing decides which text the judge scored, so a score is
+            # only interpretable alongside the protocol version that produced it.
+            protocol_ref = get_prompt(_VERIFIER_PROTOCOL).trace_ref
         else:
             judge = _judge_scores(f"judge skipped: {risk.value} risk requires no verification")
             judge_ran = False
             prompt_ref = ""
+            protocol_ref = ""
 
         return {
             **state,
@@ -325,6 +333,7 @@ def verification_node(state: dict) -> dict:
                 "policy_version": policy.policy_version,
                 "judge_ran": judge_ran,
                 "prompt_ref": prompt_ref,
+                "protocol_ref": protocol_ref,
                 "claims_checked": len(nli_flags),
             },
         }
