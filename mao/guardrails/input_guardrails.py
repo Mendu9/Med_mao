@@ -101,18 +101,31 @@ def _count_tokens(text: str) -> int:
     return len(text.split())
 
 
-def _scrub_pii(text: str) -> str:
-    from mao.core.pii_scrubber import scrub_pii
-    return scrub_pii(text)
-
-
 async def apply_input_guardrails(query: str, session_id: str) -> str:
-    """Apply tiered input safety checks. Returns the PII-scrubbed query.
+    """Apply tiered input safety checks. Returns the query, normalised, unscrubbed.
 
     BLOCK — prompt injection or >500 tokens → HTTPException(400)
     WARN  — 400-500 tokens → logged, request continues
-    INFO  — PII detected → logged, never blocked
-    Returns the scrubbed query string (original if no PII found).
+
+    **This function no longer de-identifies anything.** It used to, and that was
+    the shape of ADV15-8: de-identification lived at one route-level call site
+    that took `request.query` as its only argument, so `chat_history` — a second
+    channel through the same endpoint — was never de-identified at all, and an
+    audio transcript was never de-identified either.
+
+    De-identification now happens in `mao.trust.inputs.boundary.protect`, which
+    consumes a `RawSensitiveInput` naming every channel at once. Doing it there
+    also makes it happen EXACTLY ONCE: `/chat` scrubbed twice, here and again in
+    the query decomposer, and the second pass over-redacted a clinical line the
+    first had left alone. Two call sites cannot both be the only one, so there
+    is now one, and it is not this.
+
+    What stays here is what this module is actually for: refusing a request on
+    its content — injection, off-topic, length. Those read the query and decide
+    whether it is processed; they do not transform it. The NFKC normalisation
+    stays with them, because it is what the patterns are matched against, and
+    the normalised text is what is returned so the boundary transforms the same
+    characters the guardrails judged.
     """
     # Normalize Unicode homoglyphs (e.g. Cyrillic 'у' → 'y') before scanning
     query = unicodedata.normalize("NFKC", query)
@@ -157,17 +170,7 @@ async def apply_input_guardrails(query: str, session_id: str) -> str:
         )
         logger.warning("session=%s query approaching token limit (%d words)", session_id, token_count)
 
-    # INFO: PII detected — scrub and log, never block
-    scrubbed = query
-    try:
-        scrubbed = _scrub_pii(query)
-        if scrubbed != query:
-            log_guardrail_event(
-                session_id, "pii_detected",
-                triggered=True, detail="scrubbed",
-                severity=GuardrailSeverity.INFO,
-            )
-    except Exception as exc:
-        logger.warning("PII scrubber failed (non-fatal): %s", exc)
-
-    return scrubbed
+    # The `pii_detected` event is still emitted, from
+    # `mao.api.protected_input.protect_chat_request`, where the boundary knows
+    # what it removed and across which channels. It is not emitted twice.
+    return query

@@ -118,6 +118,9 @@ def _call_llm(
     chat_history: list[dict[str, str]],
 ) -> str:
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    # De-identified upstream, at the protected input boundary, not here. This
+    # was the third of the three sites where `state["chat_history"]` reached a
+    # provider with the scrubber never having been called on it (ADV15-8).
     messages.extend(chat_history[-4:])
     messages.append({"role": "user", "content": user_prompt})
 

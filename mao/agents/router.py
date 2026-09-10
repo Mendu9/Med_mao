@@ -73,6 +73,14 @@ def router_node(state: MAOState) -> MAOState:
     memory_context: str = state.get("memory_context", "")
 
     # --- Build classification prompt from the registry ---
+    #
+    # The history reaches a provider two statements below this one. It carried
+    # PHI verbatim until the route stopped handing `make_initial_state` the
+    # caller's raw turns (ADV15-8); every turn on this key is now minted by the
+    # protected input boundary. This node does not re-scrub it — a second pass
+    # over already-transformed text is what destroyed a clinical line in the
+    # decomposer, and `mao.trust.inputs.boundary` explains why there is exactly
+    # one transformation per channel.
     history_text = _format_history(state.get("chat_history", [])[-3:])
     user_prompt = get_prompt("router.user_turn").render(
         memory_context=f"User context:\n{memory_context}" if memory_context else "",
