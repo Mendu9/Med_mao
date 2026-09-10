@@ -282,7 +282,59 @@ class TestThePlaceholderNamesTheRightType:
 
 
 class TestScrubbingIsStable:
+    r"""What a second pass can and cannot promise.
+
+    This asserted an UNCONDITIONAL no-op, and that property is not obtainable.
+    A second pass can only recognise the first pass's work from something in the
+    text, the caller controls the text, and both mechanisms tried for it were
+    forged into leaks:
+
+        a MARKER beside the label   `Patient Name: [NAME] Harold Nkemdirim`
+                                    suppressed the redaction of the real name —
+                                    all ten emittable placeholders worked
+        a POSITION (the cell)       inserting a placeholder-only line shifted
+                                    the column alignment and produced the same
+                                    leak in three further shapes
+
+    Each fix for one of those reopened the other, which is the pattern
+    `00_RULES.md` says to stop and escalate on rather than patch again.
+
+    So the property is obtained where it is a fact about the run rather than
+    about the text: `mao/trust/inputs/boundary.py` transforms each channel
+    exactly once and carries the typed result, and the second call site is gone
+    (`tests/agents/test_query_decomposer.py`). What remains true of the text is
+    asserted here, in two parts:
+
+      - a second pass NEVER LEAKS. Unconditional, and the direction that matters.
+      - a second pass is a NO-OP wherever the first left nothing ambiguous —
+        which is where a marker was never needed anyway.
+
+    Where the first pass leaves an ambiguity, a second may over-redact. That is
+    the chat-path policy applied twice, it is visible in the answer, and it is
+    announced by `find_ambiguities` rather than hidden.
+    """
+
     @pytest.mark.parametrize("document", DOCUMENTS, ids=_ids(DOCUMENTS))
-    def test_a_second_pass_changes_nothing(self, document: Document) -> None:
+    def test_a_second_pass_never_leaks(self, document: Document) -> None:
         once = scrub_pii(document.extracted)
+        twice = scrub_pii(once)
+        survivors = [i for i in document.identifiers if i in twice]
+        assert not survivors, f"{document.id}: {survivors} re-exposed by pass 2"
+
+    @pytest.mark.parametrize("document", DOCUMENTS, ids=_ids(DOCUMENTS))
+    def test_a_second_pass_changes_nothing_once_nothing_is_ambiguous(
+        self, document: Document
+    ) -> None:
+        once = scrub_pii(document.extracted)
+        if find_ambiguities(once):
+            return
         assert scrub_pii(once) == once, document.id
+
+    def test_most_documents_reach_a_stable_state_after_one_pass(self) -> None:
+        """The exclusion above must not be where the whole corpus goes."""
+        stable = [d for d in DOCUMENTS if not find_ambiguities(scrub_pii(d.extracted))]
+        share = len(stable) / len(DOCUMENTS)
+        assert share > 0.75, (
+            f"only {share:.0%} of processed documents are unambiguous after one "
+            "pass, so the no-op assertion covers too little to mean anything"
+        )

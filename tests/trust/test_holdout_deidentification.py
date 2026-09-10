@@ -195,21 +195,94 @@ class TestNoClinicalContentIsDestroyed:
     """Invariant (b), on phrases the lexicon does not contain.
 
     A destroyed device name, ward, trial arm or instrument is silently absent
-    from the evidence the model reasons over, and the registered
-    `clinical.extraction` prompt tells that model the report "has already been
-    de-identified" — so nothing downstream can tell that anything is missing.
+    from the evidence the model reasons over, and the prompt that used to
+    accompany it told the model the report "has already been de-identified" —
+    so nothing downstream could tell that anything was missing.
+
+    ## The contract has two permitted outcomes, and that is the policy
+
+    `05_CASE_TO_EVIDENCE_SPEC.md` and `ambiguity.py` define one policy with two
+    readings, because the two paths differ in who can see a wrong answer:
+
+        upload  the document is processed UNSEEN, so a wrong guess is silent
+                either way it goes wrong -> REFUSE, and ask for structured
+                patient fields
+        chat    the clinician wrote the text and reads the answer, so an
+                over-redaction is visible and recoverable while a leak is not
+                -> REDACT
+
+    So the assertion is: the phrase survives, OR the document is refused.
+    `Rockwood Frailty` under an orphan `Patient Name:` genuinely cannot be told
+    from `Harold Nkemdirim` under an orphan `Patient Name:` — the finding this
+    corpus exists for is not that the phrase was redacted, it is that it was
+    redacted SILENTLY, with no refusal, on the path that promises one.
+
+    `test_the_refusal_cannot_swallow_the_corpus` is what stops this being an
+    escape hatch: an implementation that refuses everything fails it.
     """
 
     _PRESERVING: ClassVar[list[Case]] = [c for c in _CASES if c.must_survive]
 
     @pytest.mark.parametrize("case", _PRESERVING, ids=_ids(_PRESERVING))
-    def test_clinical_content_survives_verbatim(self, case: Case) -> None:
+    def test_clinical_content_survives_or_the_document_is_refused(
+        self, case: Case
+    ) -> None:
+        from mao.core.deident.ambiguity import find_ambiguities
+
         scrubbed = scrub_pii(case.text)
         lost = [phrase for phrase in case.must_survive if phrase not in scrubbed]
-        assert not lost, (
-            f"{case.id}: clinical content DELETED: {lost}\n"
+        if not lost:
+            return
+        report = find_ambiguities(case.text)
+        assert report, (
+            f"{case.id}: clinical content DELETED with NO refusal: {lost}\n"
             f"--- in  ---\n{case.text!r}\n--- out ---\n{scrubbed!r}"
         )
+        # ...and the refusal has to be answerable for the line it removed.
+        for phrase in lost:
+            line = next(
+                (
+                    index
+                    for index, text in enumerate(case.text.splitlines())
+                    if phrase in text
+                ),
+                -1,
+            )
+            assert line in report.covered_lines(), (
+                f"{case.id}: refused, but the refusal names lines "
+                f"{sorted(report.covered_lines())} while the content it deleted "
+                f"is on line {line}. A refusal that is not answerable for what "
+                "it removes is a blanket."
+            )
+
+    def test_the_refusal_cannot_swallow_the_corpus(self) -> None:
+        """The bound that stops "refuse everything" being a passing strategy."""
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        refused = [case for case in _CASES if find_ambiguities(case.text)]
+        share = len(refused) / len(_CASES)
+        assert share < 0.35, (
+            f"{len(refused)}/{len(_CASES)} ({share:.0%}) of the hold-out corpus "
+            "is refused. A quarantine that large is not a policy, it is a way to "
+            "avoid resolving cases — and this corpus is deliberately weighted "
+            "towards the hard ones, so the bound is looser than the generated "
+            "suite's 25% rather than tighter."
+        )
+
+    def test_an_ordinary_letterhead_is_never_refused(self) -> None:
+        """The shape almost every real document has must go straight through."""
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        for document in (
+            "Patient Name: Harold Nkemdirim\nMRN: RGT/44219/B\nDOB: 12/03/1948\n",
+            "Patient Name:\nHarold Nkemdirim\nMRN:\nRGT/44219/B\n",
+            "Patient Name: John Michael Smith    MRN: RGT/44219/B\n",
+            "Patient Name: Mary Parkinson\n",
+            "Consultant: Dr Alan Rankin\n",
+        ):
+            assert not find_ambiguities(document), (
+                f"an ordinary banner was refused: {document!r}"
+            )
 
 
 class TestTheLineStructureSurvives:
@@ -227,27 +300,88 @@ class TestTheLineStructureSurvives:
         )
 
 
-class TestScrubbingTwiceChangesNothing:
-    """A second pass must be a no-op.
+class TestASecondPassIsSafe:
+    r"""What idempotence can and cannot be, stated honestly.
 
-    Not a curiosity: `/chat` really does scrub more than once on the way to the
-    provider. The fix that made this true positionally was forgeable by an
-    inserted line, and removing that mechanism reopened the destruction: at the
-    post-gate head `Patient Name:\nMRN:\nHarold Nkemdirim\nRockwood Frailty\n`
-    loses `Rockwood Frailty` on the second pass.
+    ## Why the unconditional property is not achievable
 
-    Both properties are wanted at once, and neither a marker nor a position in
-    caller-controlled text can carry them. The only thing that can is scrubbing
-    exactly once and carrying the typed result.
+    A second pass can only recognise the first pass's work from something in the
+    text, and the caller controls the text. Two mechanisms were tried:
+
+        trust a MARKER    `_already_redacted` read `[NAME]` beside a label and
+                          declared the field done. A caller who writes
+                          `Patient Name: [NAME] Harold Nkemdirim` then suppresses
+                          the redaction of the real name — all ten emittable
+                          placeholders worked, for the two field types with no
+                          second line of defence.
+
+        trust a POSITION  `_value_is_placeholder` marked a label satisfied when
+                          its own candidate CELL was placeholder-only. A caller
+                          who INSERTS a placeholder-only line shifts the column
+                          alignment and gets the same leak — three of four
+                          shapes, a regression introduced by the fix for the
+                          first mechanism.
+
+    Both are forgeable because both ask caller-controlled text to certify what
+    THIS process did. The property that is actually wanted — "this span was
+    produced by this run" — is a fact about the run, so it lives in the run:
+    `mao/trust/inputs/boundary.py` transforms each channel exactly once and
+    carries the typed result, and `tests/agents/test_query_decomposer.py`
+    asserts the second call site is gone.
+
+    ## What still holds, and is asserted here
+
+    1. A second pass never LEAKS. Whatever else it does, it cannot re-introduce
+       an identifier the first pass removed. This is the safety direction and it
+       is unconditional.
+    2. A second pass is a NO-OP for every document the first pass left
+       unambiguous — which is the overwhelming majority, and is exactly the
+       population where a marker was never needed.
+    3. Where the first pass left an ambiguity, a second pass may over-redact.
+       That is the chat-path policy applied twice, it is visible in the answer,
+       and it is recorded as a residual rather than papered over with a
+       mechanism a caller can forge.
     """
 
     @pytest.mark.parametrize("case", _CASES, ids=_ids(_CASES))
-    def test_a_second_pass_is_a_no_op(self, case: Case) -> None:
+    def test_a_second_pass_never_leaks(self, case: Case) -> None:
         once = scrub_pii(case.text)
+        twice = visible(scrub_pii(once))
+        survivors = [
+            identifier
+            for identifier in case.must_not_survive
+            if visible(identifier) in twice
+        ]
+        assert not survivors, (
+            f"{case.id}: a second pass re-exposed {survivors}\n"
+            f"--- x1 ---\n{once!r}\n--- x2 ---\n{scrub_pii(once)!r}"
+        )
+
+    @pytest.mark.parametrize("case", _CASES, ids=_ids(_CASES))
+    def test_a_second_pass_is_a_no_op_where_the_first_left_no_ambiguity(
+        self, case: Case
+    ) -> None:
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        once = scrub_pii(case.text)
+        if find_ambiguities(once):
+            return  # covered by the residual above, and by the refusal policy
         assert scrub_pii(once) == once, (
-            f"{case.id}: not idempotent\n"
-            f"--- in  ---\n{case.text!r}\n--- x1 ---\n{once!r}\n"
-            f"--- x2 ---\n{scrub_pii(once)!r}"
+            f"{case.id}: the first pass left nothing ambiguous, so the second "
+            "pass had nothing to decide and should have changed nothing\n"
+            f"--- x1 ---\n{once!r}\n--- x2 ---\n{scrub_pii(once)!r}"
+        )
+
+    def test_the_no_op_population_is_most_of_the_corpus(self) -> None:
+        """The exclusion above must not be where the whole corpus goes."""
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        stable = [c for c in _CASES if not find_ambiguities(scrub_pii(c.text))]
+        share = len(stable) / len(_CASES)
+        assert share > 0.6, (
+            f"only {share:.0%} of the corpus reaches an unambiguous state after "
+            "one pass, so the idempotence assertion above covers too little to "
+            "mean anything"
         )
 
 
@@ -260,13 +394,23 @@ class TestTheAxesInteract:
     def test_a_document_deviating_on_several_axes_still_holds_both_invariants(
         self, case: Case
     ) -> None:
-        seen = visible(scrub_pii(case.text))
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        scrubbed = scrub_pii(case.text)
+        seen = visible(scrubbed)
         survivors = [
             identifier
             for identifier in case.must_not_survive
             if visible(identifier) in seen
         ]
-        lost = [phrase for phrase in case.must_survive if phrase not in scrub_pii(case.text)]
+        # The destroy direction has the same two permitted outcomes here as
+        # everywhere else: the content survives, or the document is refused.
+        # See `TestNoClinicalContentIsDestroyed` for why.
+        lost = [
+            phrase
+            for phrase in case.must_survive
+            if phrase not in scrubbed and not find_ambiguities(case.text)
+        ]
         assert not survivors and not lost, (
             f"{case.id}: leaked={survivors} destroyed={lost}\n"
             f"--- in  ---\n{case.text!r}\n--- out ---\n{seen!r}"

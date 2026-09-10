@@ -75,8 +75,17 @@ _LETTER = r"[^\W\d_]"
 # hyphen or zero-width space survives a real reportlab -> pypdf round trip, and
 # splitting `Nkem<U+00AD>dirim` into two tokens produced `[NAME]<U+00AD>dirim` —
 # a placeholder asserting de-identification beside the still-legible surname.
+#
+# The trailing lookahead stops a name token ending in the MIDDLE of an
+# alphanumeric token. A run-on extraction can put a record number straight after
+# a name — `... Frailty ScaleHospital Number LDS9931C` — and without it the run
+# matched the letters `LDS` and stopped at the digit, so the redaction covered
+# `LDS` and left `9931C` legible: a partial identifier beside a placeholder,
+# which is the outcome this module calls the worst available. A token carrying a
+# digit is not a name token, and matching its letter prefix is not "part of a
+# name", it is half of a record number.
 _NAME_TOKEN_RE = re.compile(
-    rf"{_LETTER}+(?:[’'\-{INVISIBLE}]{_LETTER}+)*"
+    rf"{_LETTER}+(?:[’'\-{INVISIBLE}]{_LETTER}+)*(?![0-9])"
 )
 #: Whitespace, optionally after a comma: `MACDONALD, Fiona` is one name.
 _NAME_GAP_RE = re.compile(r"[ \t]*,?[ \t]+")
@@ -84,12 +93,20 @@ _NAME_GAP_RE = re.compile(r"[ \t]*,?[ \t]+")
 #: Kept for the address grammar, which still needs a capitalised-word fragment.
 _NAME_WORD = rf"{_NOT_LABEL}{_NOT_CLINICAL}[A-Z](?:['’\-]?[A-Za-z])+"
 
-#: At most eight tokens. The cap is a backstop for a word the lexicon does not
-#: know; it is NOT what protects the clinician's question — the lexicon and the
-#: case rule are. A cap that is too tight is worse than none, because a name
-#: LONGER than the cap failed the whole-line match entirely and then leaked
-#: untouched: `Maria Del Carmen Gonzalez Rodriguez Perez` is six.
-_MAX_NAME_TOKENS = 8
+#: A sanity bound, not a boundary rule.
+#:
+#: It was eight, and eight was itself a leak: with the one-token end-of-line
+#: extension the effective ceiling was nine, so a ten-token name came back as
+#: `[NAME] Fernandez Iglesias Navarro` — a placeholder asserting a removal with
+#: three quarters of the surname legible beside it. A cap that TRUNCATES is the
+#: same defect as a lexicon that truncates, one mechanism further down.
+#:
+#: So the cap no longer decides an extent. It only stops a pathological line
+#: from being scanned forever, and it is set far above any real name — the
+#: longest in the generated corpus is six tokens. A run that actually reaches it
+#: has no establishable extent and `ambiguity` reports it as unresolved, which
+#: is the honest outcome rather than a silent prefix.
+_MAX_NAME_TOKENS = 24
 
 _FOLD = str.maketrans({"’": "'"})
 
@@ -113,7 +130,44 @@ def _parts(word: str) -> list[str]:
 
 
 def _token_kind(token: str, *, any_case: bool) -> str | None:
-    """What role this token can play in a person's name, or None if it cannot."""
+    """What role this token can play in a person's name, or None if it cannot.
+
+    ## The clinical lexicon is deliberately NOT consulted here
+
+    It used to be: a token whose folded parts were in `NOT_A_NAME` returned
+    `None`, so `name_tokens` broke there. That made the lexicon the thing that
+    decides WHERE A NAME ENDS, and three separate leaks came out of it, all the
+    same shape — a placeholder covering a PREFIX with the rest legible:
+
+        'Patient Name: Mary Parkinson    MRN: RGT/44219/B'
+          -> 'Patient Name: [NAME] Parkinson    MRN: [MRN]'      800 measured
+        'Patient Name: Sarah May Okonkwo'
+          -> 'Patient Name: [NAME] May Okonkwo'                   84 of 92
+        'Patient Name:\nMary Parkinson\nMRN:\n...'
+          -> the run stops at `Mary`, the whole-line test then fails, and the
+             name is not redacted at all                         160 of 192
+
+    A clinical lexicon in a dementia service is FULL of surnames, for the
+    obvious reason that eponyms are named after people: Parkinson, Pick, Down,
+    Rankin, Braak, Charcot, Huntington, Barthel. And `May`, `Day`, `Fair`,
+    `Sharp`, `Grade` are ordinary English words that are also ordinary middle
+    names. `Sarah May Okonkwo` is not an adversarial input.
+
+    So the authority is split, and the split is the fix:
+
+        the lexicon may say  "this whole span is clinical content"
+                             (`is_clinical_phrase`, used to CLASSIFY a span
+                              whose identity is genuinely in question)
+
+        the lexicon may NOT say  "the name stops here"
+                                 (truncation — which is what produced every
+                                  partial redaction above)
+
+    A run therefore ends where a STRUCTURAL signal says it ends: the next known
+    field label, a sentence terminator, a lower-case word, a token carrying a
+    digit, or the end of the line. If none of those is reached, the extent was
+    never established and `ambiguity` reports it rather than anything guessing.
+    """
     folded = _fold(token)
     if folded in TITLES:
         return "title"
@@ -121,8 +175,6 @@ def _token_kind(token: str, *, any_case: bool) -> str | None:
         return "particle"
     if folded in SUFFIXES:
         return "suffix"
-    if any(part in NOT_A_NAME for part in _parts(token) if part):
-        return None
     if type_of(token) is not None:  # the next field's label ends this value
         return None
     if len(token) < 2:
@@ -224,7 +276,9 @@ def is_clinical_phrase(line: str, tokens: list[tuple[str, int, int]]) -> bool:
     return has_clinical_head([_fold(word) for word in words])
 
 
-def person_evidence(line: str, tokens: list[tuple[str, int, int]]) -> bool:
+def person_evidence(
+    line: str, tokens: list[tuple[str, int, int]], *, strong_only: bool = False
+) -> bool:
     """Positive evidence that this span is a PERSON and not a clinical phrase.
 
     Shape cannot separate `Harold Nkemdirim` from `Peptic Ulcer Bleeding`, and a
@@ -233,9 +287,25 @@ def person_evidence(line: str, tokens: list[tuple[str, int, int]]) -> bool:
     the drug this system advises on. So the burden is inverted — a bare line is
     a person only on evidence, and the absence of evidence means "leave it
     alone", which is the safe direction for clinical content.
+
+    ## Strong and weak evidence, and why the distinction earns its place
+
+    A PARTICLE used to count the same as a given name. It is much weaker: `of`
+    is a particle in `van der Grinten` and also the middle of `Lasting Power of
+    Attorney` and `Activities of Daily Living`, both of which are clinical
+    content on the generated corpus. A title, an initial, a suffix, a gazetteer
+    given name or a non-Latin script are evidence about a PERSON; a preposition
+    is evidence about English.
+
+    `strong_only` is used where the two directions are being weighed against
+    each other — a bare cell that might be either — so that weak evidence cannot
+    outvote a positive clinical signal. Where the question is only "does this
+    look like a person at all", weak evidence still counts.
     """
     for kind, start, end in tokens:
-        if kind in ("title", "particle", "initial", "suffix"):
+        if kind in ("title", "initial", "suffix"):
+            return True
+        if kind == "particle" and not strong_only:
             return True
         word = line[start:end]
         if _fold(word) in GIVEN_NAMES:
@@ -406,15 +476,20 @@ def value_at(
         # emitted `[NAME] Parkinson`: the name leaked AND the output claimed it
         # had not, 1440/1440. A header value runs to the end of its line, so
         # reaching the end is what tells a surname from a following phrase.
-        end = tokens[-1][2]
-        trailing = _NAME_TOKEN_RE.match(line, _skip_gap(line, end))
-        if (
-            trailing is not None
-            and not line[trailing.end() :].strip(" \t\r.,;" + INVISIBLE)
-            and trailing.group()[:1].isupper()
-        ):
-            return tokens[0][1], trailing.end()
-        return tokens[0][1], end
+        #
+        # The one-token end-of-line extension that used to be here is GONE. It
+        # existed to rescue a run the clinical lexicon had truncated — "a run
+        # stopped by a clinical word THAT IS THE LAST TOKEN ON THE LINE now
+        # absorbs it" — and it closed exactly the subset its own wording named:
+        # the moment anything followed the surname, the run was returned
+        # truncated again, 800 partial leaks across 2256 probed lines.
+        #
+        # It is unnecessary now. The lexicon no longer truncates a run at all
+        # (see `_token_kind`), so there is nothing left for an end-of-line
+        # special case to rescue, and a special case that patches a symptom of
+        # consulting the lexicon in a position where it has no authority is
+        # exactly the kind of fix this project has to stop making.
+        return tokens[0][1], tokens[-1][2]
     pattern = _AT.get(field_type)
     if pattern is None:
         return None

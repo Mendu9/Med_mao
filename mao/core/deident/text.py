@@ -81,30 +81,69 @@ def map_lines(text: str, transform: Callable[[str], str]) -> str:
     return join_lines([transform(content) for content in contents], terminators)
 
 
-#: Every Unicode FORMAT character, not the handful anyone happened to notice.
+#: Every character that occupies NO VISIBLE ADVANCE WIDTH.
 #:
-#: `INVISIBLE` above is a hand-written six-element string, and enumerating it by
-#: hand failed the same way every fixed list in this project has failed: nine
-#: further characters — U+200E/200F (directional marks), U+202A/202E (embedding
-#: and override), U+2061, U+2066, U+061C, U+FE0F, U+180E — still split every
-#: grammar, and defeated 54 of 90 field/character combinations. A `[NAME]`
-#: placeholder was emitted with the surname legible beside it.
+#: This has now been enumerated three times and each enumeration was defeated by
+#: a character the enumerator had not seen:
 #:
-#: `Cf` is the Unicode category for exactly these: characters that carry
-#: formatting and no content. Using the category means the next one added to
-#: Unicode is handled without anyone noticing it. U+180E is included explicitly
-#: because it was reclassified out of `Cf` and is still a zero-width separator.
+#:   a six-element string   -> nine further characters split every grammar
+#:                             (U+200E/200F, U+202A/202E, U+2061, U+2066,
+#:                             U+061C, U+FE0F, U+180E), 54 of 90 combinations
+#:   the `Cf` category      -> eight further characters, five of them named
+#:                             verbatim in the review that suggested `Cf`:
+#:                             U+034F (Mn), U+17B4/U+17B5 (Mn), the Hangul
+#:                             fillers U+115F/U+1160/U+3164/U+FFA0 (Lo), the
+#:                             Braille blank U+2800 (So), and the C0 controls
+#:                             (Cc), which are legal in a JSON string body and
+#:                             reach `ChatRequest.query` intact
+#:
+#: `Cf` was the right instinct applied to a proper subset. The property actually
+#: wanted is "carries no visible content", and it spans five general categories
+#: — so the class is defined by that property and the categories are how it is
+#: computed, rather than the categories being the definition.
+#:
+#: A denylist of categories will keep losing. This is still, strictly, a
+#: denylist — but it is one whose membership test is the property itself, so a
+#: character added to Unicode tomorrow in any of these categories is handled
+#: without anyone noticing it. The complementary control is in `values`: an
+#: identifier token admits only the characters its own grammar names, so a
+#: character that gets past this set still cannot sit INSIDE a claimed value.
+def _carries_no_visible_content(character: str) -> bool:
+    category = unicodedata.category(character)
+    if category in ("Cf", "Cc"):
+        # Format and control characters. `Cc` includes the line terminators,
+        # which are structure rather than content and must survive: removing
+        # them would join two lines, which is the deletion this module's whole
+        # line-scope design exists to make impossible.
+        return character not in "\t\n\r\v\f"
+    if category in ("Mn", "Me"):
+        # Non-spacing and enclosing marks: zero advance width by definition.
+        # This covers the variation selectors (U+FE00.., U+E0100..), U+034F
+        # COMBINING GRAPHEME JOINER and the Khmer inherent vowels — and also
+        # ordinary combining accents, which is correct: `José` and `José`
+        # must fold to the same token, and `_fold` already strips them for
+        # lexicon lookup.
+        return True
+    if category == "Cs":
+        # Lone surrogates. Not text, and no renderer draws them.
+        return True
+    # The remainder are individually named because their categories are
+    # overwhelmingly visible: `Lo` letters and `So` symbols. Every one of these
+    # renders as blank and every one was measured splitting an identifier.
+    return character in _BLANK_BY_EXCEPTION
+
+
+#: Blank characters whose general category is otherwise a visible one.
+_BLANK_BY_EXCEPTION = frozenset(
+    "ᅟᅠㅤﾠ"  # Hangul fillers (Lo) — the classic filter bypass
+    "⠀"                    # Braille pattern blank (So)
+    "᠎"                    # Mongolian vowel separator, reclassified out of Cf
+    "­"                    # Soft hyphen, if ever reclassified
+)
+
 _FORMAT_CHARACTERS = frozenset(
-    chr(code)
-    for code in range(0x110000)
-    if unicodedata.category(chr(code)) == "Cf"
-) | {"­", "᠎"} | {
-    # Variation selectors. Category `Mn`, not `Cf`, so the category test alone
-    # left U+FE0F splitting every numeric grammar — 5 of 72 probes. They select
-    # a glyph form and carry no content, which is exactly the same argument.
-    chr(code)
-    for code in [*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0)]
-}
+    chr(code) for code in range(0x110000) if _carries_no_visible_content(chr(code))
+)
 
 _INVISIBLE_RE = re.compile(
     "[" + "".join(re.escape(character) for character in sorted(_FORMAT_CHARACTERS)) + "]"

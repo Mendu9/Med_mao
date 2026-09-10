@@ -7,7 +7,7 @@ import base64
 import pytest
 from unittest.mock import patch
 
-from tests.agents.gateway_stub import _completing, _completion
+from tests.agents.gateway_stub import _completion
 
 
 # ---------------------------------------------------------------------------

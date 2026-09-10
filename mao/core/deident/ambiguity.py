@@ -20,8 +20,8 @@ Ambiguity is resolved differently depending on who can see the outcome:
 
   UPLOAD PATH — the report is processed unseen, so a wrong guess is silent. An
   ambiguous header is REFUSED, and the caller is asked for structured patient
-  fields instead of having them inferred from extracted text. `clinical_agent`
-  raises `AmbiguousDocument` and the route answers 422.
+  fields instead of having them inferred from extracted text. The route answers
+  422 and names the fields.
 
   CHAT PATH — the clinician wrote the text and reads the answer, so an
   over-redaction is visible and recoverable while a leak is not. Ambiguity
@@ -31,15 +31,35 @@ Ambiguity is resolved differently depending on who can see the outcome:
 
 Neither path guesses a boundary. That is the point, and it is what makes both
 invariants satisfiable on the path where they must both hold.
+
+## What changed, and why it had to
+
+This module used to RE-DERIVE the question with a rule of its own, narrower than
+the scrubber's. The two halves then disagreed about the same string:
+
+    'Patient Name: Harold Nkemdirim Rockwood Frailty'
+      find_ambiguities  tail is empty -> "unambiguous"
+      values.value_at   "a header value runs to the end of its line" -> take it
+      result            the instrument's name is DELETED, unseen, no refusal
+
+and, measured across a hold-out corpus, the refusal fired on 9 of 60 documents —
+exactly the 9 whose last word the clinical lexicon happened to contain. *The
+refusal fired when the lexicon already solved the problem and did not fire when
+it did not.* An independent review then showed the refused set was a
+98%-precision, 100%-recall oracle for the documents that would FAIL the suite: a
+quarantine tuned, in effect, to remove the failures.
+
+So there is now ONE decision procedure. `layout.build_claims` marks every claim
+`SETTLED` or `GUESSED`, this module reports the GUESSED ones, and the scrubber
+redacts all of them. The refusal and the redaction cannot disagree about a
+string because they are reading the same answer.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .fields import FieldType
-from .lexicon import has_clinical_head
-from .text import split_lines
-from .values import _fold, name_tokens
+from .layout import Certainty, build_claims
+from .text import normalise, strip_leading_bom
 
 
 class AmbiguousDocument(Exception):
@@ -66,6 +86,11 @@ class Ambiguity:
     words: int
     label: str
     reason: str
+    #: The line carrying the label, when it is not `line` itself. A two-column
+    #: extraction puts the field and the content it protects on different rows,
+    #: and a refusal that names only one of them looks like a blanket over a
+    #: failure somewhere else.
+    label_line: int = -1
 
 
 @dataclass
@@ -77,6 +102,19 @@ class AmbiguityReport:
     def __bool__(self) -> bool:
         return bool(self.items)
 
+    def covered_lines(self) -> set[int]:
+        """Every line this refusal is answerable for.
+
+        A refusal must NAME what it is protecting, or it cannot be told from a
+        blanket. Both the field that could not be resolved and the content line
+        it was about are included, because in a two-column extraction they are
+        different rows and excluding either would make an honest refusal look
+        like an oracle — or let an oracle look honest.
+        """
+        lines = {item.line for item in self.items}
+        lines |= {item.label_line for item in self.items if item.label_line >= 0}
+        return lines
+
     def describe(self) -> str:
         """A description safe to log and to return to the caller.
 
@@ -87,69 +125,38 @@ class AmbiguityReport:
         if not self.items:
             return "no ambiguous fields"
         return "; ".join(
-            f"line {item.line + 1}, field {item.label!r}: {item.words} "
-            f"name-shaped words — {item.reason}"
+            f"line {item.line + 1}, field {item.label!r}: {item.reason}"
             for item in self.items
         )
 
 
-#: A name run this long with no clinical signal inside it and more content after
-#: it on the same line is the shape that cannot be bounded. Two words is an
-#: ordinary forename and surname and needs no adjudication; three or more,
-#: followed by yet more words, is `Harold Nkemdirim Rockwood Frailty` — where the
-#: name stops is exactly what nothing can tell us.
-_UNBOUNDED_NAME_WORDS = 3
-
-_SENTENCE_END = ".?!;"
-
-
 def find_ambiguities(text: str) -> AmbiguityReport:
-    """Every point where a person value's extent could not be established.
+    """Every point where a person value's identity or extent had to be guessed.
 
-    Deliberately narrow. It reports the ONE case that defeated three rounds —
-    an unpunctuated run of name-shaped words continuing into more content — and
-    not every judgement the scrubber makes, because a refusal that fires on
-    ordinary documents is a refusal nobody can ship.
+    Reads the scrubber's own claims rather than re-deriving them, so the
+    quarantine and the redaction cannot disagree about a document.
+
+    Normalises exactly as `scrub_pii` does before deciding. Without that, a
+    document whose fullwidth colon or soft hyphen only becomes visible after
+    normalisation would be judged on a different string from the one the
+    scrubber acts on — and the two halves would be back to disagreeing.
     """
-    from .fields import find_labels
-
+    if not text:
+        return AmbiguityReport()
+    _, body = strip_leading_bom(text)
+    _, _, claims = build_claims(normalise(body))
     report = AmbiguityReport()
-    lines, _ = split_lines(text)
-    for index, line in enumerate(lines):
-        for _start, end, field_type in find_labels(line):
-            if field_type is not FieldType.NAME:
-                continue
-            position = end
-            while position < len(line) and line[position] in " \t:：|=#-":
-                position += 1
-            tokens = name_tokens(line, position)
-            words = [token for token in tokens if token[0] == "word"]
-            if len(words) < _UNBOUNDED_NAME_WORDS:
-                continue
-            tail = line[tokens[-1][2] :]
-            # A sentence terminator ends the value unambiguously; so does the
-            # end of the line. Only an unpunctuated continuation is unresolvable.
-            if not tail.strip() or tail.lstrip()[:1] in _SENTENCE_END:
-                continue
-            # ...and so does the NEXT FIELD. `Patient Name: John Michael Smith
-            # MRN: RGT/44219/B` is a perfectly ordinary banner: the name ends
-            # where the next label begins, which `name_tokens` already knows.
-            # Refusing it made the quarantine fire on the shape real patient
-            # banners always have — 30/30 in review — and a refusal that common
-            # is a broken product rather than a policy.
-            if find_labels(tail):
-                continue
-            if has_clinical_head([_fold(line[s:e]) for _, s, e in tokens]):
-                continue
-            report.items.append(
-                Ambiguity(
-                    line=index,
-                    words=len(words),
-                    label=" ".join(line[_start:end].split()),
-                    reason=(
-                        "followed by more text with no punctuation and no "
-                        "following field — the end of the name cannot be established"
-                    ),
-                )
+    for claim in sorted(
+        (c for c in claims if c.certainty is Certainty.GUESSED),
+        key=lambda c: (c.line, c.start),
+    ):
+        report.items.append(
+            Ambiguity(
+                line=claim.line,
+                words=claim.words,
+                label=claim.label,
+                reason=claim.reason,
+                label_line=claim.label_line,
             )
+        )
     return report

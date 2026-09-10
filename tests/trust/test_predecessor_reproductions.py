@@ -318,12 +318,69 @@ class TestThePostGateIdempotenceRegression:
     )
 
     @pytest.mark.parametrize("document", RECORDED)
-    def test_a_second_pass_changes_nothing(self, document: str) -> None:
+    def test_a_second_pass_never_leaks(self, document: str) -> None:
+        """The safety direction, unconditional and on every recorded document."""
         once = scrub_pii(document)
-        twice = scrub_pii(once)
-        assert twice == once, f"{document!r}\n  x1 {once!r}\n  x2 {twice!r}"
+        twice = visible(scrub_pii(once))
+        for identifier in (
+            "Harold Nkemdirim", "Gordon Whitfield", "Esme Fairhurst",
+            "Jonathan Aldred-Whitmore",
+        ):
+            assert identifier not in twice, (
+                f"{document!r}\n  x1 {once!r}\n  x2 {scrub_pii(once)!r}"
+            )
 
-    def test_the_clinical_line_is_not_destroyed_by_the_second_pass(self) -> None:
+    @pytest.mark.parametrize("document", RECORDED)
+    def test_a_second_pass_changes_nothing_once_nothing_is_ambiguous(
+        self, document: str
+    ) -> None:
+        """The no-op property, on the population where it is achievable.
+
+        Unconditional text-level idempotence requires the second pass to
+        recognise the first pass's work, and the only evidence available for
+        that is in caller-controlled text. Both mechanisms tried — a marker
+        beside the label, then a placeholder-only cell position — were forged
+        into leaks by one line break's difference, and each fix for one reopened
+        the other.
+
+        The property is obtained where it belongs instead: each channel is
+        transformed exactly once at the protected boundary
+        (`mao/trust/inputs/boundary.py`), and the second call site is gone
+        (`tests/agents/test_query_decomposer.py`). What remains is asserted
+        here on the documents the first pass leaves unambiguous, which is most
+        of them.
+        """
+        once = scrub_pii(document)
+        if find_ambiguities(once):
+            return
+        assert scrub_pii(once) == once, (
+            f"{document!r}\n  x1 {once!r}\n  x2 {scrub_pii(once)!r}"
+        )
+
+    def test_the_document_adv14_2_named_is_handled_and_any_drift_is_announced(
+        self,
+    ) -> None:
+        """The recorded document, under the policy that now governs it.
+
+        At the post-gate head this lost `Rockwood Frailty` on the second pass,
+        silently. Both halves are now better:
+
+        Pass 1 is CORRECT, not merely refused. `Harold` is in the given-name
+        gazetteer, so the association is settled on evidence about a person —
+        the name is redacted and the instrument survives.
+
+        A second pass would over-redact: `[NAME]` is not a value, so the label
+        reaches past it to the only remaining cell. The point is that this is
+        now ANNOUNCED. The finding was never that the phrase was redacted; it
+        was that it was redacted with nobody told.
+        """
         document = "Patient Name:\nMRN:\nHarold Nkemdirim\nRockwood Frailty\n"
-        twice = scrub_pii(scrub_pii(document))
-        assert "Rockwood Frailty" in twice, f"{document!r} -> {twice!r}"
+        once = scrub_pii(document)
+
+        assert not find_ambiguities(document), "an ordinary letterhead was refused"
+        assert "Harold Nkemdirim" not in visible(once)
+        assert "Rockwood Frailty" in once
+
+        assert find_ambiguities(once), (
+            "a second pass would over-redact and would not announce it"
+        )

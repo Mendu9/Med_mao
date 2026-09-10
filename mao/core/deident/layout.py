@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 from .fields import FieldType, find_labels, is_ambiguous_person_label, type_of
 from .report import Removal
@@ -77,6 +78,38 @@ _PLACEHOLDER = re.compile(
 )
 
 
+class Certainty(Enum):
+    """Whether a claim was established on evidence or guessed.
+
+    ONE decision procedure produces both, and the two paths read the same output
+    under different policies. That is the fix for the finding that the refusal
+    and the scrubber "disagree about the same string": `find_ambiguities` used to
+    re-derive the question with its own narrower rule, so the quarantine fired
+    when the lexicon already solved the problem and did not fire when it did not
+    — 49 of 60 clinical phrases destroyed on the path whose stated policy is to
+    refuse rather than guess.
+
+        SETTLED  a structural signal established the value and its extent: a
+                 non-person type matched by shape, a run bounded by the next
+                 field label or a sentence terminator, a short run, or a span
+                 carrying its own person evidence.
+
+        GUESSED  the value could be a name or could be clinical content, or its
+                 extent could not be established. Nothing here decides it.
+
+    Upload path: a GUESSED claim is REFUSED and the caller is asked for
+    structured fields, because the document is processed unseen and a wrong
+    guess is silent in both directions.
+
+    Chat path: a GUESSED claim is REDACTED, because the clinician wrote the text
+    and reads the answer, so an over-redaction is visible and recoverable while
+    a leak is not.
+    """
+
+    SETTLED = "settled"
+    GUESSED = "guessed"
+
+
 @dataclass(frozen=True)
 class _Claim:
     """A span on one line that will become a placeholder."""
@@ -85,6 +118,15 @@ class _Claim:
     start: int
     end: int
     field_type: FieldType
+    certainty: Certainty = Certainty.SETTLED
+    #: The line carrying the label that made this claim. Equal to `line` for an
+    #: inline value; different for a two-column extraction, where a refusal has
+    #: to be able to name BOTH — the field it could not resolve and the line
+    #: whose content it is protecting.
+    label_line: int = -1
+    label: str = ""
+    words: int = 0
+    reason: str = ""
 
 
 #: Separator characters that only a FIELD uses. A colon, pipe, equals or hash
@@ -107,13 +149,106 @@ def _skip_separator(line: str, position: int) -> tuple[int, bool]:
     return index, explicit
 
 
+#: Characters that decorate a value without being part of one.
+#:
+#: Markdown emphasis, a quotation mark of any nationality, a bullet, a bracket,
+#: a redaction bar. `_skip_separator` advanced over `_SEPARATORS` only and then
+#: required the grammar to match EXACTLY there, so any other character at that
+#: position made `longest_value_at` return `None`, no claim was made, and —
+#: because the line is not label-only — no orphan or type fallback ever looked
+#: at it either. 41 of 95 (prefix, field) cells leaked, and the two field types
+#: that leaked for EVERY prefix were NAME and MRN: precisely the two with no
+#: free-text shape rule to catch them a second time.
+#:
+#: No adversary is required. pypdf emits typographic quotes for a PDF that uses
+#: them, and markdown emphasis and bullets are ordinary pasted clinical text.
+_DECORATION = "*_`~/&@%+$!?^" + "\\" + "•«»“”‘’\"'()[]{}<>█|"
+
+#: How many decoration characters may sit between the separator and the value.
+#: Bounded so a line of punctuation cannot be scanned indefinitely.
+_MAX_DECORATION = 6
+
+#: A short bracketed word, however many brackets and whatever the case:
+#: `[NAME]`, `[name]`, `[[NAME]]`, `[SIC]`, `[NB]`, `[?]`.
+_BRACKETED = re.compile(r"\[+[A-Za-z_?]{1,16}\]+")
+
+
+def _skip_noise(line: str, position: int) -> int:
+    """Advance past separators, decorations and any placeholder OF OURS.
+
+    A placeholder is skipped over, NOT treated as an answer. That distinction is
+    the whole of the fix for the decoy:
+
+        trust the marker    `Patient Name: [NAME] Harold Nkemdirim` is declared
+                            already-scrubbed, and the real name leaks — the
+                            caller controls the input, so this is forgeable in
+                            any position a rule can name;
+
+        skip the marker     the scanner steps over `[NAME]` and finds
+                            `Harold Nkemdirim` behind it, which is redacted.
+
+    Idempotence survives without trusting anything: on genuinely scrubbed text
+    there is nothing behind the placeholder, so no claim is made. The property
+    is established by what is THERE rather than by believing a marker, which is
+    what `_already_redacted` did and what made three insertion shapes leak.
+    """
+    index = position
+    for _ in range(_MAX_DECORATION + 2):
+        moved = False
+        index, _ = _skip_separator(line, index)
+        # A bracketed short word, before the bare-decoration skip. Matching the
+        # brackets as a UNIT is what handles the nested and doubled spellings:
+        # skipping `[` and `[` separately from `[[NAME]]` leaves the scanner on
+        # `NAME`, which then parses as a name and produces a placeholder around
+        # the word "NAME". `[+ ... ]+` consumes the whole decoy at once.
+        #
+        # Case-insensitive, and wider than the placeholders this module emits:
+        # `[name]`, `[SIC]` and `[NB]` are all non-values, and stepping over a
+        # non-value can never suppress a redaction — it can only reveal what is
+        # behind it.
+        bracketed = _BRACKETED.match(line, index)
+        if bracketed is not None:
+            index = bracketed.end()
+            moved = True
+        else:
+            decorated = 0
+            while (
+                index < len(line)
+                and line[index] in _DECORATION
+                and decorated < _MAX_DECORATION
+            ):
+                index += 1
+                decorated += 1
+                moved = True
+        if not moved:
+            break
+    return index
+
+
 def _value_after(
     line: str, label_end: int, field_type: FieldType
 ) -> tuple[tuple[int, int] | None, bool]:
     start, explicit = _skip_separator(line, label_end)
-    span = longest_value_at(
-        field_type, line, start, any_case=uncapitalised(line)
-    )
+    any_case = uncapitalised(line)
+    span = longest_value_at(field_type, line, start, any_case=any_case)
+    if span is None:
+        # Only as a FALLBACK, so a value that legitimately begins with one of
+        # these characters is unaffected: `(020) 7946 0958` and `+44 7700 900456`
+        # match at the separator and never reach here.
+        relaxed = _skip_noise(line, label_end)
+        if relaxed > start:
+            # Matched against the REMAINDER, not at an offset into the line.
+            # `_` is a decoration and also a word character, so `\b` at the
+            # start of the telephone grammar looked back at the underscore we
+            # had just stepped over and failed — `Telephone: _0113 496 0231_`
+            # leaked with the label right there. Matching the remainder makes
+            # the skipped decoration invisible to a word-boundary assertion,
+            # which is what "skipped" should mean.
+            found = longest_value_at(
+                field_type, line[relaxed:], 0, any_case=any_case
+            )
+            if found is not None:
+                span = (found[0] + relaxed, found[1] + relaxed)
     return span, explicit
 
 
@@ -130,30 +265,81 @@ def _value_before(line: str, label_start: int, field_type: FieldType) -> tuple[i
     return whole_value(field_type, prefix)
 
 
-def _already_redacted(line: str, start: int, end: int) -> bool:
-    """Whether this label's value has already been replaced by a placeholder.
-
-    `/chat` scrubs twice — `apply_input_guardrails` and then `query_decomposer`
-    — so a second pass is a real code path, not a curiosity. Without this check
-    the first pass turned `Jonathan Aldred-Whitmore: Name Rockwood Frailty
-    Scale` into `[NAME]: Name Rockwood Frailty Scale`, and then the second pass
-    could no longer parse the prefix as a value, fell through to the text AFTER
-    the label, and redacted the clinical instrument instead: `[NAME]: Name
-    [NAME] Scale`. Scrubbing an already-scrubbed string must be a no-op.
-    """
-    before = line[:start].rstrip(_SEPARATORS)
-    if before.endswith("]") and _PLACEHOLDER.search(before[-16:]):
-        return True
-    after = line[end:].lstrip(_SEPARATORS)
-    return bool(_PLACEHOLDER.match(after))
+# `_already_redacted` is GONE.
+#
+# It answered "has this label's value already been replaced?" by looking for a
+# placeholder beside the label — `after = line[end:].lstrip(_SEPARATORS)` then
+# `_PLACEHOLDER.match(after)`, plus a `before.endswith("]")` test for the
+# line-leading form. The caller controls the input and there is no
+# authentication on `mao/api/`, so both were forgeable: inserting `[NAME]`
+# after the label made the module declare the field scrubbed and the real name
+# went out in the clear. All ten emittable placeholders worked, in every
+# insertion shape, for the two field types that have no free-text shape rule to
+# catch them a second time.
+#
+# The property it was reaching for — "a second scrub is a no-op" — is not
+# obtainable from a marker in caller-controlled text, and neither is it
+# obtainable from a POSITION in caller-controlled text, which is what replaced
+# it and which leaked in three further shapes. It is obtained instead by
+# scrubbing exactly once and carrying the typed result
+# (`mao/trust/inputs/boundary.py`), and, at this level, by `_skip_noise`
+# STEPPING OVER a placeholder rather than believing it.
 
 
 def _is_label_only(line: str, labels: list[tuple[int, int, FieldType]]) -> bool:
-    """A line holding exactly one label and no value — a letterhead's left column."""
+    """A line holding exactly one label and no value — a letterhead's left column.
+
+    A remainder consisting only of placeholders counts as "no value". Without
+    that, `Patient Name: [NAME]` with the real name on the NEXT line was neither
+    an inline claim nor an orphan label, so nothing cross-line ever looked at
+    it and the name below leaked. Stripping our own placeholders is not trusting
+    them: a placeholder is not a value whichever way it got there, and the line
+    still yields no claim of its own either way.
+    """
     if len(labels) != 1:
         return False
     start, end, _ = labels[0]
-    return not line[:start].strip() and not line[end:].strip(_SEPARATORS)
+    # `_BRACKETED`, not `_PLACEHOLDER`: the latter matches only the exact
+    # upper-case spellings this module emits, so `Patient Name: [name]` was
+    # still "a line with a value", never became an orphan, and the real name on
+    # the next line was never looked for. A bracketed short word is not a value
+    # in any spelling.
+    remainder = _BRACKETED.sub("", line[end:])
+    return not line[:start].strip() and not remainder.strip(_SEPARATORS)
+
+
+def _clip_to_labels(
+    span: tuple[int, int] | None,
+    label_spans: list[tuple[int, int, FieldType]],
+    own: tuple[int, int],
+) -> tuple[int, int] | None:
+    """A claimed value may not overlap ANOTHER FIELD'S LABEL on the same line.
+
+    `_token_kind` already refuses a token that is a whole label by itself, but a
+    label is often several words — `Medical Record Number` — and none of those
+    words is a label alone. With the clinical lexicon no longer terminating a
+    name run (see `values._token_kind`), a header row of a table extraction
+
+        'Consultant:    Medical Record Number:    Date of Birth:'
+
+    let `Consultant:` claim `Medical Record` and emit `Consultant: [NAME]:`,
+    which destroys a column heading and asserts a removal that never happened.
+
+    `find_labels` has already located every label on the line, so the bound is
+    available and needs no vocabulary: a value stops where the next field
+    begins. Structural, and it holds for a label of any length.
+    """
+    if span is None:
+        return None
+    start, end = span
+    for label_start, label_end, _ in label_spans:
+        if (label_start, label_end) == own:
+            continue
+        if start < label_start < end:
+            end = label_start
+        elif label_start <= start < label_end:
+            return None
+    return (start, end) if end > start else None
 
 
 def _same_line_claims(
@@ -173,22 +359,19 @@ def _same_line_claims(
         for start, end, field_type in labels[index]:
             if field_type is FieldType.STRUCTURAL:
                 continue
-            if _already_redacted(line, start, end):
-                continue
             if field_type is FieldType.NAME:
                 deferred.append((index, start, end, field_type))
                 continue
             span, _ = _value_after(line, end, field_type)
             if span is None:
                 span = _value_before(line, start, field_type)
+            span = _clip_to_labels(span, labels[index], (start, end))
             if span is not None:
                 claims.append(_Claim(index, span[0], span[1], field_type))
 
     form_evidence = _form_evidence(lines, claims)
     for index, start, end, field_type in deferred:
         line = lines[index]
-        if _already_redacted(line, start, end):
-            continue
         # BEFORE first, for a person label only. `_value_before` demands that the
         # ENTIRE prefix parse as one value; `_value_after` takes a greedy run
         # from wherever the label ends. When both can match, the first is much
@@ -196,18 +379,111 @@ def _same_line_claims(
         # backwards: `Jonathan Aldred-Whitmore: Name Rockwood Frailty Scale`
         # redacted `Rockwood Frailty` as the name and left the real one, in the
         # clear, at the start of the line.
+        # A value BEFORE its label is credibility-checked too.
+        #
+        # It used to be taken as settled on the strength of the structure —
+        # `_value_before` demands that the ENTIRE prefix parse as one value,
+        # which is strong evidence — and that was safe only because the clinical
+        # lexicon was refusing capitalised common English inside `name_tokens`.
+        # With the lexicon out of the tokeniser (it truncated names, which is
+        # what produced every partial redaction), `The` parses as a name token,
+        # `Patient` is an ambiguous person label, and
+        #
+        #     'The patient scored 28/30 on MMSE.'  ->  '[NAME] patient scored...'
+        #
+        # The vocabulary still has the answer; it just has to be asked as a
+        # CLASSIFICATION question about the span rather than allowed to cut a
+        # name in half.
         span = _value_before(line, start, field_type)
+        before = span is not None
         explicit = True
         if span is None:
             span, explicit = _value_after(line, end, field_type)
+        span = _clip_to_labels(span, labels[index], (start, end))
         if span is None:
             continue
-        if not explicit and not _person_label_may_claim(
-            line, line[start:end], span, form_evidence
-        ):
+        verdict = (
+            _CELL_PERSON
+            if explicit and not before
+            else _person_label_may_claim(line, line[start:end], span, form_evidence)
+        )
+        if verdict == _CELL_CLINICAL:
             continue
-        claims.append(_Claim(index, span[0], span[1], field_type))
+        certainty, words, reason = _extent_certainty(line, span)
+        if verdict == _CELL_UNDECIDED:
+            certainty = Certainty.GUESSED
+            reason = reason or (
+                "the value starts like a name and continues into text that "
+                "reads as clinical content, and nothing establishes where one "
+                "ends and the other begins"
+            )
+        claims.append(
+            _Claim(
+                line=index,
+                start=span[0],
+                end=span[1],
+                field_type=field_type,
+                certainty=certainty,
+                label_line=index,
+                label=" ".join(line[start:end].split()),
+                words=words,
+                reason=reason,
+            )
+        )
     return claims
+
+
+#: A run this long, with more than a bounded amount of content behind it, is the
+#: shape whose end cannot be established. Two words is an ordinary forename and
+#: surname and needs no adjudication.
+_UNBOUNDED_NAME_WORDS = 3
+
+
+def _extent_certainty(line: str, span: tuple[int, int]) -> tuple[Certainty, int, str]:
+    """Whether this person value's EXTENT was established, or guessed.
+
+    The predecessor asked this question with an extra escape hatch — a run
+    reaching the end of the line was declared settled, on the reasoning that "a
+    header value runs to the end of its line". That reasoning is what
+    `values.value_at` uses to justify taking the whole run, so using it here too
+    means the two halves agree by construction and neither of them has actually
+    established anything:
+
+        'Patient Name: Harold Nkemdirim Rockwood Frailty'
+          tail is empty -> declared unambiguous -> the whole run is taken
+          -> the instrument's name is DELETED, unseen, with no refusal
+
+    Reaching the end of the line does not tell a six-token name from a name
+    followed by a clinical phrase. Nothing does. So it is reported as guessed,
+    and 49 of 60 measured phrases stop being destroyed silently.
+
+    What DOES settle an extent is a structural boundary the caller wrote: the
+    next known field label, or a sentence terminator. `Patient Name: John
+    Michael Smith MRN: RGT/44219/B` is an ordinary banner and is settled — which
+    matters, because a refusal that fires on the shape every real patient banner
+    has is a broken product rather than a policy.
+    """
+    from .fields import find_labels as _find_labels
+
+    tokens = name_tokens(line, span[0])
+    words = len([token for token in tokens if token[0] == "word"])
+    if words < _UNBOUNDED_NAME_WORDS:
+        return Certainty.SETTLED, words, ""
+    tail = line[span[1] :]
+    if tail.lstrip()[:1] in _SENTENCE_END and tail.strip():
+        return Certainty.SETTLED, words, ""
+    if _find_labels(tail):
+        return Certainty.SETTLED, words, ""
+    return (
+        Certainty.GUESSED,
+        words,
+        f"{words} name-shaped words — the end of the name cannot be established "
+        "from the text, so taking the run risks deleting clinical content and "
+        "stopping short risks leaving part of the name",
+    )
+
+
+_SENTENCE_END = ".?!;"
 
 
 #: Types whose shape is unambiguous — a line that is wholly one of these is an
@@ -251,9 +527,27 @@ def _form_evidence(lines: list[str], claims: list[_Claim]) -> int:
     return len(lines_with_evidence)
 
 
+def _minimal_name(tokens: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """The shortest prefix of `tokens` that could be a name on its own.
+
+    Counted in WORD tokens, not in tokens. `van der Grinten` begins with two
+    particles, so a flat "first two tokens" gave `van der` — and `name_tokens`
+    pops trailing particles, so that span parsed as nothing at all, the
+    credibility test failed, and a real Dutch surname was not redacted.
+    Titles and initials have the same shape of problem: `Dr A. Raman`.
+    """
+    words = 0
+    for index, (kind, _, _) in enumerate(tokens):
+        if kind == "word":
+            words += 1
+            if words == 2:
+                return tokens[: index + 1]
+    return tokens
+
+
 def _person_label_may_claim(
     line: str, label: str, span: tuple[int, int], form_evidence: int
-) -> bool:
+) -> str:
     """Whether a person label with NO explicit separator may take this value.
 
     `Carer Strain Index` is a validated instrument and `Carer` is a person
@@ -264,10 +558,34 @@ def _person_label_may_claim(
     """
     tokens = name_tokens(line, span[0])
     if not tokens:
-        return False
+        return _CELL_CLINICAL
     if is_ambiguous_person_label(label):
-        return person_evidence(line, tokens)
-    return _name_is_credible(line[span[0] : span[1]], FieldType.NAME, form_evidence)
+        return (
+            _CELL_PERSON if person_evidence(line, tokens) else _CELL_CLINICAL
+        )
+    # Two questions, on two different spans, and conflating them cost a leak.
+    #
+    # "Does a person value START here?" is about the MINIMAL name — the first
+    # two tokens. `Carer Strain Index` fails it, which is the case this guard
+    # exists for.
+    #
+    # "Is the whole run clinical content?" is about the greedy span, and its
+    # answer is no longer allowed to DROP the claim. A run-on extraction —
+    # `Surname Okonkwo-Achebe Rockwood Frailty Scale...` all on one line — ran
+    # to the next label, the instrument vocabulary in the tail made the span
+    # look clinical, the claim was dropped, and the surname was not redacted at
+    # all. Judging the span is right; discarding the claim on it was the leak.
+    #
+    # So a credible start with a clinical-looking tail is UNDECIDED: redacted on
+    # the chat path, refused on the upload path, and never silently dropped.
+    minimal = _minimal_name(tokens)
+    if not _name_is_credible(
+        line[minimal[0][1] : minimal[-1][2]], FieldType.NAME, form_evidence
+    ):
+        return _CELL_CLINICAL
+    if _name_is_credible(line[span[0] : span[1]], FieldType.NAME, form_evidence):
+        return _CELL_PERSON
+    return _CELL_UNDECIDED
 
 
 def _runs_of_orphan_labels(
@@ -440,15 +758,22 @@ def _pair_in_direction(
                 span = matches_exclusively(field_type, lines[candidate])
                 if span is None:
                     continue
-                if not _name_is_credible(
+                verdict = _person_cell_verdict(
                     lines[candidate],
                     field_type,
                     evidence,
                     ambiguous=is_ambiguous_person_label(lines[label_line][start:end]),
-                ):
+                )
+                if verdict == _CELL_CLINICAL:
                     continue
                 paired.append(
-                    (label_line, _Claim(candidate, span[0], span[1], field_type))
+                    (
+                        label_line,
+                        _cross_line_claim(
+                            lines, labels, label_line, candidate, span, field_type,
+                            verdict,
+                        ),
+                    )
                 )
                 taken.add(candidate)
     # A satisfied label is PLACED with no claim, so `_cross_line_claims` does
@@ -459,6 +784,44 @@ def _pair_in_direction(
         for label_line in satisfied
     )
     return paired
+
+
+def _cross_line_claim(
+    lines: list[str],
+    labels: list[list[tuple[int, int, FieldType]]],
+    label_line: int,
+    candidate: int,
+    span: tuple[int, int],
+    field_type: FieldType,
+    verdict: str,
+) -> _Claim:
+    """A claim from an orphan label onto a cell on another line.
+
+    Records BOTH lines. A refusal has to be answerable for what it excludes, and
+    for a two-column extraction those are different lines: the field that could
+    not be resolved is on one, and the content being protected is on the other.
+    A report naming only the label line looks like a blanket over a failure
+    somewhere else.
+    """
+    start, end, _ = labels[label_line][0]
+    label = " ".join(lines[label_line][start:end].split())
+    return _Claim(
+        line=candidate,
+        start=span[0],
+        end=span[1],
+        field_type=field_type,
+        certainty=(
+            Certainty.GUESSED if verdict == _CELL_UNDECIDED else Certainty.SETTLED
+        ),
+        label_line=label_line,
+        label=label,
+        words=len(lines[candidate].split()),
+        reason=(
+            "a person label on another line was paired with this one by "
+            "position, and the line carries no evidence that it is a name "
+            "rather than clinical content"
+        ),
+    )
 
 
 def _is_free_cell(
@@ -557,21 +920,73 @@ def _name_is_credible(
     evidence alone must be close to its label, or `Lasting Power of Attorney`
     thirteen lines below an orphan `Consultant:` starts looking like a person.
     """
+    return _person_cell_verdict(line, field_type, form_evidence,
+                                ambiguous=ambiguous, near=near) is not _CELL_CLINICAL
+
+
+#: The three answers a bare column cell can get. `_CELL_UNDECIDED` is the one
+#: that used to be silently folded into "person": `_name_is_credible` ended in a
+#: bare `return True`, so an orphan `Patient Name:` above `Rockwood Frailty`
+#: claimed the instrument and deleted it — with no refusal, on the path whose
+#: stated policy is to refuse rather than guess.
+_CELL_PERSON = "person"
+_CELL_CLINICAL = "clinical"
+_CELL_UNDECIDED = "undecided"
+
+
+def _person_cell_verdict(
+    line: str,
+    field_type: FieldType,
+    form_evidence: int,
+    *,
+    ambiguous: bool = False,
+    near: bool = True,
+) -> str:
+    """Person, clinical, or genuinely undecided — see `_name_is_credible`."""
     if field_type is not FieldType.NAME:
-        return True
+        return _CELL_PERSON
     tokens = name_tokens(line, 0) or name_tokens(line, len(line) - len(line.lstrip()))
     if not tokens:
-        return False
+        return _CELL_CLINICAL
+    # STRONG person evidence is consulted BEFORE the clinical test, and the
+    # order is the fix for a leak rather than a preference.
+    #
+    # `is_clinical_phrase` fires when ANY token is in the lexicon, and a
+    # dementia service's lexicon is full of surnames — so `Mary Parkinson` in a
+    # letterhead column was classified as clinical content and left completely
+    # unredacted, 160 of 192 measured. Asking "is there a given name, a title,
+    # an initial, a suffix, a non-Latin script?" first settles that case on
+    # evidence about a person, and leaves every span WITHOUT such evidence to
+    # the clinical test exactly as before.
+    #
+    # Strong evidence only. A particle would let `Lasting Power of Attorney` and
+    # `Activities of Daily Living` outvote their own clinical vocabulary on the
+    # strength of the word "of".
+    if person_evidence(line, tokens, strong_only=True):
+        return _CELL_PERSON
     if is_clinical_phrase(line, tokens):
-        return False
+        return _CELL_CLINICAL
     if person_evidence(line, tokens):
-        return True
+        return _CELL_PERSON
     if ambiguous:
         # `Carer`, `Patient`, `Mother` are ordinary clinical words, so the label
         # itself carries no weight. The value must look like a person, or the
         # document must be a form and the value must be nearby and short.
-        return near and len(tokens) <= 2 and form_evidence >= 2
-    return True
+        if near and len(tokens) <= 2 and form_evidence >= 2:
+            return _CELL_UNDECIDED
+        return _CELL_CLINICAL
+    # Neither positively a person nor positively clinical.
+    #
+    # This branch used to `return True`, and that bare `True` is where 49 of 60
+    # measured clinical phrases were destroyed: an orphan `Patient Name:` above
+    # `Rockwood Frailty`, `Substantia Nigra` or `Medtronic Azure Pacemaker`
+    # claimed the line and deleted it, unseen, with no refusal — on the path
+    # whose stated policy is that an unresolvable header is refused.
+    #
+    # `Harold Nkemdirim` and `Rockwood Frailty` are the same shape and no rule
+    # separates them. Saying so is the only honest answer; what to DO about it
+    # is a policy question, and the two paths answer it differently.
+    return _CELL_UNDECIDED
 
 
 #: How far from a PERSON label a value may be found when position has broken
@@ -634,15 +1049,20 @@ def _pair_by_type(
             if span is None:
                 continue
             start, end, _ = labels[label_line][0]
-            if not _name_is_credible(
+            verdict = _person_cell_verdict(
                 lines[candidate],
                 field_type,
                 form_evidence,
                 ambiguous=is_ambiguous_person_label(lines[label_line][start:end]),
                 near=abs(candidate - label_line) <= reach,
-            ):
+            )
+            if verdict == _CELL_CLINICAL:
                 continue
-            claims.append(_Claim(candidate, span[0], span[1], field_type))
+            claims.append(
+                _cross_line_claim(
+                    lines, labels, label_line, candidate, span, field_type, verdict
+                )
+            )
             taken.add(candidate)
             break
     return claims
@@ -732,8 +1152,15 @@ def _apply(
     return out
 
 
-def redact_labelled_fields_with_report(text: str) -> tuple[str, list[Removal]]:
-    """Redact every value that a field label identifies, and say which."""
+def build_claims(text: str) -> tuple[list[str], list[str], list[_Claim]]:
+    """Every span this module would redact, with how certain each one is.
+
+    Exposed so `ambiguity` reads the SAME decision rather than re-deriving it.
+    The predecessor had two implementations of "is this resolvable" and they
+    disagreed about the same string — the refusal fired when the lexicon already
+    solved the problem and did not fire when it did not, which is the exact
+    inverse of what a quarantine is for.
+    """
     lines, terminators = split_lines(text)
     labels = [find_labels(line) for line in lines]
 
@@ -743,6 +1170,12 @@ def redact_labelled_fields_with_report(text: str) -> tuple[str, list[Removal]]:
     claims += _cross_line_claims(
         lines, labels, consumed, _form_evidence(lines, claims)
     )
+    return lines, terminators, claims
+
+
+def redact_labelled_fields_with_report(text: str) -> tuple[str, list[Removal]]:
+    """Redact every value that a field label identifies, and say which."""
+    lines, terminators, claims = build_claims(text)
     removed: list[Removal] = []
     return join_lines(_apply(lines, claims, removed), terminators), removed
 

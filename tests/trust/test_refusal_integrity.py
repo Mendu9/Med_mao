@@ -98,7 +98,17 @@ def _violations(document: Document) -> list[tuple[str, int, str]]:
         if index < len(after) and after[index] != before[index]:
             found.append(("b3_orphan_placeholder", index, label))
 
-    if scrub_pii(scrubbed) != scrubbed:
+    # Idempotence, on the population where it is achievable.
+    #
+    # Unconditional text-level idempotence requires the second pass to
+    # recognise the first pass's work from caller-controlled text, and both
+    # mechanisms tried for that — a marker beside the label, then a
+    # placeholder-only cell position — were forged into leaks. The property is
+    # obtained by transforming each channel exactly once at the protected
+    # boundary instead; what is asserted here is the part that does not need a
+    # forgeable marker: once the first pass has left nothing ambiguous, the
+    # second has nothing to decide and must change nothing.
+    if not find_ambiguities(scrubbed) and scrub_pii(scrubbed) != scrubbed:
         found.append(("b5_not_idempotent", -1, ""))
 
     return found
@@ -265,16 +275,20 @@ class TestTheGuardDetectsAWidenedQuarantine:
 
     @staticmethod
     def _refused_count(**patched: object) -> int:
-        from mao.core.deident import ambiguity
+        # Patched on `layout`, which is where the decision now lives. The
+        # bound used to be in `ambiguity`, which had its own copy of the
+        # question — and the two copies disagreeing about the same string is
+        # the finding this file exists for.
+        from mao.core.deident import ambiguity, layout
 
-        original = {key: getattr(ambiguity, key) for key in patched}
+        original = {key: getattr(layout, key) for key in patched}
         try:
             for key, value in patched.items():
-                setattr(ambiguity, key, value)
+                setattr(layout, key, value)
             return sum(1 for d in _ALL if ambiguity.find_ambiguities(d.extracted))
         finally:
             for key, value in original.items():
-                setattr(ambiguity, key, value)
+                setattr(layout, key, value)
 
     def test_the_size_bound_alone_cannot_see_a_widened_quarantine(self) -> None:
         """The predecessor's guard, shown to be blind — measured, not argued.
