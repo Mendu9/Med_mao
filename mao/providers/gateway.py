@@ -151,7 +151,15 @@ def complete(
     role: ModelRole,
     messages: list[dict],
     purpose: EgressPurpose,
-    trust_class: TrustClass | None = TrustClass.SAFE_DERIVED_TEXT,
+    # No default. A trust class a call site did not state is a trust class
+    # this signature asserted on its behalf, and `multimodal_agent` sending a
+    # base64 patient scan as SAFE_DERIVED_TEXT is exactly what that produced
+    # (A-5, ADV16-7). `EgressPurpose` already refuses to carry a default for
+    # this reason - "whichever purpose was chosen as the default would silently
+    # become the one every new call site inherits" - and the same argument
+    # applies with more force to the class, because the class is what
+    # `policy._validate` checks and therefore what makes the table fail closed.
+    trust_class: TrustClass | None,
     evidence: Sequence[PublicEvidence] = (),
     temperature: float = 0.2,
     max_tokens: int = 1024,
@@ -159,11 +167,12 @@ def complete(
     """Run a completion for a capability role.
 
     `purpose` is required and is checked against the egress policy before the
-    provider is touched. `trust_class` declares what the messages carry; the
-    default is `SAFE_DERIVED_TEXT`, which is the honest name for text that has
-    been through the protected input boundary, and the policy table decides
-    whether that is admissible for this purpose. It is not admissible for
-    clinical synthesis — see `synthesise_clinical`.
+    provider is touched. `trust_class` is required and has no default: it
+    declares what the messages carry, and the policy table decides whether that
+    is admissible for this purpose. `SAFE_DERIVED_TEXT` is the honest name for
+    text that has been through the protected input boundary; it is not
+    admissible for clinical synthesis - see `synthesise_clinical` - and it was
+    never an honest name for a base64 patient scan.
 
     `max_tokens` is the budget for the **answer**. The bound model's analysis
     channel is paid for on top of it, from the record's declared
@@ -362,7 +371,15 @@ def stream(
     role: ModelRole,
     messages: list[dict],
     purpose: EgressPurpose,
-    trust_class: TrustClass | None = TrustClass.SAFE_DERIVED_TEXT,
+    # No default. A trust class a call site did not state is a trust class
+    # this signature asserted on its behalf, and `multimodal_agent` sending a
+    # base64 patient scan as SAFE_DERIVED_TEXT is exactly what that produced
+    # (A-5, ADV16-7). `EgressPurpose` already refuses to carry a default for
+    # this reason - "whichever purpose was chosen as the default would silently
+    # become the one every new call site inherits" - and the same argument
+    # applies with more force to the class, because the class is what
+    # `policy._validate` checks and therefore what makes the table fail closed.
+    trust_class: TrustClass | None,
     temperature: float = 0.2,
     max_tokens: int = 1024,
 ) -> Iterator[str]:

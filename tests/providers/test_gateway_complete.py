@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.llm.base import ChatProvider, ProviderResponse
 from mao.providers.registry import ModelRole
@@ -65,7 +66,7 @@ class TestRoleAddressedStreaming:
     """Streaming resolves its model the same way completion does."""
 
     def test_the_gateway_streams_on_the_resolved_model(self, fake: FakeProvider) -> None:
-        list(gateway.stream(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS))
+        list(gateway.stream(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT))
         assert fake.calls[0]["model_id"] == gateway.model_id_for(
             ModelRole.GENERAL_SYNTHESIS
         )
@@ -75,7 +76,7 @@ class TestRoleAddressedStreaming:
         self, fake: FakeProvider
     ) -> None:
         overhead = gateway.resolve(ModelRole.GENERAL_SYNTHESIS).reasoning_overhead_tokens
-        list(gateway.stream(role=ModelRole.GENERAL_SYNTHESIS, messages=[], max_tokens=768, purpose=EgressPurpose.GENERAL_SYNTHESIS))
+        list(gateway.stream(role=ModelRole.GENERAL_SYNTHESIS, messages=[], max_tokens=768, purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT))
         assert fake.calls[0]["max_tokens"] == 768 + overhead
 
 
@@ -84,13 +85,14 @@ class TestRoleAddressedCompletion:
         assert isinstance(fake, ChatProvider)
 
     def test_gateway_resolves_the_role_to_a_model_id(self, fake: FakeProvider) -> None:
-        gateway.complete(role=ModelRole.SAFETY_JUDGE, messages=[{"role": "user", "content": "hi"}], purpose=EgressPurpose.GENERAL_SYNTHESIS)
+        gateway.complete(role=ModelRole.SAFETY_JUDGE, messages=[{"role": "user", "content": "hi"}], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)
         assert fake.calls[0]["model_id"] == gateway.model_id_for(ModelRole.SAFETY_JUDGE)
 
     def test_completion_carries_provenance_for_the_trace(self, fake: FakeProvider) -> None:
         result = gateway.complete(
             role=ModelRole.GENERAL_SYNTHESIS, messages=[{"role": "user", "content": "hi"}],
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
         )
         assert result.text == "ok"
         assert result.role is ModelRole.GENERAL_SYNTHESIS
@@ -102,6 +104,7 @@ class TestRoleAddressedCompletion:
         result = gateway.complete(
             role=ModelRole.CLINICAL_SYNTHESIS, messages=[{"role": "user", "content": "hi"}],
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
         )
         record = gateway.resolve(ModelRole.CLINICAL_SYNTHESIS)
         expected = (
@@ -137,7 +140,7 @@ class TestRetiredModelsNeverReachTheProvider:
             role_bindings={ModelRole.VISION: "dead"},
         )
         try:
-            gateway.complete(role=ModelRole.VISION, messages=[{"role": "user", "content": "x"}], purpose=EgressPurpose.GENERAL_SYNTHESIS)
+            gateway.complete(role=ModelRole.VISION, messages=[{"role": "user", "content": "x"}], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)
             assert fake.calls[0]["model_id"] == "alive"
         finally:
             gateway.reset_registry()

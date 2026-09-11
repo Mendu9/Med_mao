@@ -5,6 +5,7 @@ import logging
 
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
@@ -32,6 +33,7 @@ def _llm_classify(query: str) -> str:
             {"role": "user", "content": query},
         ],
         purpose=EgressPurpose.ROUTING,
+        trust_class=TrustClass.SAFE_DERIVED_TEXT,
         max_tokens=_DOMAIN_MAX_TOKENS,
         temperature=0.0,
     ).text.strip().lower()

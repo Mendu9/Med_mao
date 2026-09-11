@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from mao.providers.gateway import registry
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole, ModelStatus
 
@@ -122,5 +123,6 @@ class TestLiveProviderAvailability:
             temperature=0.0,
             max_tokens=200,
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
         )
         assert completion.text.strip(), f"{role.name} -> {completion.model_id} returned nothing"

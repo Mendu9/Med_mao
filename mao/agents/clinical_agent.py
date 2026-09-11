@@ -22,6 +22,7 @@ from mao.trust.classes import (
     PublicEvidence,
     SafeDerivedText,
     SafeSynthesisContext,
+    TrustClass,
 )
 from mao.trust.egress.gateway import current_protection
 from mao.trust.egress.policy import EgressPurpose
@@ -715,6 +716,7 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
                 {"role": "user",   "content": user_prompt},
             ],
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
             temperature=0.1,
             max_tokens=_SYNTHESIS_MAX_TOKENS,
         ).text.strip()

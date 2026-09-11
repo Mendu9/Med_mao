@@ -15,6 +15,7 @@ import time
 
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
@@ -146,7 +147,10 @@ def _chat_with_retry(messages: list[dict], *, max_retries: int = 2, **kwargs) ->
     for attempt in range(max_retries + 1):
         try:
             return gateway.complete(
-                messages=messages, purpose=EgressPurpose.ROUTING, **kwargs
+                messages=messages,
+                purpose=EgressPurpose.ROUTING,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
+                **kwargs,
             ).text
         except Exception as exc:  # noqa: BLE001
             if attempt == max_retries:

@@ -9,6 +9,7 @@ from typing import Any
 
 from mao.core.retry import with_groq_retry
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
@@ -300,6 +301,7 @@ def generate_golden_dataset(n_samples: int = 50) -> list[dict[str, Any]]:
                     {"role": "user", "content": text},
                 ],
                 purpose=EgressPurpose.EXTRACTION,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 temperature=0.3,
                 max_tokens=120,
             ).text.strip()

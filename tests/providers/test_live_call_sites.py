@@ -95,6 +95,7 @@ def _complete(role: ModelRole, prompt_name: str, user: str, budget: int) -> str:
         temperature=0.0,
         max_tokens=budget,
         purpose=EgressPurpose.GENERAL_SYNTHESIS,
+        trust_class=TrustClass.SAFE_DERIVED_TEXT,
     ).text
 
 
@@ -123,6 +124,7 @@ def _complete_verifier(role: ModelRole, prompt_name: str, budget: int) -> str:
         temperature=0.0,
         max_tokens=budget,
         purpose=EgressPurpose.GENERAL_SYNTHESIS,
+        trust_class=TrustClass.SAFE_DERIVED_TEXT,
     ).text
 
 
@@ -175,6 +177,7 @@ class TestTheSafetyJudgeCallSite:
                 temperature=0.0,
                 max_tokens=_JUDGE_MAX_TOKENS,
                 purpose=EgressPurpose.GENERAL_SYNTHESIS,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
             )
         )
         assert not completion.truncated, (
@@ -364,7 +367,7 @@ class TestTheSynthesisCallSites:
         the migrated report path makes.
         """
         from mao.agents.clinical_agent import _SYNTHESIS_MAX_TOKENS
-        from mao.trust.classes import PublicEvidence, SafeSynthesisContext
+        from mao.trust.classes import PublicEvidence, SafeSynthesisContext, TrustClass
 
         context = SafeSynthesisContext(
             context_id="live-probe",

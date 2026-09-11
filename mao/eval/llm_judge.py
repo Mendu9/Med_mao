@@ -4,6 +4,7 @@ import json
 import logging
 
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
@@ -54,6 +55,7 @@ def judge_response(question: str, response: str, context: str = "") -> dict:
                 {"role": "user", "content": prompt},
             ],
             purpose=EgressPurpose.SAFETY_VERIFICATION,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
             max_tokens=300,
             temperature=0.0,
         ).text.strip()

@@ -37,6 +37,7 @@ from mao.api.routes import ALL_ROUTERS
 from mao.api import sse
 from mao.guardrails import apply_input_guardrails
 from mao.safety.policy import SERVER_LOCATOR_KEYS
+from mao.trust.classes import TrustClass
 from mao.trust.egress.gateway import RequestProtection, protected_request
 from mao.trust.egress.policy import EgressPurpose
 from mao.trust.inputs import limits
@@ -657,6 +658,10 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
                         role=_stream_role,
                         messages=stream_messages,
                         purpose=_stream_purpose,
+                        # Stated, not defaulted. The streamed path carries the
+                        # same de-identified text the buffered one does, and
+                        # transport is not a safety input.
+                        trust_class=TrustClass.SAFE_DERIVED_TEXT,
                         temperature=0.1,
                         max_tokens=768,
                     ),

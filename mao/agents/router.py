@@ -15,6 +15,7 @@ from mao.core.state import (
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 from mao.safety.policy import has_attachment
@@ -162,6 +163,7 @@ def _classify(system_prompt: str, user_prompt: str) -> tuple[str, bool]:
                 {"role": "user",   "content": user_prompt},
             ],
             purpose=EgressPurpose.ROUTING,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
             temperature=0.0,
             # Enough headroom for a model that emits a short preamble before the
             # label. At 10 a reasoning model spends the whole budget thinking and

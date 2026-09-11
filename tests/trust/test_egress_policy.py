@@ -193,6 +193,7 @@ class TestTheRealSynthesisSink:
                 role=ModelRole.CLINICAL_SYNTHESIS,
                 messages=[{"role": "user", "content": payload}],
                 purpose=EgressPurpose.CLINICAL_SYNTHESIS,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
             )
         assert not recorder.calls, f"{label} reached the provider"
 
@@ -211,6 +212,7 @@ class TestTheRealSynthesisSink:
                     role=ModelRole.CLINICAL_SYNTHESIS,
                     messages=[{"role": "user", "content": "Patient Name: X"}],
                     purpose=EgressPurpose.CLINICAL_SYNTHESIS,
+                    trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 )
             )
         assert not recorder.calls
@@ -239,6 +241,7 @@ class TestTheRunScopedIdentifierAssertion:
                         {"role": "user", "content": "Summarise for Harold Nkemdirim"}
                     ],
                     purpose=EgressPurpose.GENERAL_SYNTHESIS,
+                    trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 )
         assert not recorder.calls, "the leaking call reached the provider"
 
@@ -259,6 +262,7 @@ class TestTheRunScopedIdentifierAssertion:
                         {"role": "user", "content": "Harold Nkem͏dirim"}
                     ],
                     purpose=EgressPurpose.GENERAL_SYNTHESIS,
+                    trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 )
         assert not recorder.calls
 
@@ -292,6 +296,7 @@ class TestTheRunScopedIdentifierAssertion:
                         }
                     ],
                     purpose=EgressPurpose.GENERAL_SYNTHESIS,
+                    trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 )
         assert not recorder.calls
 
@@ -320,6 +325,7 @@ class TestTheRunScopedIdentifierAssertion:
                     }
                 ],
                 purpose=EgressPurpose.GENERAL_SYNTHESIS,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
             )
         assert recorder.calls, "a legitimate evidence-bearing call was refused"
 
@@ -338,6 +344,7 @@ class TestTheRunScopedIdentifierAssertion:
                         {"role": "user", "content": "The patient Mary Parkinson"}
                     ],
                     purpose=EgressPurpose.GENERAL_SYNTHESIS,
+                    trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 )
         assert not recorder.calls
 
@@ -353,6 +360,7 @@ class TestTheRunScopedIdentifierAssertion:
             role=ModelRole.GENERAL_SYNTHESIS,
             messages=[{"role": "user", "content": "Harold Nkemdirim"}],
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
         )
         assert recorder.calls
 

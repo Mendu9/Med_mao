@@ -22,6 +22,7 @@ from mao.core.config import COUNCIL_MAX_TOKENS, COUNCIL_TIMEOUT_SECONDS
 from mao.prompts import get_prompt
 from mao.prompts.verification import build_verifier_messages
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 from mao.safety.policy import get_policy, resolve_risk
@@ -119,6 +120,7 @@ async def _async_call_agent(
                 role=ModelRole.SAFETY_JUDGE,
                 messages=messages,
                 purpose=EgressPurpose.SAFETY_VERIFICATION,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
                 temperature=0.0,
                 max_tokens=COUNCIL_MAX_TOKENS,
             ),

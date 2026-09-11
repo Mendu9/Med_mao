@@ -3,7 +3,7 @@
 The gateway existed and was correct, but only three call sites used it. Seven
 agents resolved a role to an id and then called `mao.core.llm` directly, so two
 provider layers coexisted and the legacy one carried most traffic. Bypassing
-`gateway.complete(purpose=EgressPurpose.GENERAL_SYNTHESIS)` also means no `Completion`, which is why the trace's token
+`gateway.complete(purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)` also means no `Completion`, which is why the trace's token
 and cost fields were structurally dead (arch-M1).
 
 arch-M1 — `prompt_ref` was written into the *nested* `state["verification_trace"]`
@@ -19,6 +19,7 @@ import pytest
 
 import mao.agents
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.llm.base import ProviderResponse
 from mao.providers.registry import ModelRole
@@ -58,7 +59,7 @@ class TestTheGatewayReportsRealUsage:
 
         gateway.set_provider(_Provider())
         try:
-            done = gateway.complete(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS)
+            done = gateway.complete(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)
         finally:
             gateway.reset_provider()
 
@@ -114,8 +115,8 @@ class TestUsageIsCollectedPerRequest:
         gateway.set_provider(_Provider())
         try:
             with usage.collecting() as totals:
-                gateway.complete(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS)
-                gateway.complete(role=ModelRole.SAFETY_JUDGE, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS)
+                gateway.complete(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)
+                gateway.complete(role=ModelRole.SAFETY_JUDGE, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)
         finally:
             gateway.reset_provider()
 
@@ -132,7 +133,7 @@ class TestUsageIsCollectedPerRequest:
 
         gateway.set_provider(_Provider())
         try:
-            gateway.complete(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS)
+            gateway.complete(role=ModelRole.GENERAL_SYNTHESIS, messages=[], purpose=EgressPurpose.GENERAL_SYNTHESIS, trust_class=TrustClass.SAFE_DERIVED_TEXT)
         finally:
             gateway.reset_provider()
 

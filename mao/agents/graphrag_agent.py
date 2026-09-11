@@ -11,6 +11,7 @@ from mao.core.web_search import web_search as _web_search
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 from mao.rag.retriever import retrieve
@@ -325,6 +326,7 @@ def _call_llm_from_messages(
             messages=messages,
             temperature=0.1,
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
             max_tokens=_SYNTHESIS_MAX_TOKENS,
         ).text.strip()
     except Exception as exc:  # noqa: BLE001

@@ -19,7 +19,7 @@ from pathlib import Path
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
 from mao.providers import gateway
-from mao.trust.classes import InputChannel
+from mao.trust.classes import InputChannel, TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.trust.inputs import limits
 from mao.trust.inputs.boundary import protect_channel
@@ -96,6 +96,7 @@ def handle_image(  # public: shared with `clinical_agent`
                 ]},
             ],
             purpose=EgressPurpose.IMAGE_ANALYSIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
             temperature=0.1,
             max_tokens=512,
         )
@@ -233,6 +234,7 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
                 {"role": "user",   "content": user_prompt},
             ],
             purpose=EgressPurpose.GENERAL_SYNTHESIS,
+            trust_class=TrustClass.SAFE_DERIVED_TEXT,
             temperature=0.1,
             max_tokens=512,
         ).text.strip()
