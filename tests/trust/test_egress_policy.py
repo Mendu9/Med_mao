@@ -265,7 +265,19 @@ class TestTheRunScopedIdentifierAssertion:
     def test_it_reads_the_text_half_of_a_multipart_message(
         self, recorder: RecordingProvider
     ) -> None:
-        """The vision request is the one most likely to carry a name beside it."""
+        """A multipart turn is the one most likely to carry a name beside it.
+
+        This used `EgressPurpose.IMAGE_ANALYSIS`, whose policy row is gone under
+        control decision M-2 (A-5 / ADV16-7), so the call would now be refused
+        as an unnamed flow before the identifier assertion ran and this test
+        would pass for the wrong reason. The property it owns - that
+        `_outgoing_text` walks multipart content and reads the text parts - is
+        unchanged and is asserted here on a purpose that still has a row.
+
+        What this test never covered, and what disabling the image path is
+        about, is the OTHER half of a multipart turn: the image part is skipped
+        by construction, so no control can read it.
+        """
         with protected_request(self._protection()):
             with pytest.raises(EgressRefused, match="identifier"):
                 gateway.complete(
@@ -279,7 +291,7 @@ class TestTheRunScopedIdentifierAssertion:
                             ],
                         }
                     ],
-                    purpose=EgressPurpose.IMAGE_ANALYSIS,
+                    purpose=EgressPurpose.GENERAL_SYNTHESIS,
                 )
         assert not recorder.calls
 
@@ -388,3 +400,63 @@ class TestTheGuardCanFail:
             purpose=EgressPurpose.EVIDENCE_SEARCH,
             trust_class=query.trust_class,
         )
+
+
+class TestImageAnalysisIsDisabledForPhase1:
+    """C6 / A-5 / ADV16-7, under control decision M-2.
+
+    Both b63311d reviews reached this independently. The flow was approved only
+    because the call site declared `SAFE_DERIVED_TEXT` - "de-identified text
+    minted by the protected input boundary" - for a base64 patient scan that
+    had been through no boundary at all. The row is removed rather than
+    re-typed, so the refusal is structural.
+    """
+
+    def test_the_flow_is_not_named(self) -> None:
+        assert not is_named(
+            Destination.MODEL_PROVIDER, EgressPurpose.IMAGE_ANALYSIS
+        )
+
+    def test_authorising_it_is_refused_as_an_unnamed_flow(self) -> None:
+        with pytest.raises(EgressRefused, match="no approved flow"):
+            authorise(
+                destination=Destination.MODEL_PROVIDER,
+                purpose=EgressPurpose.IMAGE_ANALYSIS,
+                trust_class=TrustClass.SAFE_DERIVED_TEXT,
+            )
+
+    def test_declaring_any_other_class_does_not_re_enable_it(self) -> None:
+        """The finding was a false declaration getting past `_validate`.
+        Re-typing the payload to a different existing class would be the same
+        defect wearing a new label, so every class is refused here."""
+        for trust_class in TrustClass:
+            with pytest.raises(EgressRefused, match="no approved flow"):
+                authorise(
+                    destination=Destination.MODEL_PROVIDER,
+                    purpose=EgressPurpose.IMAGE_ANALYSIS,
+                    trust_class=trust_class,
+                )
+
+    def test_no_destination_at_all_admits_image_analysis(self) -> None:
+        for destination in Destination:
+            assert not is_named(destination, EgressPurpose.IMAGE_ANALYSIS)
+
+    def test_the_purpose_survives_so_the_decision_stays_visible(self) -> None:
+        """Deleting the enum member would make the disabled flow invisible
+        rather than refused, and a later phase would re-add it without finding
+        the reasoning. The member stays; the row is what is gone."""
+        assert EgressPurpose.IMAGE_ANALYSIS.value == "image_analysis"
+
+
+class TestTheMemoryReadFlowIsNamed:
+    """A-4 counted the memory WRITE as unenforced. There was no row for the
+    read at all, so `search_memories` could not have been authorised even by a
+    call site that wanted to be - and a read sends this request's query to the
+    same third party the write sends its content to."""
+
+    def test_the_read_flow_exists_so_it_can_be_enforced(self) -> None:
+        assert is_named(Destination.EXTERNAL_MEMORY, EgressPurpose.MEMORY_READ)
+
+    def test_it_admits_no_class_the_write_does_not(self) -> None:
+        read = allowed_classes(Destination.EXTERNAL_MEMORY, EgressPurpose.MEMORY_READ)
+        assert not (read & NEVER_EXTERNAL)

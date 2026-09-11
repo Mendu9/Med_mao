@@ -45,7 +45,7 @@ from mao.trust.classes import NEVER_EXTERNAL, TrustClass
 #: Bumped whenever a row changes. A trace citing a version must be able to
 #: reconstruct the decision that was made, which means the version has to move
 #: when the decision does.
-EGRESS_POLICY_VERSION = "2026.09-1"
+EGRESS_POLICY_VERSION = "2026.09-2"
 
 
 class Destination(str, Enum):
@@ -82,6 +82,7 @@ class EgressPurpose(str, Enum):
     IMAGE_ANALYSIS = "image_analysis"
     EMBEDDING = "embedding"
     MEMORY_WRITE = "memory_write"
+    MEMORY_READ = "memory_read"
     HEALTH_PROBE = "health_probe"
 
 
@@ -114,23 +115,28 @@ _ALLOWED: dict[tuple[Destination, EgressPurpose], frozenset[TrustClass]] = {
     ),
     # A liveness check sends a fixed string and no request data at all.
     (Destination.MODEL_PROVIDER, EgressPurpose.HEALTH_PROBE): frozenset(),
-    # Vision. RECORDED JUDGEMENT, and flagged for review rather than assumed.
+    # Vision. DISABLED FOR PHASE 1 - control decision M-2.
     #
-    # The M-1 decision enumerates what no external model may receive:
-    # `RawSensitiveInput`, `ProtectedCaseContext`, raw or scrubbed free-text
-    # clinical reports, raw chat history, raw transcript text. An uploaded MRI
-    # is none of those by that enumeration, and `01_ARCHITECTURE.md` lists
-    # VISION among the approved model roles — so image analysis reads as an
-    # approved external capability under the current policy.
+    # There WAS a row here admitting SAFE_DERIVED_TEXT, and it is why both
+    # b63311d reviews raised the same finding independently (A-5, ADV16-7). A
+    # base64 patient scan is not "de-identified text minted by the protected
+    # input boundary": it has been through no boundary at all, it has no
+    # InputChannel origin, and `gateway._outgoing_text` reads only the text
+    # parts of a multipart turn - so the run-scoped identifier assertion, the
+    # second wall, is a structural no-op for the image half. `_validate` refuses
+    # any row admitting a NEVER_EXTERNAL class and was satisfied here only
+    # because the call site declared a class the payload does not have. A
+    # fail-closed table is defeated by one false declaration, invisibly.
     #
-    # It is nevertheless patient data leaving the process, and this table is the
-    # place that fact should be visible rather than implicit in an agent. The
-    # row exists so the flow is NAMED and testable; whether the policy should
-    # continue to admit it is a control-plane question, recorded as a residual
-    # for the phase reviews to classify rather than settled here.
-    (Destination.MODEL_PROVIDER, EgressPurpose.IMAGE_ANALYSIS): frozenset(
-        {TrustClass.SAFE_DERIVED_TEXT}
-    ),
+    # The row is REMOVED rather than re-typed. Removing it makes the refusal
+    # structural: `authorise` rejects an unnamed flow before it considers a
+    # trust class at all, so no future call site can re-enable imagery by
+    # declaring something. Adding a truthful raw-imagery class and an approved
+    # row would be RE-ENABLING the flow, and that is a control-plane decision
+    # this wave does not have. PROJECT_STATE.md records the four conditions.
+    #
+    # Nothing here forecloses VISION as a capability. It forecloses carrying it
+    # under a class it does not have.
     # Evidence retrieval. `SafeEvidenceQuery` is the typed form; the derived
     # string is the Phase 1 residual for routes not yet migrated.
     (Destination.WEB_SEARCH, EgressPurpose.EVIDENCE_SEARCH): frozenset(
@@ -150,6 +156,13 @@ _ALLOWED: dict[tuple[Destination, EgressPurpose], frozenset[TrustClass]] = {
     # flow into external/general memory by default, so this row is narrow.
     (Destination.EXTERNAL_MEMORY, EgressPurpose.MEMORY_WRITE): frozenset(
         {TrustClass.SAFE_DERIVED_TEXT}
+    ),
+    # A memory READ sends this request's query to the same third party the
+    # write sends its content to, and there was no row for it at b63311d - so
+    # `search_memories` could not have been authorised even by a call site that
+    # wanted to be. A-4 counted the write; the read is the same sink.
+    (Destination.EXTERNAL_MEMORY, EgressPurpose.MEMORY_READ): frozenset(
+        {TrustClass.SAFE_DERIVED_TEXT, TrustClass.SAFE_EVIDENCE_QUERY}
     ),
 }
 
