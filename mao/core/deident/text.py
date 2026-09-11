@@ -117,13 +117,26 @@ def _carries_no_visible_content(character: str) -> bool:
         # line-scope design exists to make impossible.
         return character not in "\t\n\r\v\f"
     if category in ("Mn", "Me"):
-        # Non-spacing and enclosing marks: zero advance width by definition.
-        # This covers the variation selectors (U+FE00.., U+E0100..), U+034F
-        # COMBINING GRAPHEME JOINER and the Khmer inherent vowels — and also
-        # ordinary combining accents, which is correct: `José` and `José`
-        # must fold to the same token, and `_fold` already strips them for
-        # lexicon lookup.
-        return True
+        # NOT every non-spacing mark. The previous premise was "zero advance
+        # width by definition", which is true and is a DIFFERENT property from
+        # "carries no visible content": an acute accent has zero advance width
+        # and is fully visible, and a Devanagari virama has zero advance width
+        # and changes what the word says. Conflating them is ADV16-1, and it
+        # was also silently destroying Devanagari, Hebrew and Arabic marks.
+        #
+        # Unicode already separates the two. A mark that is DRAWN is positioned
+        # against its base, so it carries a non-zero canonical combining class.
+        # The marks that render as nothing - the variation selectors, U+034F
+        # COMBINING GRAPHEME JOINER, the Mongolian free variation selectors -
+        # are exactly the class-zero ones. That is a computed property, so a
+        # character added to Unicode tomorrow is handled without anyone
+        # noticing it, which is the standard the rest of this module is held to.
+        #
+        # The drawn marks are not ignored. Those that are a canonical
+        # decoration of their base are folded by `_fold_decorations` below,
+        # which is what lets an ASCII identifier grammar read an accented
+        # postcode. Those that compose with nothing are content, and survive.
+        return unicodedata.combining(character) == 0
     if category == "Cs":
         # Lone surrogates. Not text, and no renderer draws them.
         return True
@@ -150,8 +163,62 @@ _INVISIBLE_RE = re.compile(
 )
 
 
+def _fold_decorations(text: str) -> str:
+    """Drop a combining mark that is a canonical decoration of its base.
+
+    Applied to the DECOMPOSED form, so it sees the marks NFKC would otherwise
+    have already composed away. That ordering is the whole of ADV16-1: with
+    NFKC first, the strip could only ever fire for a (mark, base) pair Unicode
+    has no precomposed form for, so a cedilla on `A` was removed and an acute
+    on `A` was not, and `Postcode: SW1A 1AA` reached a third-party model with
+    an acute on its fourth character and no grammar matching it.
+
+    A mark is dropped when EITHER of two computed conditions holds.
+
+      the base is ASCII alphanumeric
+          No script writes ASCII with meaning-bearing combining marks. Every
+          identifier grammar in `values` is built from ASCII letters and
+          digits, so a mark sitting on one of them is decoration by
+          construction - and it is the entire attack surface ADV16-1 measured:
+          an acute on the `S` of a postcode, on the `A` of a record number, on
+          the `Q` of an NI number. `Q` has no precomposed form with an acute,
+          which is why the precomposed test alone is not sufficient.
+
+      base+mark has a single-codepoint NFC form
+          Catches the same decoration on a non-ASCII Latin base. Safe for
+          Indic: `ka`+nukta is a Unicode composition exclusion, so its NFC form
+          stays two codepoints and the mark is preserved.
+
+    It is deliberately NOT "every drawn mark". A Devanagari virama or nukta, a
+    Hebrew point and an Arabic harakat change what the script says, and none of
+    them sits on an ASCII base; dropping them would be silent content
+    destruction, which is the invariant this project has failed six times and
+    must not fail in a new place while fixing this one. The blanket `Mn` strip
+    that preceded this WAS dropping them - measured, and fixed here.
+    """
+    out: list[str] = []
+    for character in text:
+        if (
+            out
+            and unicodedata.combining(character) != 0
+            and unicodedata.category(character) in ("Mn", "Me")
+            and (
+                (out[-1].isascii() and out[-1].isalnum())
+                or len(unicodedata.normalize("NFC", out[-1] + character)) == 1
+            )
+        ):
+            continue
+        out.append(character)
+    return "".join(out)
+
+
 def normalise(text: str) -> str:
-    """NFKC, and remove invisible formatting characters everywhere.
+    """NFKC, and remove everything that can hide inside an identifier.
+
+    Decompose FIRST. The original composed first and stripped afterwards, so
+    NFKC had already folded a combining mark into its base before the strip
+    could see it and the whole invisible-character defence was inert against
+    any mark with a precomposed form. See `_fold_decorations`.
 
     Folding invisibles inside NAME tokens only was not enough: PDF hyphenation
     emits U+00AD, and pypdf hands it straight through, so `RGT/44219<U+00AD>/B`
@@ -165,7 +232,10 @@ def normalise(text: str) -> str:
     zero-width joiner is a rendering hint, not something a clinician wrote, and
     every de-identification tool worth the name folds it before matching.
     """
-    return _INVISIBLE_RE.sub("", unicodedata.normalize("NFKC", text))
+    decomposed = unicodedata.normalize("NFD", text)
+    return unicodedata.normalize(
+        "NFKC", _fold_decorations(_INVISIBLE_RE.sub("", decomposed))
+    )
 
 
 def strip_leading_bom(text: str) -> tuple[str, str]:
