@@ -112,7 +112,23 @@ _TOKENWISE_KINDS: frozenset[str] = frozenset(
 
 
 def _visible(text: str) -> str:
-    """The text as a reader sees it: NFKC, with zero-width characters removed.
+    """The text as a reader recovers it, normalised as hard as possible.
+
+    DECOMPOSES FIRST, and then removes every mark. The previous form applied
+    NFKC without NFD, so a combining acute on the `A` of a record number was
+    composed into `A-acute` before the strip could see it and this wall
+    reported no leak on a payload carrying the record number in full - the
+    same mechanism, in the same direction, as the scrubber defect it exists to
+    back stop (ADV16-1). Both walls shared one detection step, so neither could
+    catch what the other missed.
+
+    This function is therefore deliberately STRICTER than
+    `mao.core.deident.text.normalise`, and the difference must be kept. That
+    function is a transformation whose output a clinician reads, so it
+    preserves marks that carry meaning. This one never ships anything - it only
+    answers "is an identifier this request removed readable in what we are
+    about to send" - so over-normalising has no cost and only widens what the
+    wall catches. A control and its backstop must not share a detection step.
 
     Defined against the Unicode property "occupies no advance width" rather than
     against a category denylist. `Cf` was the previous definition and it is a
@@ -124,7 +140,7 @@ def _visible(text: str) -> str:
     `Nkemdirim` is not a literal substring of it.
     """
     out: list[str] = []
-    for character in unicodedata.normalize("NFKC", text):
+    for character in unicodedata.normalize("NFD", text):
         category = unicodedata.category(character)
         if character in "\t\n\r":
             out.append(character)
@@ -132,7 +148,7 @@ def _visible(text: str) -> str:
             continue
         else:
             out.append(character)
-    return "".join(out)
+    return unicodedata.normalize("NFKC", "".join(out))
 
 
 def _assertable_spans(identifier: PrivateIdentifier) -> list[str]:
