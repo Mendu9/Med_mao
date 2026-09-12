@@ -137,11 +137,29 @@ def _is_starter(character: str) -> bool:
     return unicodedata.combining(head) == 0 and head not in _COMPOSITION_SECONDS
 
 
+#: `_is_starter` costs an NFKD normalisation per character, and this runs over
+#: every character of every document the boundary sees. The answers are memoised
+#: because a clinical letter is a few hundred distinct codepoints reused
+#: thousands of times.
+#:
+#: Seeded with ASCII, which is the overwhelming majority of the text and is
+#: unconditionally a starter: no ASCII character has a decomposition, and none
+#: appears as the second element of a canonical composition (the accented Latin
+#: letters decompose to an ASCII base plus a NON-ASCII mark, and the Hangul jamo
+#: are far outside the range).
+_STARTER: dict[str, bool] = {chr(code): True for code in range(128)}
+
+
 def _chunk(text: str) -> list[int]:
     """Offsets at which `text` may be cut without changing its normalisation."""
     starts = [0]
     for index in range(1, len(text)):
-        if _is_starter(text[index]):
+        character = text[index]
+        starter = _STARTER.get(character)
+        if starter is None:
+            starter = _is_starter(character)
+            _STARTER[character] = starter
+        if starter:
             starts.append(index)
     return starts
 

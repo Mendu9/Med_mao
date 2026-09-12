@@ -151,14 +151,52 @@ def _shape_edits(view: MatchView) -> list[Edit]:
         start, end = _unstage(origin, span.start, span.end)
         if start >= end:
             continue
+        label = _introducing_label(view.text, start)
         edits.append(
             Edit(
                 span=view.source_span(start, end),
                 replacement=span.replacement,
                 kind=span.kind,
+                label=view.source_span(*label) if label else None,
             )
         )
     return edits
+
+
+def _introducing_label(text: str, start: int) -> tuple[int, int] | None:
+    """The field label that introduced a SHAPE-matched removal, if there is one.
+
+    `Contact: <email>` is redacted by the shape rules rather than by the layout
+    pass, because no label claimed it — but if the scrubber's own label grammar
+    does recognise a field name earlier on the line, that name is the thing that
+    introduced the identifier and is not clinical content the projection failed
+    to carry.
+
+    Attribution comes from `find_labels`, which is the SAME grammar `layout`
+    uses, applied at the position of a removal that actually happened. It is a
+    vocabulary of IDENTIFIER FIELD NAMES, which is the only kind of vocabulary
+    admissible here: it defines what an identifier field is, and it says nothing
+    about clinical content.
+
+    There is deliberately no positional fallback. "Text running up to a removed
+    identifier with only separators in between" would make `Complete heart
+    block, permanent pacemaker implanted: <date>` structural, which is AR17-1
+    exactly. A label the grammar does not know leaves its line accountable, and
+    that is the pessimistic direction: it can make a projection look less
+    complete than it is, never more.
+    """
+    from mao.core.deident.fields import find_labels
+
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", start)
+    line = text[line_start : line_end if line_end >= 0 else len(text)]
+    best: tuple[int, int] | None = None
+    for found_start, found_end, _ in find_labels(line):
+        if line_start + found_end <= start and (best is None or found_end > best[1]):
+            best = (found_start, found_end)
+    if best is None:
+        return None
+    return line_start + best[0], line_start + best[1]
 
 
 def _stage(text: str, spans: list) -> tuple[str, list[tuple[int, int]]]:

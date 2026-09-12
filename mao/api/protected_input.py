@@ -188,16 +188,44 @@ def redaction_notice(protected: ProtectedInput) -> list[str]:
     `/chat/stream` formatting their own text independently is how they drifted
     apart over `AmbiguousDocument` once already (ADV15-2 / G-3).
 
+    The report is now built from the TRANSFORMATION's own event record
+    (`ambiguities_from`), not from a second pass over the text. At `ff34722` it
+    was a second pass, and the two disagreed on 256 of 1600 measured chat
+    queries — identical shape, identical name, different clinical phrase, one
+    announced and one deleted in silence.
+
+    It also names the REMEDY, because the alternative to swallowing the trailing
+    words is not a cleverer boundary — `00_RULES.md` forbids emitting a name as
+    a partial prefix beside a placeholder, and nothing distinguishes a six-token
+    name from a name followed by a clinical phrase. What DOES resolve it is the
+    caller stating the identifier, which `remove_known_identifiers` then takes
+    by exact match and leaves the clinical content untouched. The 422 has said
+    so since Wave 12; saying it here makes the chat posture the same request
+    rather than a quieter version of the same wall.
+
     Names the line and the field, NEVER the value. This is returned over HTTP
     and written to a log, so a notice that quoted the identifier it removed
     would be the disclosure the redaction just prevented.
     """
     if not protected.chat_ambiguities:
         return []
+    fields = sorted(
+        {item.label for item in protected.chat_ambiguities.items if item.label}
+    )
+    remedy = (
+        "Send the identifier as a structured patient field ("
+        + ", ".join(fields)
+        + ") and the same message will be processed with the clinical text "
+        "left intact."
+        if fields
+        else "Send the identifier as a structured patient field and the same "
+        "message will be processed with the clinical text left intact."
+    )
     return [
         "Some text was removed from your message before it was processed, and "
         "the removal may have taken more than the identifier with it.",
         protected.chat_ambiguities.describe(),
+        remedy,
     ]
 
 
