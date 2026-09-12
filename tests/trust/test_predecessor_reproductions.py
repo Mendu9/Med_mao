@@ -150,15 +150,24 @@ class TestADV15_4DecoratedValue:
 class TestADV15_6InvisibleCharacters:
     """Whole-identifier leaks whose output is byte-identical to the input."""
 
+    #: Written as escapes, never as literal control characters.
+    #:
+    #: Three of these entries - the U+0001 telephone, the U+0007 postcode
+    #: and the U+0001 name - held the literal bytes and LOST them in an
+    #: encoding round-trip, which silently removed the entire Cc half of
+    #: ADV15-6 from the suite: two of the nine characters the predecessor
+    #: named had no reproduction at all, and the three entries asserted
+    #: only that an ordinary unmodified identifier is redacted, which it
+    #: trivially is (ADV16-2). An escape survives any editor.
     RECORDED = (
         ("MRN: 44ㅤ51209", "4451209"),
         ("NHS Number: 943 4͏76 5919", "943 476 5919"),
-        ("Telephone: 0113 496 0231", "0113 496 0231"),
+        ("Telephone: 0113 4\u000196 0231", "0113 496 0231"),
         ("DOB: 12/0⠀3/1948", "12/03/1948"),
-        ("Postcode: SW1A 1AA", "SW1A 1AA"),
+        ("Postcode: SW1A\u0007 1AA", "SW1A 1AA"),
         ("Patient Name: Nkem͏dirim Okonkwo", "Nkemdirim"),
         ("Patient Name: Nkem⠀dirim Okonkwo", "Nkemdirim"),
-        ("Patient Name: Nkemdirim Okonkwo", "Nkemdirim"),
+        ("Patient Name: Nkem\u0001dirim Okonkwo", "Nkemdirim"),
         ("Email: harold͏.nkemdirim@leeds-nhs.uk", "harold.nkemdirim@leeds-nhs.uk"),
         ("Email: harold.nkemdirim͏@leeds-nhs.uk", "harold.nkemdirim@leeds-nhs.uk"),
         ("MRN: 44ᅠ51209", "4451209"),
@@ -172,6 +181,33 @@ class TestADV15_6InvisibleCharacters:
     def test_the_identifier_is_removed(self, line: str, identifier: str) -> None:
         out = visible(scrub_pii(line))
         assert identifier not in out, f"{line!r} -> {out!r}"
+
+    def test_every_reproduction_actually_carries_an_invisible_character(self) -> None:
+        """ADV16-2, and the meta-test that would have caught it.
+
+        00_RULES requires exact predecessor reproductions. A reproduction
+        whose control character was lost in an editor round-trip is not
+        exact: it asserts that an ordinary identifier is redacted, passes
+        trivially, and reports as coverage of a finding it no longer
+        touches.
+        """
+        degenerate = [
+            line
+            for line, _ in self.RECORDED
+            if all(31 < ord(character) < 127 for character in line)
+        ]
+        assert degenerate == [], (
+            f"{len(degenerate)} 'verbatim' reproduction(s) carry no "
+            f"invisible character at all: {degenerate}"
+        )
+
+    def test_the_control_character_half_is_represented(self) -> None:
+        """U+0001 and U+0007 are two of the nine characters the
+        predecessor named, and both vanished from this file along with the
+        three degenerate entries."""
+        blob = "".join(line for line, _ in self.RECORDED)
+        assert "\u0001" in blob
+        assert "\u0007" in blob
 
     def test_the_characters_already_closed_stay_closed(self) -> None:
         """15 of 21 were fixed at the frozen SHA. A regression here is a
