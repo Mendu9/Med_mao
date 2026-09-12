@@ -52,9 +52,23 @@ logger = logging.getLogger(__name__)
 #: Below this share of clinically-marked lines carried into the projection, the
 #: projection is a summary of a document it mostly did not read.
 #:
-#: Not tuned to make a test pass: it is the point at which the majority of what
-#: the shared clinical vocabulary marked as content is absent, and answering
-#: from a minority of a clinical document is the behaviour the rules forbid.
+#: Not tuned to make a test pass: it is the point at which the majority of the
+#: document's content lines are absent, and answering from a minority of a
+#: clinical document is the behaviour the rules forbid.
+#:
+#: A JUDGEMENT, and recorded as one. It was UNREACHABLE at b63311d, because
+#: `coverage()` returned a constant 1.0 (A-1), so no operating experience
+#: stands behind this number - it has never actually gated anything.
+#:
+#: It is deliberately NOT re-tuned now that it is live. The adversarial
+#: reviewer's own demonstration document scores 0.556 and therefore still does
+#: not refuse; lowering the bar to 0.6 to make that one letter refuse would
+#: make the threshold a function of whichever examples someone happened to try,
+#: which is the failure mode this phase exists to end. What closes ADV16-6 is
+#: that the loss is no longer SILENT: `uncovered` names the lines, the
+#: projection carries them as `uncertainties`, and `clinical_coverage` reports
+#: 0.556 to the caller instead of 1.0. Phase 2's Evaluation Lab owes this
+#: number a measurement.
 MINIMUM_COVERAGE = 0.5
 
 

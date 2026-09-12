@@ -425,7 +425,16 @@ def _handle_pdf_report(
         # echoed into the response metadata, cached in Redis and written to a
         # trace, so what goes in it is an egress decision like any other.
         "safe_case_fields": sorted(handoff.evidence_query.provenance),
+        # This was `round(handoff.facts.coverage(), 3)` against a `coverage()`
+        # that returned a hardcoded 1.0, so the field asserted to the caller -
+        # and to the Redis cache and the trace - that nothing had been lost, in
+        # exactly the requests where everything had (A-1). The system did not
+        # merely fail to detect the loss; it published a measurement denying it.
+        #
+        # It is a real measurement now, and what was NOT carried is reported
+        # beside it rather than left for the caller to infer from a number.
         "clinical_coverage": round(handoff.facts.coverage(), 3),
+        "clinical_facts_not_carried": list(handoff.facts.uncovered),
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
