@@ -368,95 +368,12 @@ def _render_graph_tab() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tab 3: MRI Scan
+# The MRI Scan tab was here. It is retired with the prediction workflow it
+# drove (M-3): it uploaded a scan as `image_b64` and posted it to /chat,
+# which routed to `clinical_node`'s image branch. That branch no longer
+# predicts anything, so the tab could only ever have rendered a refusal.
+# Written reports are still analysed — see the Patient Report tab below.
 # ---------------------------------------------------------------------------
-
-def _render_mri_tab() -> None:
-    """Render the MRI Scan tab — brain MRI image upload and clinical assessment."""
-    st.markdown("### MRI Scan Analysis")
-    st.info("Upload a brain MRI scan for AI-assisted clinical assessment.")
-
-    st.warning(
-        "**Disclaimer:** For research purposes only. "
-        "This is NOT a clinical diagnosis tool. "
-        "Always consult a qualified radiologist and neurologist."
-    )
-
-    uploaded_file = st.file_uploader(
-        "Upload MRI scan",
-        type=["jpg", "jpeg", "png", "nii"],
-        help="JPEG/PNG for standard images, NIfTI (.nii) for volumetric scans",
-    )
-
-    clinical_notes = st.text_area(
-        "Additional clinical context (optional)",
-        placeholder="e.g. 65-year-old patient with progressive memory loss, MMSE score 22...",
-        height=100,
-        key="mri_clinical_notes",
-    )
-
-    if uploaded_file is not None:
-        if uploaded_file.type in ("image/jpeg", "image/png"):
-            st.image(uploaded_file, caption="Uploaded scan", use_container_width=False, width=400)
-
-        if st.button("Analyse MRI", type="primary"):
-            with st.spinner("Analysing MRI scan... This may take 30-60 seconds."):
-                file_bytes = uploaded_file.read()
-                b64 = base64.b64encode(file_bytes).decode("utf-8")
-
-                query = (
-                    "Analyse this MRI scan and provide a clinical assessment including "
-                    "findings, differential diagnosis, and recommended next steps."
-                )
-                meta_payload: dict[str, Any] = {
-                    "image_b64": b64,
-                    "modality": "image",
-                    "filename": uploaded_file.name,
-                }
-
-                if clinical_notes.strip():
-                    query += f"\n\nClinical context: {clinical_notes.strip()}"
-
-                payload = {
-                    "query": query,
-                    "user_id": st.session_state["user_id"],
-                    "chat_history": [],
-                    "metadata": meta_payload,
-                }
-
-                try:
-                    resp = requests.post(f"{API_URL}/chat", json=payload, timeout=180)
-                    if resp.status_code == 400:
-                        st.warning(resp.json().get("detail", "Request rejected by guardrails."))
-                    else:
-                        resp.raise_for_status()
-                        data = resp.json()
-                        response_text = data.get("response", "No response received.")
-
-                        st.markdown("### Clinical Assessment")
-                        st.markdown(response_text)
-
-                        nested_meta = data.get("metadata") or {}
-                        mode = nested_meta.get("mode", "")
-                        agent = data.get("agent_used", "")
-                        intent = data.get("intent", "")
-                        latency = data.get("latency_ms", 0)
-                        if agent or intent:
-                            st.caption(
-                                f"Agent: `{agent}` | Intent: `{intent}` | "
-                                f"Mode: `{mode}` | Latency: {latency:.0f} ms"
-                            )
-
-                except requests.exceptions.ConnectionError:
-                    st.error(f"Cannot connect to backend at {API_URL}. Is the API server running?")
-                except Exception as exc:
-                    st.error(f"Analysis failed: {exc}")
-
-    st.divider()
-    st.markdown(
-        "**MRI modalities:** T1-weighted, T2-weighted, FLAIR, DWI, SWI\n\n"
-        "**Output includes:** Findings, differential diagnosis, recommended next steps"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -923,10 +840,9 @@ def main() -> None:
         "Multi-Agent Orchestrator — Biomedical AI for Alzheimer's & Stroke Research"
     )
 
-    tab_chat, tab_graph, tab_mri, tab_report, tab_health, tab_eval = st.tabs([
+    tab_chat, tab_graph, tab_report, tab_health, tab_eval = st.tabs([
         "Chat",
         "Graph Explorer",
-        "MRI Scan",
         "Patient Report",
         "System Health",
         "Eval Dashboard",
@@ -937,9 +853,6 @@ def main() -> None:
 
     with tab_graph:
         _render_graph_tab()
-
-    with tab_mri:
-        _render_mri_tab()
 
     with tab_report:
         _render_report_tab()
