@@ -18,6 +18,8 @@ them separately, on separate corpora, is how that kept being possible.
 """
 from __future__ import annotations
 
+import ast
+import pathlib
 import unicodedata
 from typing import ClassVar
 
@@ -60,10 +62,24 @@ def visible(text: str) -> str:
     "invisible" cannot see a character the scrubber's definition is missing,
     which is precisely how the previous residue survived a fix that closed 15 of
     21 characters.
+
+    DECOMPOSES FIRST, and that is not a detail. This function used to apply
+    NFKC and remove zero-width characters only - it never decomposed - so it
+    COMPOSED `A`+U+0301 into `A-acute` before looking, and then reported that
+    `SW1A 1AA` was absent from `Postcode: SW1A-with-an-acute 1AA`. It certified
+    as redacted a document that delivered a whole UK postcode to a third-party
+    model (ADV16-1). The docstring above claimed this was "what a reader
+    actually sees", and a reader does read that as the postcode: the oracle was
+    one `normalize("NFD", ...)` short of being able to express the property it
+    claims to measure.
+
+    Being written here rather than imported is only half of independence. The
+    other half is being ABLE to see what the implementation missed, and this
+    function was not.
     """
     return "".join(
         character
-        for character in unicodedata.normalize("NFKC", text)
+        for character in unicodedata.normalize("NFD", text)
         if not _is_zero_width(character)
     )
 
@@ -74,6 +90,53 @@ def _is_zero_width(character: str) -> bool:
         return character not in "\t\n\r"
     # Hangul fillers (`Lo`) and the Braille blank (`So`) render as nothing.
     return character in "ᅟᅠㅤﾠ⠀"
+
+
+class TestTheOracleCanExpressTheProperty:
+    """ADV16-1. An oracle that cannot see a leak is not evidence of its absence.
+
+    This is the meta-test the file was missing. Every other assertion here is
+    written against `visible()`, so `visible()`'s blind spots are the suite's
+    blind spots - and for the whole of Wave 12 it shared one with the scrubber
+    it grades. Both applied NFKC without NFD; neither could see a combining
+    mark that had a precomposed form; and 132 of 570 probes leaked past both.
+    """
+
+    def test_a_decorated_postcode_reads_as_the_postcode(self) -> None:
+        assert "SW1A 1AA" in visible("Postcode: SW1́A 1AA")
+
+    def test_a_decorated_record_number_reads_as_the_record_number(self) -> None:
+        assert "A1234567" in visible("MRN: Á1234567")
+
+    def test_a_decorated_ni_number_reads_as_the_ni_number(self) -> None:
+        assert "QQ123456C" in visible("NI Number: QQ́123456C")
+
+    def test_the_zero_width_property_it_already_had_still_holds(self) -> None:
+        assert "Nkemdirim" in visible("Nkem͏dirim")
+
+    def test_it_is_still_not_the_implementations_own_definition(self) -> None:
+        """Independence, asserted structurally. If this file ever imports the
+        scrubber's own normaliser, the corpus stops grading anything.
+
+        Checked against the parsed module rather than against its text, so the
+        assertion cannot be satisfied or broken by a string that merely
+        mentions the module - including this docstring.
+        """
+        tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            and node.module.startswith("mao.core.deident")
+            for alias in node.names
+        }
+        assert "normalise" not in imported, (
+            "the hold-out oracle now imports the normaliser it grades, so a "
+            "character that normaliser does not handle is invisible to this "
+            "corpus - which is exactly how ADV16-1 survived Wave 12"
+        )
+        # `split_lines` IS imported elsewhere in this file and is fine: it is
+        # structure, not a definition of what counts as a redaction.
 
 
 class TestTheCorpusIsGenuinelyHeldOut:
@@ -269,20 +332,139 @@ class TestNoClinicalContentIsDestroyed:
             "suite's 25% rather than tighter."
         )
 
-    def test_an_ordinary_letterhead_is_never_refused(self) -> None:
-        """The shape almost every real document has must go straight through."""
+    # `test_an_ordinary_letterhead_is_never_refused` was here.
+    #
+    # It asserted over five implementer-chosen documents that an ordinary
+    # banner "must go straight through". Exactly ONE of the five carried a
+    # three-token name, and it was placed in the two-column layout - the single
+    # layout in which a three-token name is never refused. The architecture
+    # review measured the same name moved onto its own line, which is how the
+    # other four fixtures are written, and it refuses 100% of the time (A-7).
+    # The test was green because the implementation's author chose which cases
+    # it saw, which is the ADV15-3 mechanism reproduced inside the remediation
+    # that claims ADV15-3 closed, and which 00_RULES names directly: "a test
+    # must not grade its own quarantine/refusal logic."
+    #
+    # It is replaced by `TestEveryRefusalIsAnswerable` below, whose corpus is a
+    # cartesian product rather than a list, and which asserts the property the
+    # design actually claims instead of an outcome. The refusal RATE is
+    # `DEFERRED -> Phase 2` in both b63311d reviews and is deliberately not
+    # asserted anywhere: pinning it here would be re-grading the quarantine.
+
+
+class TestEveryRefusalIsAnswerable:
+    """A-7. The corpus is generated, so the implementation does not choose it.
+
+    The design's claim is not "ordinary documents are never refused" - that is
+    an outcome, and the measured rate for a three-part name on its own line is
+    100%. The claim is that a refusal NAMES what it could not resolve, quotes
+    no identifier while doing so, and is RESOLVED by supplying the fields it
+    names. That property is true at any rate, and no choice of fixtures can
+    make it hold when it does not.
+    """
+
+    GIVEN: ClassVar[tuple[str, ...]] = ("Harold", "Sarah", "John", "Mary")
+    MIDDLE: ClassVar[tuple[str, ...]] = ("", "Michael", "Jane", "Elizabeth")
+    FAMILY: ClassVar[tuple[str, ...]] = ("Nkemdirim", "Okonkwo", "Smith", "Rankin")
+    SHAPES: ClassVar[dict[str, str]] = {
+        "inline": "Patient Name: {name}\nMRN: RGT/44219/B\nDOB: 12/03/1948\n",
+        "label_alone": "Patient Name:\n{name}\nMRN:\nRGT/44219/B\n",
+        "two_column": "Patient Name: {name}    MRN: RGT/44219/B\n",
+        "with_title": "Consultant: Dr {name}\nMRN: RGT/44219/B\n",
+        "banner_below": (
+            "Patient Name: {name}\nMRN: RGT/44219/B\nDOB: 12/03/1948\n"
+            "Impression: probable Alzheimer disease.\n"
+        ),
+    }
+
+    @classmethod
+    def _letterheads(cls) -> list[tuple[str, str, str]]:
+        out = []
+        for given in cls.GIVEN:
+            for middle in cls.MIDDLE:
+                for family in cls.FAMILY:
+                    name = " ".join(p for p in (given, middle, family) if p)
+                    for shape, template in cls.SHAPES.items():
+                        out.append((shape, name, template.format(name=name)))
+        return out
+
+    def test_the_corpus_produces_both_outcomes(self) -> None:
+        """00_RULES: a generated suite must report both populations. A corpus
+        on which everything has the same outcome cannot distinguish a working
+        refusal from a broken one, whichever outcome that is."""
         from mao.core.deident.ambiguity import find_ambiguities
 
-        for document in (
-            "Patient Name: Harold Nkemdirim\nMRN: RGT/44219/B\nDOB: 12/03/1948\n",
-            "Patient Name:\nHarold Nkemdirim\nMRN:\nRGT/44219/B\n",
-            "Patient Name: John Michael Smith    MRN: RGT/44219/B\n",
-            "Patient Name: Mary Parkinson\n",
-            "Consultant: Dr Alan Rankin\n",
-        ):
-            assert not find_ambiguities(document), (
-                f"an ordinary banner was refused: {document!r}"
-            )
+        outcomes = {
+            bool(find_ambiguities(text)) for _, _, text in self._letterheads()
+        }
+        assert outcomes == {True, False}, (
+            "every generated letterhead had the same outcome, so this corpus "
+            "grades nothing"
+        )
+
+    def test_a_refusal_names_the_line_it_could_not_resolve(self) -> None:
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        blanket = []
+        for shape, name, text in self._letterheads():
+            report = find_ambiguities(text)
+            if report and not report.covered_lines():
+                blanket.append(f"{shape}/{name}")
+        assert blanket == [], (
+            f"{len(blanket)} refusal(s) could not say which line they were "
+            f"protecting, which is what separates a refusal from an oracle: "
+            f"{blanket[:5]}"
+        )
+
+    def test_a_refusal_never_quotes_the_identifier_it_removed(self) -> None:
+        from mao.core.deident.ambiguity import find_ambiguities
+
+        quoted = []
+        for shape, name, text in self._letterheads():
+            report = find_ambiguities(text)
+            if not report:
+                continue
+            message = str(report)
+            for token in name.split():
+                if token in message:
+                    quoted.append(f"{shape}/{name}: {token}")
+        assert quoted == [], (
+            f"a refusal quoted the identifier it says it could not handle, "
+            f"and a refusal is logged and returned to the caller: {quoted[:5]}"
+        )
+
+    def test_supplying_the_named_field_resolves_every_refusal(self) -> None:
+        """The property that makes the 422 a request rather than a wall.
+
+        This is what `PROJECT_STATE.md` offers as the reason ADV15-1 is closed,
+        asserted over a generated corpus instead of over one example.
+        """
+        from mao.core.deident.ambiguity import find_ambiguities
+        from mao.trust.inputs.boundary import remove_known_identifiers
+
+        unresolved = []
+        for shape, name, text in self._letterheads():
+            if not find_ambiguities(text):
+                continue
+            masked = remove_known_identifiers(text, {"patient_name": name}, None)
+            if find_ambiguities(masked):
+                unresolved.append(f"{shape}/{name}")
+        assert unresolved == [], (
+            f"{len(unresolved)} document(s) stayed refused even with the "
+            f"patient field supplied, so the refusal is a wall: {unresolved[:5]}"
+        )
+
+    def test_no_letterhead_emits_a_name_token_beside_a_placeholder(self) -> None:
+        """The 00_RULES prefix invariant, on the generated corpus."""
+        leaks = []
+        for shape, name, text in self._letterheads():
+            out = visible(scrub_pii(text))
+            if "[NAME]" not in out:
+                continue
+            for token in name.split():
+                if token in out:
+                    leaks.append(f"{shape}/{name}: {token}")
+        assert leaks == [], f"prefix emission beside a placeholder: {leaks[:5]}"
 
 
 class TestTheLineStructureSurvives:
