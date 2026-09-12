@@ -150,15 +150,6 @@ class TestEveryDestructionIsAnnounced:
     def test_the_corpus_is_large_enough_to_mean_something(self) -> None:
         assert len(CORPUS) >= 300, f"only {len(CORPUS)} cases generated"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: layout._extent_certainty still lets a sentence "
-            "terminator settle a name's extent whenever ANY content follows it, "
-            "so a clinical phrase inside the taken run is deleted with no "
-            "notice. See TestASentenceTerminatorStillSilencesTheNotice."
-        ),
-    )
     def test_no_clinical_phrase_disappears_without_a_notice(self, classified) -> None:
         silent = [
             (layout, name, phrase, query, scrubbed)
@@ -209,13 +200,15 @@ class TestEveryDestructionIsAnnounced:
             "the notice may be firing unconditionally"
         )
 
-    #: Layouts on which the invariant currently holds. `question_after` is
+    #: Every layout. `question_after` was the one on which the invariant did
+    #: not hold (W14-3); it does now, so it is graded with the rest.
+    #: Formerly excluded because
     #: excluded because it is the DEFECT, reported below in
     #: `TestASentenceTerminatorStillSilencesTheNotice` — not because the
     #: assertion was narrowed to make it pass. The whole-corpus assertion above
     #: is kept at full strength and marked as failing.
     SOUND_LAYOUTS = ("inline_banner", "comma_banner", "own_line",
-                     "trailing_banner")
+                     "trailing_banner", "question_after")
 
     @pytest.mark.parametrize("layout", SOUND_LAYOUTS)
     def test_the_invariant_holds_within_each_layout(
@@ -230,7 +223,7 @@ class TestEveryDestructionIsAnnounced:
             f"e.g. query={silent[0][3]!r} output={silent[0][6]!r}"
         )
 
-    def test_the_silent_population_is_confined_to_the_reported_defect(
+    def test_there_is_no_silent_population_at_all(
         self, classified
     ) -> None:
         """Every silent destruction must be the one already reported.
@@ -240,15 +233,10 @@ class TestEveryDestructionIsAnnounced:
         defect and this test — not the xfail — is what fires.
         """
         silent = [case for case in classified if case[4] and not case[5]]
-        stray = [case for case in silent if case[0] != "question_after"]
-        assert stray == [], (
-            f"{len(stray)} silent destructions outside the reported defect's "
-            f"layout, e.g. layout={stray[0][0]} query={stray[0][3]!r} "
-            f"output={stray[0][6]!r}"
-        )
-        assert silent, (
-            "there are no silent destructions at all — the defect may be "
-            "fixed, in which case remove the xfail above"
+        assert silent == [], (
+            f"{len(silent)} silent destruction(s) across every layout, e.g. "
+            f"layout={silent[0][0]} query={silent[0][3]!r} "
+            f"output={silent[0][6]!r}"
         )
 
     def test_the_two_ff34722_examples_now_agree(self) -> None:
@@ -326,8 +314,8 @@ class TestTheCorpusContainsRealDestructions:
                 )
 
 
-class TestASentenceTerminatorStillSilencesTheNotice:
-    r"""REPORTED PRODUCT DEFECT — the ff34722 shape, one clause later.
+class TestASentenceTerminatorDoesNotSilenceTheNotice:
+    r"""W14-3, closed — the ff34722 shape, one clause later.
 
     `layout._extent_certainty`:
 
@@ -365,8 +353,12 @@ class TestASentenceTerminatorStillSilencesTheNotice:
     punctuation. Measured on this file's corpus: 120 of 300 `question_after`
     cases destroy their phrase silently.
 
-    Reported, not patched — the fix belongs in
-    `mao/core/deident/layout.py::_extent_certainty`.
+    FIXED in `layout._extent_certainty` by separating the two questions it was
+    answering as one. `Certainty` answers "where does the RUN end", which a
+    following label or a mid-line stop genuinely settles, and still drives the
+    upload REFUSAL so an ordinary banner is not refused. `announce` answers
+    "may this span have taken more than the identifier", which nothing settles
+    for a run of three or more name-shaped words, and drives the NOTICE.
     """
 
     DESTROYED_AND_ANNOUNCED = "Patient Name: Sarah Okonkwo Complete Heart Block."
@@ -377,7 +369,7 @@ class TestASentenceTerminatorStillSilencesTheNotice:
     def _measure(query: str) -> tuple[bool, bool, str]:
         protected = _through_the_chat_boundary(query)
         return (
-            _phrase_survived(TestASentenceTerminatorStillSilencesTheNotice.PHRASE,
+            _phrase_survived(TestASentenceTerminatorDoesNotSilenceTheNotice.PHRASE,
                              protected.text),
             bool(ambiguities_from(protected.events)),
             protected.text,
@@ -391,14 +383,6 @@ class TestASentenceTerminatorStillSilencesTheNotice:
                 f"{query!r} no longer destroys the phrase: {scrubbed!r}"
             )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: a sentence terminator with content after it "
-            "declares a five-word run settled, silencing the notice for a "
-            "destruction identical to one that is announced."
-        ),
-    )
     def test_the_pair_is_announced_identically(self) -> None:
         _, announced_a, _ = self._measure(self.DESTROYED_AND_ANNOUNCED)
         _, announced_b, scrubbed_b = self._measure(self.DESTROYED_AND_SILENT)
@@ -410,10 +394,6 @@ class TestASentenceTerminatorStillSilencesTheNotice:
             f"({scrubbed_b!r})"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="PRODUCT DEFECT: the destruction is silent.",
-    )
     def test_the_silent_half_is_announced(self) -> None:
         survived, announced, scrubbed = self._measure(self.DESTROYED_AND_SILENT)
         assert not survived
@@ -421,18 +401,13 @@ class TestASentenceTerminatorStillSilencesTheNotice:
             f"{self.PHRASE!r} was deleted and nothing was said: {scrubbed!r}"
         )
 
-    def test_the_defect_is_still_present_as_described(self) -> None:
-        """Pin it, so the two xfails above are checkable claims."""
-        _, announced_a, _ = self._measure(self.DESTROYED_AND_ANNOUNCED)
-        _, announced_b, _ = self._measure(self.DESTROYED_AND_SILENT)
-        assert announced_a is True, "the announced half stopped announcing"
-        assert announced_b is False, (
-            "the silent half now announces — the defect may be fixed, in which "
-            "case remove the xfails above"
-        )
+    def test_whitespace_after_the_terminator_does_not_decide_it(self) -> None:
+        """The starkest statement of the invariant: a newline versus a space.
 
-    def test_whitespace_after_the_terminator_decides_it(self) -> None:
-        """The starkest statement of the defect: a newline versus a space."""
+        Both destroy the same phrase, so both must be announced. At ff34722
+        and at 41cfabd the space form was silent and the newline form was not,
+        which made the warning a function of a whitespace choice.
+        """
         _, with_newline, _ = self._measure(
             "Patient Name: Sarah Okonkwo Complete Heart Block.\nIs donepezil safe?"
         )
@@ -440,8 +415,9 @@ class TestASentenceTerminatorStillSilencesTheNotice:
             "Patient Name: Sarah Okonkwo Complete Heart Block. Is donepezil safe?"
         )
         assert with_newline is True
-        assert with_space is False, (
-            "the space/newline discrimination is gone — the defect may be fixed"
+        assert with_space is True, (
+            "whether a clinician is told still depends on whether the "
+            "character after the full stop is a newline or a space"
         )
 
 
@@ -537,9 +513,10 @@ class TestTheRouteAgreesWithTheEventList:
             assert response.status_code == 200, response.text
             if not response.json().get("redaction_notice", []):
                 silent.append((query, phrase, scrubbed))
-        assert silent, (
-            "no silent destruction at the route — the defect may be fixed, in "
-            "which case turn this back into the positive assertion"
+        assert silent == [], (
+            f"{len(silent)} destruction(s) reach a clinician with no notice "
+            f"at POST /chat, e.g. query={silent[0][0]!r} "
+            f"phrase={silent[0][1]!r} output={silent[0][2]!r}"
         )
 
     def test_the_route_subset_contains_a_destruction(self, client) -> None:

@@ -163,7 +163,7 @@ class TestOrdinaryLetterheadsStillRedact:
 
 
 class TestABracketedTrailingLabelDefeatsTheValueBeforeLabelPath:
-    r"""REPORTED PRODUCT DEFECT — a parenthesised trailing label leaks.
+    r"""W14-5, CLOSED — a parenthesised trailing label leaked.
 
     `mao/core/pii_scrubber.py` names value-before-label among the layouts the
     field grammar covers, and it does: `Harold Nkemdirim  Patient Name`,
@@ -195,7 +195,7 @@ class TestABracketedTrailingLabelDefeatsTheValueBeforeLabelPath:
     `test_a_shape_detectable_identifier_is_caught_anyway` asserts that bound, so
     the report above is a measured claim rather than an impression.
 
-    Reported, not patched — the fix belongs in `mao/core/deident/fields.py` or
+    FIXED by stripping decoration symmetrically in `_value_before`. See also
     `layout.py`, which this worktree may not touch.
     """
 
@@ -228,13 +228,6 @@ class TestABracketedTrailingLabelDefeatsTheValueBeforeLabelPath:
             f"{document!r} -> {produced!r}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: a value followed by a bracketed label is not "
-            "recognised, so the raw name or record number survives."
-        ),
-    )
     @pytest.mark.parametrize("document", LEAKY)
     def test_a_bracketed_trailing_label_also_redacts(self, document: str) -> None:
         produced = scrub_with_report(document).text
@@ -256,14 +249,8 @@ class TestABracketedTrailingLabelDefeatsTheValueBeforeLabelPath:
             "either, so the defect is WIDER than reported"
         )
 
-    def test_the_defect_is_still_present_as_described(self) -> None:
-        assert scrub_with_report(self.LEAKY[0]).text == self.LEAKY[0], (
-            "the bracketed trailing label is now handled — remove the xfail"
-        )
-
-
 class TestALabelledEmailIsRedactedWhole:
-    r"""REPORTED PRODUCT DEFECT — a partial email redaction.
+    r"""W14-4, CLOSED — a partial email redaction.
 
     On the plainest letterhead layout the labelled path claims a SHORTER span
     than the email occupies, and the shape path — which gets it right — never
@@ -283,7 +270,9 @@ class TestALabelledEmailIsRedactedWhole:
     explicitly forbids, and the labelled path being WORSE than the unlabelled
     one on the same input is the inversion worth reporting.
 
-    Reported, not patched.
+    FIXED by excluding `@` and `.` from what a label may follow: the `nhs` of
+    the DOMAIN was being read as an NHS field label, which clipped the
+    email's own value span at it.
     """
 
     @pytest.mark.parametrize(
@@ -293,13 +282,6 @@ class TestALabelledEmailIsRedactedWhole:
             "Email: h.nkemdirim@example.nhs.uk",
             "E-mail: harold@nhs.uk",
         ],
-    )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: the labelled EMAIL span stops short and leaves the "
-            "domain tail standing."
-        ),
     )
     def test_no_fragment_of_the_address_survives(self, document: str) -> None:
         produced = scrub_with_report(document).text
@@ -311,12 +293,8 @@ class TestALabelledEmailIsRedactedWhole:
         produced = scrub_with_report("Contact harold@nhs.uk for the result.").text
         assert produced == "Contact [EMAIL] for the result."
 
-    def test_the_defect_is_still_present_as_described(self) -> None:
-        assert scrub_with_report("Email: harold@nhs.uk").text == "Email: [EMAIL]nhs.uk"
-
-
 class TestANelTerminatedLetterheadRedacts:
-    r"""REPORTED PRODUCT DEFECT — CRITICAL. U+0085 disables the labelled path.
+    r"""W14-1, CLOSED — CRITICAL. U+0085 disabled the labelled path.
 
     `text._TERMINATOR` counts U+0085 NEL as a line terminator.
     `text._carries_no_visible_content` does not exempt it: NEL is general
@@ -346,7 +324,7 @@ class TestANelTerminatedLetterheadRedacts:
     docstring names U+0085 among the terminators whose loss "disabled the whole
     labelled path exactly as CRLF had disabled it".
 
-    Reported, not patched — the fix is one character class in
+    FIXED — the fix was one character class in
     `mao/core/deident/text.py`.
     """
 
@@ -372,14 +350,6 @@ class TestANelTerminatedLetterheadRedacts:
         leaked = [value for value in self.IDENTIFIERS if value in produced]
         assert leaked == [], f"the LF form leaks too: {leaked} in {produced!r}"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT (critical): U+0085 NEL is stripped by the match "
-            "view, collapsing the document to one line, and every labelled "
-            "identifier after the first survives in full."
-        ),
-    )
     def test_no_identifier_survives_a_nel_terminated_letterhead(self) -> None:
         produced = scrub_with_report(self.DOCUMENT).text
         leaked = [value for value in self.IDENTIFIERS if value in produced]
@@ -387,14 +357,17 @@ class TestANelTerminatedLetterheadRedacts:
             f"raw identifiers survived: {leaked}\n  out: {produced!r}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT (critical): the run-scoped egress assertion cannot "
-            "see the leak, because the scrubber never recorded the identifiers."
-        ),
-    )
-    def test_the_egress_backstop_sees_the_leak(self) -> None:
+    def test_the_egress_backstop_has_nothing_to_report(self) -> None:
+        """Both walls, at the real boundary.
+
+        W14-1 defeated BOTH: the scrubber joined the lines and left the
+        identifiers raw, and the removal record it produced named
+        `"Harold Nkemdirim<NEL>MRN"` — a string that is not what leaked —
+        so the run-scoped backstop was comparing against the wrong value
+        and reported nothing. A clean payload and a silent backstop look
+        identical from here, which is why the first assertion is what
+        makes the second one mean anything.
+        """
         from mao.trust.classes import InputChannel
         from mao.trust.egress.gateway import RequestProtection, protected_request
         from mao.trust.inputs.boundary import protect_channel
@@ -404,24 +377,21 @@ class TestANelTerminatedLetterheadRedacts:
             protected = protect_channel(
                 self.DOCUMENT, InputChannel.REPORT, refuse_ambiguity=False
             )
-            assert protection.leaked_in(protected.text), (
-                "the backstop reports no leak on a payload carrying a raw MRN, "
-                f"a raw NHS number and a raw telephone number: {protected.text!r}"
+            survivors = [
+                value for value in self.IDENTIFIERS if value in protected.text
+            ]
+            assert survivors == [], (
+                f"raw identifiers survived the boundary: {survivors}"
             )
-
-    def test_the_defect_is_still_present_as_described(self) -> None:
-        """Pin it, so the two xfails above are checkable claims."""
-        produced = scrub_with_report(self.DOCUMENT).text
-        leaked = [value for value in self.IDENTIFIERS if value in produced]
-        assert "RGT/44219/B" in leaked, (
-            "the MRN no longer leaks on the NEL path — the defect may be "
-            "fixed, in which case remove the xfails above"
-        )
-        assert "943 476 5919" in leaked
-        assert produced.count(self.NEL) < self.DOCUMENT.count(self.NEL), (
-            "NEL terminators are no longer deleted"
-        )
-
+            assert not protection.leaked_in(protected.text), (
+                "the backstop reports a leak on a payload that carries no "
+                f"raw identifier: {protected.text!r}"
+            )
+            assert protection.identifiers, (
+                "the boundary recorded NOTHING for this document, so the "
+                "backstop above had nothing to compare and its silence is "
+                "not evidence"
+            )
 
 # --------------------------------------------------------------------------
 # Part 2 — ADV16-1

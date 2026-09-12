@@ -331,7 +331,7 @@ def report_mentions(facts: ExtractedFacts, line: str) -> bool:
 
 
 class TestALineCarriedOnlyAsANumberIsStillAccounted:
-    r"""REPORTED PRODUCT DEFECT — a partial extraction is accounted as a whole.
+    r"""W14-2, CLOSED — a partial extraction was accounted as a whole.
 
     `accounting.account()` decides `TYPED_FACT` from one boolean: whether
     `carried[line_index]` is set. `extract` sets it as soon as the line yields
@@ -393,14 +393,6 @@ class TestALineCarriedOnlyAsANumberIsStillAccounted:
             protected.text, question=QUESTION, events=tuple(protected.events)
         ), document
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: a line carried only as a vital is accounted "
-            "TYPED_FACT, so the projection reports itself complete while the "
-            "clinical text on that line never reaches the model."
-        ),
-    )
     @pytest.mark.parametrize("extra", LOSSY_LINES)
     def test_the_words_around_the_number_are_carried_or_named(
         self, extra: str
@@ -417,25 +409,6 @@ class TestALineCarriedOnlyAsANumberIsStillAccounted:
             f"itself COMPLETE.\n  render:\n{rendered}"
         )
         assert _source_line_of(document, extra) in completeness.unresolved_lines
-
-    @pytest.mark.parametrize("extra", LOSSY_LINES)
-    def test_the_defect_is_still_present_as_described(self, extra: str) -> None:
-        """Pin it, so the xfail above is a checkable claim rather than a mood."""
-        handoff, _ = self._handoff(extra)
-        rendered = handoff.synthesis_context.render()
-        phrase = extra.rsplit(",", 1)[0].strip()
-        assert phrase.lower() not in rendered.lower(), (
-            f"{phrase!r} now reaches the model — the defect may be fixed, in "
-            "which case remove this test and the xfail above"
-        )
-        assert handoff.synthesis_context.completeness.complete is True, (
-            "the projection now reports itself incomplete — the defect may be "
-            "fixed"
-        )
-        assert "heart_rate" in rendered, (
-            "the number is not carried either, so this is a different failure "
-            "from the one described"
-        )
 
     def test_the_lexicon_is_what_decides_whether_the_loss_is_seen(self) -> None:
         """The ADV16-6 shape, stated directly.

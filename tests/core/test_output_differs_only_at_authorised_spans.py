@@ -268,7 +268,7 @@ class TestLineTerminatorsAreStructureNotContent:
     explicitly among the terminators whose loss "disabled the whole labelled
     path exactly as CRLF had disabled it".
 
-    ## REPORTED PRODUCT DEFECT — U+0085 NEL is still deleted, and it leaks
+    ## W14-1, CLOSED — U+0085 NEL was deleted, and it leaked
 
     `text._TERMINATOR` includes U+0085. `text._carries_no_visible_content` does
     not exempt it: U+0085 is general category `Cc`, and the exemption is the
@@ -287,7 +287,10 @@ class TestLineTerminatorsAreStructureNotContent:
     MRN, NHS number and telephone — which is what then travels to the provider,
     the Redis cache and the trace.
 
-    Reported, not patched: the fix belongs in `mao/core/deident/text.py`.
+    FIXED in `mao/core/deident/text.py` by naming the line-break set ONCE,
+    as `LINE_BREAKS`, and having the invisible-character exemption READ it
+    instead of restating it. The two enumerations disagreed for four
+    characters: U+001C, U+001D, U+001E and U+0085.
     """
 
     WELL_BEHAVED = sorted(set(LINE_TERMINATORS) - {NEL_IS_BROKEN})
@@ -302,14 +305,6 @@ class TestLineTerminatorsAreStructureNotContent:
                 f"{source.count(terminator)} to {produced.count(terminator)}"
             )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: U+0085 NEL is category Cc and is not exempted by "
-            "text._carries_no_visible_content, so the match view deletes it and "
-            "the document collapses to one line."
-        ),
-    )
     def test_a_nel_terminated_document_keeps_its_terminators(self) -> None:
         source = LINE_TERMINATORS[NEL_IS_BROKEN]
         produced = scrub_with_report(source).text
@@ -317,13 +312,6 @@ class TestLineTerminatorsAreStructureNotContent:
             f"NEL count changed from {source.count(NEL)} to {produced.count(NEL)}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: with U+0085 as the terminator every labelled "
-            "identifier after the first survives the scrubber in full."
-        ),
-    )
     def test_a_nel_terminated_document_redacts_every_labelled_identifier(self) -> None:
         source = (
             f"Patient Name: Harold Nkemdirim{NEL}"
@@ -340,23 +328,6 @@ class TestLineTerminatorsAreStructureNotContent:
             if value in produced
         ]
         assert leaked == [], f"raw identifiers survived the scrubber: {leaked}"
-
-    def test_the_nel_defect_is_still_present_as_described(self) -> None:
-        """Pin the defect, so the two xfails above are checkable claims.
-
-        Asserts what IS true today. If this ever fails, U+0085 has been fixed
-        and the two `xfail(strict=True)` markers above will say so loudly.
-        """
-        source = LINE_TERMINATORS[NEL_IS_BROKEN]
-        produced = scrub_with_report(source).text
-        assert produced.count(NEL) < source.count(NEL), (
-            "NEL terminators are no longer being deleted — delete this test and "
-            "the xfails above"
-        )
-        assert "RGT/44219/B" in produced, (
-            "the MRN no longer leaks on the NEL path — the defect may be fixed"
-        )
-
 
 class TestTheOracleCanSeeADefect:
     """Non-vacuity control for `_reconstruct` itself.
@@ -401,7 +372,7 @@ class TestTheOracleCanSeeADefect:
 
 
 class TestTheRecordIsSufficientToReconstructTheOutput:
-    r"""REPORTED PRODUCT DEFECT — `Removal` under-describes a cued-name edit.
+    r"""W14-6, CLOSED — `Removal` under-described a cued-name edit.
 
     The shape rules `_cued_name` handles do not replace their whole match. Given
     `Her daughter Sarah Okonkwo reports confusion.` the transformation writes
@@ -430,34 +401,6 @@ class TestTheRecordIsSufficientToReconstructTheOutput:
         "We assessed Harold Nkemdirim on the ward this morning.",
     )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PRODUCT DEFECT: Removal records the whole cued match as the "
-            "redacted span but the transformation only replaced the name half, "
-            "and Removal carries no replacement field to say so."
-        ),
-    )
     @pytest.mark.parametrize("source", CUED)
     def test_a_cued_name_removal_describes_the_edit_it_made(self, source: str) -> None:
         _assert_only_authorised_edits(source)
-
-    @pytest.mark.parametrize("source", CUED)
-    def test_the_cue_word_is_the_part_the_record_over_claims(self, source: str) -> None:
-        """Pin the defect precisely, so the report above is checkable.
-
-        This asserts what IS true today: the recorded span covers a leading cue
-        word that the output still contains. It is a description of the defect,
-        not a substitute for the invariant above.
-        """
-        result = scrub_with_report(source)
-        assert result.removals, f"no removal at all on {source!r}"
-        over_claimed = [
-            removal
-            for removal in result.removals
-            if removal.value.split()[0] in result.text
-        ]
-        assert over_claimed, (
-            "this case no longer over-claims — the defect may be fixed, in "
-            "which case delete this test and the xfail above"
-        )
