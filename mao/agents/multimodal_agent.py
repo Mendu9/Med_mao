@@ -68,8 +68,15 @@ AUDIO_ENABLED = False
 #: satisfied here only because the declaration was false. The policy row is
 #: gone too, so this is one of two independent walls.
 #:
-#: SCOPE: this disables EGRESS of raw imagery. The local EfficientNetB3 stage
-#: predictor runs in-process, sends nothing anywhere, and is untouched.
+#: SCOPE, as written at M-2: this disables EGRESS of raw imagery, and the local
+#: EfficientNetB3 stage predictor was explicitly out of scope because it ran
+#: in-process and sent nothing anywhere.
+#:
+#: That predictor is now gone as well, retired by control decision M-3 — a
+#: product decision, not a privacy one. So there is no longer ANY image
+#: workflow behind this gate: `clinical_node`'s image branch calls the refusal
+#: below. This flag still governs exactly what it governed before; what changed
+#: is that lifting it would no longer reveal a second, local path.
 IMAGE_ENABLED = False
 
 # ---------------------------------------------------------------------------
@@ -112,10 +119,12 @@ def handle_image(  # public: shared with `clinical_agent`
         # egress never pulls a caller-supplied image across the network to hold
         # it in memory either. The refusal precedes all I/O.
         return (
-            "Image analysis is disabled in this release. A scan cannot be "
+            "Image analysis is not available in this release. A scan cannot be "
             "de-identified by the text boundary and no control can read what is "
             "burned into its pixels, so images are not sent to an external "
-            "model. MRI stage prediction still runs locally.",
+            "model. The local imaging stage predictor has been retired, so "
+            "there is no on-device image workflow either. Send a written "
+            "report or describe the findings in text instead.",
             {"error": "image_disabled_phase_1"},
         )
 

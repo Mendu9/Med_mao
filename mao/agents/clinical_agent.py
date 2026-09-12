@@ -1,4 +1,15 @@
-"""Clinical AI agent: MRI stage prediction (EfficientNetB3), PDF report analysis, and AD research retrieval."""
+"""Clinical AI agent: PDF report analysis and AD research retrieval.
+
+Control decision M-3 retired the MRI stage-prediction workflow. The
+EfficientNetB3 predictor, the image sub-mode that called it, and the confidence
+gate that turned its output into an uncertainty flag are gone — not disabled
+behind a toggle, removed. What remains is the report path and the text path.
+
+An image attachment still has a branch, because the router sends every
+attachment here and an attachment with no branch is answered as though it were
+never sent. That branch now reaches `handle_image`, which under M-2 refuses
+before any I/O, so the caller is told the modality is unavailable.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +18,6 @@ import logging
 
 
 from mao.agents.multimodal_agent import handle_audio, handle_image
-from mao.core.config import MRI_CONFIDENCE_GATE
 from mao.core.state import MAOState
 from mao.memory.mem0_handler import build_system_prompt
 from mao.prompts import get_prompt
@@ -83,7 +93,16 @@ def clinical_node(state: MAOState) -> MAOState:
     has_audio  = bool(metadata.get("audio_b64") or metadata.get("audio_path"))
 
     if has_image:
-        response, result_meta = _handle_mri_image(user_query, metadata, memory_context, domain=domain)
+        # M-3. The stage predictor this branch used to call is retired, so an
+        # image has no local workflow left to reach. It goes to the one image
+        # capability that remains, which under M-2 refuses before any I/O —
+        # including before any fetch of a caller-supplied `image_url`.
+        #
+        # Falling through to the text path instead would answer the caption and
+        # never say the scan had been discarded, which is exactly the audio
+        # defect recorded above.
+        response, result_meta = handle_image(user_query, metadata, memory_context)
+        result_meta = {**result_meta, "mode": result_meta.get("mode", "image")}
     elif has_report:
         response, result_meta = _handle_pdf_report(user_query, metadata, memory_context, domain=domain)
     elif has_audio:
@@ -97,10 +116,18 @@ def clinical_node(state: MAOState) -> MAOState:
     # mao.safety.verification.verification_node, which sees every agent's output
     # rather than only this one's (P1-2). Do not reintroduce it here.
 
-    # --- Uncertainty flag from MRI confidence ---
-    prediction = result_meta.get("prediction", {})
-    mri_confidence = float(prediction.get("confidence", 1.0))
-    uncertainty_flag = mri_confidence < MRI_CONFIDENCE_GATE if prediction else False
+    # --- Uncertainty flag ---
+    #
+    # M-3. The MRI confidence gate was the only thing on this route that ever
+    # produced a measurement of uncertainty, and it is retired. Nothing here
+    # measures it now, so the flag is a constant False rather than a number
+    # derived from a predictor that no longer runs.
+    #
+    # The FIELD stays. It is a column on the audit row, a key in the SSE
+    # envelope and a field on the report card, and those are not MRI-specific;
+    # a later control with a real measurement is what should set it. What is
+    # gone is the false measurement, not the channel.
+    uncertainty_flag = False
 
     # --- Build ReportCard ---
     sources = [
@@ -108,13 +135,20 @@ def clinical_node(state: MAOState) -> MAOState:
         for s in result_meta.get("sources", [])[:3]
     ]
     report = build_report_card(
-        stage=prediction.get("prediction", "N/A") if prediction else "N/A",
-        stage_interpretation=_interpret_stage(prediction.get("prediction", "") if prediction else ""),
+        # No staging model runs in this release. The card says that, rather
+        # than carrying "N/A" next to a `confidence_score` of 1.0 — which is
+        # what the retired code passed whenever there was no prediction, and
+        # which reads as "fully confident" rather than "never assessed".
+        stage="Not assessed",
+        stage_interpretation=(
+            "No disease stage was assessed for this request. The imaging stage "
+            "predictor was retired from this release."
+        ),
         clinical_significance=response[:300],
         medications=[],
         literature_evidence=[s.get("source", "") for s in result_meta.get("sources", [])[:3]],
         recommended_next_steps=["Consult a specialist for comprehensive evaluation."],
-        confidence_score=mri_confidence if prediction else 1.0,
+        confidence_score=None,
         sources=sources,
         uncertainty_flag=uncertainty_flag,
     )
@@ -187,155 +221,27 @@ def _rag_is_sufficient(ranked_chunks: list) -> bool:
     return rag_is_sufficient(ranked_chunks)
 
 
-def _interpret_stage(stage: str) -> str:
-    return {
-        "CN":   "Cognitively normal — no significant impairment detected.",
-        "EMCI": "Early mild cognitive impairment — early intervention recommended.",
-        "LMCI": "Late mild cognitive impairment — closer monitoring advised.",
-        "AD":   "Alzheimer's disease — comprehensive care planning recommended.",
-    }.get(stage, "Stage information unavailable.")
-
-
 # ---------------------------------------------------------------------------
-# Mode 1 — MRI image
+# Mode 1 — MRI image: RETIRED under control decision M-3.
+#
+# `_handle_mri_image`, `_run_mri_prediction`, `_format_prediction`,
+# `_interpret_stage` and `_describe_image` are GONE, not disabled. So is
+# `mao/models/mri_predictor.py`, the EfficientNetB3 loader they called.
+#
+# `_run_mri_prediction` is also where ADV17-5 lived. It called
+# `fetch_image_bytes(metadata["image_url"])` BEFORE any image gate, so a
+# caller-supplied URL was fetched with the deployment's own network position on
+# a route whose image egress M-2 had already shut. Deleting the caller is what
+# closes that structurally: the only `fetch_image_bytes` call site left in the
+# codebase is in `multimodal_agent.handle_image`, and it sits after the
+# `IMAGE_ENABLED` refusal, which returns before any I/O.
+#
+# `mao/safety/fetch.py` itself STAYS. It still has that one caller, and
+# `validate_fetch_url` is the SSRF guard the API tests bind to.
+#
+# An image attachment is now handled by the `has_image` branch in
+# `clinical_node`, which calls `handle_image` and gets the M-2 refusal.
 # ---------------------------------------------------------------------------
-
-def _handle_mri_image(
-    user_query: str,
-    metadata: dict,
-    memory_context: str,
-    domain: str = "alzheimer",
-) -> tuple[str, dict]:
-    """Predict → retrieve → web search → synthesize."""
-
-    # Step 1: Run EfficientNetB3
-    prediction = _run_mri_prediction(metadata)
-    vision_used = False
-
-    if prediction.get("error"):
-        logger.warning("MRI prediction failed: %s", prediction["error"])
-        # The stage predictor only understands brain MRI. When it cannot answer —
-        # because the model is unavailable, or because this is a photograph of a
-        # pill bottle rather than a scan — the image still has to be *looked at*.
-        # This branch used to synthesise from retrieval alone, so an upload the
-        # predictor did not recognise was answered as though no image had been
-        # sent, with nothing telling the clinician it had been ignored.
-        described, vision_used = _describe_image(user_query, metadata, memory_context)
-        pred_block = (
-            f"MRI stage prediction did not apply to this image.\n\n"
-            f"Image description:\n{described}"
-            if vision_used
-            else "MRI prediction could not be completed (model unavailable)."
-        )
-        augmented_query = f"{described} {user_query}" if vision_used else user_query
-    else:
-        label      = prediction["prediction"]
-        full_label = prediction["full_label"]
-        confidence = prediction["confidence"]
-        scores     = prediction["all_scores"]
-        pred_block = _format_prediction(label, full_label, confidence, scores)
-        augmented_query = (
-            f"Clinical implications and treatment considerations for "
-            f"{full_label} ({label}) in Alzheimer's disease. {user_query}"
-        )
-
-    # Step 2: GraphRAG retrieval
-    try:
-        ranked_chunks = retrieve(augmented_query, domain=domain)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("GraphRAG retrieval failed: %s", exc)
-        ranked_chunks = []
-
-    research_block = _format_sources(ranked_chunks)
-
-    # Step 3: Web search for latest evidence
-    web_block = _web_search_clinical(
-        f"{prediction.get('prediction', '')} Alzheimer's disease treatment 2024"
-        if not prediction.get("error") else user_query
-    )
-
-    # Step 4: Synthesize
-    system_prompt = build_system_prompt(_clinical_system(), memory_context)
-    user_prompt = (
-        f"User question: {user_query}\n\n"
-        f"## MRI Prediction Result\n{pred_block}\n\n"
-        f"## Relevant Research Papers\n{research_block}\n\n"
-        f"## Current Clinical Evidence (Web)\n{web_block}\n\n"
-        "Please synthesize the above into a structured clinical decision-support response. "
-        "Include: interpretation, clinical significance, recommended next steps, and cited sources."
-    )
-    response = _call_llm(system_prompt, user_prompt)
-
-    top_score = ranked_chunks[0].score if ranked_chunks else 0.0
-    sources = [
-        {"source": c.metadata.get("source", ""), "chunk_id": c.metadata.get("chunk_id", ""),
-         "doc_id": c.metadata.get("title", c.metadata.get("source", "")),
-         "score": round(c.score, 4), "snippet": c.text[:300]}
-        for c in ranked_chunks
-    ]
-    return response, {
-        "mode": "mri_image",
-        "prediction": prediction,
-        "vision_fallback": vision_used,
-        "sources": sources,
-        "chunks_retrieved": len(ranked_chunks),
-        "top_rag_score": round(top_score, 4),
-        "rag_sufficient": _rag_is_sufficient(ranked_chunks),
-        "score_scorer": getattr(ranked_chunks[0], "scorer", "") if ranked_chunks else "",
-        "_ranked_chunks": ranked_chunks,
-    }
-
-
-def _describe_image(
-    user_query: str, metadata: dict, memory_context: str
-) -> tuple[str, bool]:
-    """Describe an image the stage predictor could not classify.
-
-    Returns (description, succeeded). Never raises: a vision outage should cost
-    the description, not the whole clinical request.
-    """
-    try:
-        described, meta = handle_image(user_query, metadata, memory_context)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Vision fallback failed: %s", exc)
-        return "", False
-    if meta.get("error") or not described.strip():
-        logger.warning("Vision fallback produced nothing: %s", meta.get("error", ""))
-        return "", False
-    return described, True
-
-
-def _run_mri_prediction(metadata: dict) -> dict:
-    """Call MRIPredictor with image from metadata."""
-    try:
-        from mao.models.mri_predictor import get_predictor
-        predictor = get_predictor()
-        if metadata.get("image_b64"):
-            return predictor.predict(metadata["image_b64"])
-        if metadata.get("image_url"):
-            # Through the shared guard, never `requests.get` directly: the URL
-            # is caller-supplied and the fetch runs with the deployment's own
-            # network position. See `mao/safety/fetch.py`.
-            from mao.safety.fetch import fetch_image_bytes
-
-            return predictor.predict(fetch_image_bytes(metadata["image_url"]))
-        return {"error": "no image data found in metadata"}
-    except Exception as exc:  # noqa: BLE001
-        logger.error("MRI prediction call failed: %s", exc)
-        return {"error": str(exc)}
-
-
-def _format_prediction(label: str, full_label: str, confidence: float, scores: dict) -> str:
-    lines = [
-        f"**Predicted Stage: {full_label} ({label})**",
-        f"Confidence: {confidence * 100:.1f}%",
-        "",
-        "All class probabilities:",
-    ]
-    for lbl, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-        bar = "#" * int(score * 20)
-        lines.append(f"  {lbl:4s}: {score * 100:5.1f}%  {bar}")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
