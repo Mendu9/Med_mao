@@ -65,9 +65,20 @@ class TestAVersionIsImmutableOnceRegistered:
         assert local.versions() == [POLICY_VERSION]
 
     def test_a_new_version_is_recorded_alongside_the_old(self) -> None:
+        """The second version is SYNTHETIC on purpose.
+
+        This used to register the literal "2026.09-1" as its hypothetical next
+        version. M-3 then bumped POLICY_VERSION to exactly that, the literal
+        collided with the active version, and the registry refused the
+        duplicate - so the test failed on a real policy bump, which is the one
+        event it exists to describe. A version string no real policy will take
+        keeps it bound to the behaviour instead of to the calendar.
+        """
+        synthetic = "0000.00-synthetic-next"
+        assert synthetic != POLICY_VERSION
         local = PolicyRegistry.default()
-        local.register(SafetyPolicy(policy_version="2026.09-1", judge_block_score=6))
-        assert local.get("2026.09-1").judge_block_score == 6
+        local.register(SafetyPolicy(policy_version=synthetic, judge_block_score=6))
+        assert local.get(synthetic).judge_block_score == 6
         assert local.get(POLICY_VERSION).judge_block_score == 5
 
     def test_an_active_version_must_exist(self) -> None:

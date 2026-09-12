@@ -55,11 +55,13 @@ class TestLegacyAliasesTrackRoleBindings:
 
 
 class TestSafetyConstantsComeFromPolicy:
-    def test_mri_gate_matches_policy(self) -> None:
-        config = _reload_config()
-        from mao.safety.policy import get_policy
-
-        assert config.MRI_CONFIDENCE_GATE is get_policy().mri_confidence_gate
+    def test_the_mri_gate_reexport_is_gone(self) -> None:
+        """M-3. `MRI_CONFIDENCE_GATE` was the only safety threshold re-exported
+        from config, and it is retired with the predictor it gated. Asserted as
+        an absence in the same spirit as `TestDeadConfigRemoved` below: a
+        constant nothing reads is dead config, and this one would also be
+        re-exporting a policy field that no longer exists."""
+        assert not hasattr(_reload_config(), "MRI_CONFIDENCE_GATE")
 
 
 class TestDeadConfigRemoved:

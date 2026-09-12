@@ -38,8 +38,12 @@ class TestThresholdsPreserveAuditedBehaviour:
         assert policy.judge_warn_score == 7
         assert policy.judge_block_score == 5
 
-    def test_mri_confidence_gate_matches_audited_value(self) -> None:
-        assert get_policy().mri_confidence_gate == 0.60
+    def test_the_retired_mri_gate_is_not_still_on_the_policy(self) -> None:
+        """M-3. `mri_confidence_gate` was an audited threshold; it is removed
+        with the predictor that produced the only confidence it ever compared
+        against. Asserted as an ABSENCE so it cannot quietly come back as a
+        field nothing reads."""
+        assert not hasattr(get_policy(), "mri_confidence_gate")
 
 
 class TestRiskClassification:

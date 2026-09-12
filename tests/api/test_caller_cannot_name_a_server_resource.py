@@ -138,17 +138,44 @@ class TestOutboundFetchesAreContained:
 
         validate_fetch_url(url)
 
-    def test_the_agents_route_their_fetch_through_the_guard(self) -> None:
-        """Both agents fetch `image_url`. A guard only one of them calls is the
-        B7 shape — a control living in an agent instead of at the boundary."""
+    def test_the_only_fetching_agent_routes_through_the_guard(self) -> None:
+        """A guard only some callers use is the B7 shape - a control living in
+        an agent instead of at the boundary.
+
+        This used to loop over both agents, keyed on whether the module
+        mentioned `image_url` at all. That key stopped discriminating at M-3:
+        `clinical_agent` still READS `image_url` to detect an attachment, but
+        no longer fetches it, and it names `fetch_image_bytes` only in the
+        comment recording ADV17-5 - so the old assertion would have passed on a
+        comment. It is rebound to the call itself.
+        """
+        import ast
         import inspect
 
         from mao.agents import clinical_agent, multimodal_agent
 
-        for module in (clinical_agent, multimodal_agent):
-            source = inspect.getsource(module)
-            if "image_url" not in source:
-                continue
-            assert "fetch_image_bytes" in source, (
-                f"{module.__name__} fetches image_url without the shared guard"
+        def _called_names(module) -> set[str]:
+            """Function names actually CALLED in the module - not names that
+            merely appear in its text."""
+            tree = ast.parse(inspect.getsource(module))
+            names: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if isinstance(func, ast.Name):
+                        names.add(func.id)
+                    elif isinstance(func, ast.Attribute):
+                        names.add(func.attr)
+            return names
+
+        assert "fetch_image_bytes" in _called_names(multimodal_agent), (
+            "the one agent that fetches image_url stopped using the shared guard"
+        )
+        # ADV17-5: the clinical agent's fetch was the unguarded-by-position
+        # one - it ran before any image gate. It must now make no fetch at all.
+        clinical_calls = _called_names(clinical_agent)
+        for forbidden in ("fetch_image_bytes", "urlopen", "urlretrieve"):
+            assert forbidden not in clinical_calls, (
+                f"clinical_agent calls {forbidden!r}; since M-3 it must perform "
+                "no outbound fetch of a caller-supplied URL at all"
             )

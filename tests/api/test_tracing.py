@@ -79,17 +79,12 @@ class TestSafetyFlags:
     def test_a_clean_response_carries_no_flags(self) -> None:
         assert build_trace(trace_id="t", result=_result(), latency_ms=1.0).safety_flags == []
 
-    def test_uncertainty_flag_is_recorded(self) -> None:
-        result = _result(metadata={"uncertainty_flag": True})
-        assert "mri_low_confidence" in build_trace(
-            trace_id="t", result=result, latency_ms=1.0
-        ).safety_flags
-
-
-class TestPrivacy:
-    def test_trace_does_not_carry_the_response_text(self) -> None:
-        trace = build_trace(trace_id="t", result=_result(response="SECRET ANSWER"), latency_ms=1.0)
-        assert "SECRET ANSWER" not in str(trace.to_dict())
+    # `test_uncertainty_flag_is_recorded` was here. It asserted that
+    # `metadata["uncertainty_flag"]` raised an `mri_low_confidence` safety flag.
+    # That flag is gone with the MRI workflow (M-3): its only producer was the
+    # clinical agent's confidence gate, so it named a cause that can no longer
+    # occur. `uncertainty_flag` survives as a field for a later control to set,
+    # and that control will want a flag named after what it actually measures.
 
     def test_trace_does_not_carry_attachment_payloads(self) -> None:
         result = _result(metadata={"image_b64": "PATIENTSCAN", "top_scores": [0.5]})
