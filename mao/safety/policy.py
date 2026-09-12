@@ -18,7 +18,12 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 # Bump whenever a threshold or a classification rule changes.
-POLICY_VERSION = "2026.08-1"
+# Bumped for M-3: `mri_confidence_gate` was removed from `SafetyPolicy`. The
+# registry refuses to re-register a DIFFERENT policy under a version already
+# stored, precisely so a trace citing a version still dereferences to the
+# decision that was made — so a changed policy shape needs a new version, not a
+# quiet edit of the old one.
+POLICY_VERSION = "2026.09-1"
 
 
 class RiskLevel(str, Enum):
@@ -140,8 +145,11 @@ class SafetyPolicy:
     judge_warn_score: int = 7
     judge_block_score: int = 5
 
-    # EfficientNetB3 MRI stage-prediction confidence gate
-    mri_confidence_gate: float = 0.60
+    # `mri_confidence_gate` was here. It is gone with the workflow it gated
+    # (M-3): the EfficientNetB3 stage predictor was the only thing that ever
+    # produced a confidence for it to compare against, and that predictor is
+    # retired. A threshold with nothing left to threshold is a policy row that
+    # documents a control the code does not have.
 
     # -- risk classification -------------------------------------------------
 

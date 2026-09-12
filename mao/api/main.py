@@ -92,13 +92,10 @@ async def lifespan(app: FastAPI):
             logger.info("Database ready.")
         except Exception as exc:
             logger.warning("Database init failed (non-fatal at startup): %s", exc)
-        # MRI model (may download 127MB on first run)
-        try:
-            from mao.models.mri_predictor import get_predictor
-            get_predictor()._load()
-            logger.info("MRI predictor ready.")
-        except Exception as exc:
-            logger.warning("MRI predictor warm-up failed (non-fatal): %s", exc)
+        # The MRI predictor warm-up was here. It is gone with the workflow
+        # (M-3): it imported `mao.models.mri_predictor`, which pulled in
+        # tensorflow and could download a 127 MB EfficientNetB3 checkpoint on
+        # first boot, for a prediction path no request can reach any more.
         # Reranker (~568 MB) — skip warm-up if MAO_DISABLE_RERANKER is set
         import os as _os
         if _os.getenv("MAO_DISABLE_RERANKER", "").lower() not in ("1", "true", "yes"):

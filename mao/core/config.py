@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 
 from mao.providers.gateway import model_id_for
 from mao.providers.registry import ModelRole
-from mao.safety.policy import get_policy
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -117,7 +116,10 @@ NLI_MODEL: str = "cross-encoder/nli-deberta-v3-small"
 NLI_ENTAILMENT_THRESHOLD: float = 0.75
 
 # ---------------------------------------------------------------------------
-# Safety thresholds are owned by mao.safety.policy. Re-exported for existing
-# imports only — change them in the policy, never here.
+# Safety thresholds are owned by mao.safety.policy. Re-export them here only
+# when something outside the policy package needs one — change them in the
+# policy, never here.
+#
+# `MRI_CONFIDENCE_GATE` was the only re-export and it is gone with the MRI
+# workflow (M-3), along with the `mri_confidence_gate` policy field it read.
 # ---------------------------------------------------------------------------
-MRI_CONFIDENCE_GATE: float = get_policy().mri_confidence_gate

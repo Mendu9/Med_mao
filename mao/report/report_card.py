@@ -27,7 +27,12 @@ class ReportCard:
     medications: list[MedicationEntry]
     literature_evidence: list[str]
     recommended_next_steps: list[str]
-    confidence_score: float
+    #: `None` means "not assessed", which is different from 0.0 ("assessed, no
+    #: confidence") and from 1.0 ("assessed, certain"). The clinical route used
+    #: to pass 1.0 whenever there was no MRI prediction, so a text answer that
+    #: measured nothing rendered as "100%". No caller measures a confidence
+    #: since M-3, so the honest value is the absent one.
+    confidence_score: float | None
     sources: list[SourceEntry]
     disclaimer: str = (
         "This output is for clinical decision support only. "
@@ -59,9 +64,12 @@ class ReportCard:
         story += [h("MAO Clinical Report Card"), Spacer(1, 0.3*cm)]
 
         if self.uncertainty_flag:
+            # Generic. This banner used to name the MRI model as the cause,
+            # which the card had no way to know and which is no longer a cause
+            # anything can raise (M-3). The card renders the flag it is given.
             story += [
                 Paragraph(
-                    "<font color='red'><b>LOW CONFIDENCE - MRI model confidence below threshold. Treat findings with caution.</b></font>",
+                    "<font color='red'><b>LOW CONFIDENCE - treat these findings with caution.</b></font>",
                     styles["Normal"]
                 ),
                 Spacer(1, 0.2*cm),
@@ -96,7 +104,12 @@ class ReportCard:
                 story.append(p(f"- {step}"))
             story.append(Spacer(1, 0.3*cm))
 
-        story += [h("Confidence Score"), p(f"{self.confidence_score:.0%}"), Spacer(1, 0.3*cm)]
+        confidence = (
+            "Not assessed"
+            if self.confidence_score is None
+            else f"{self.confidence_score:.0%}"
+        )
+        story += [h("Confidence Score"), p(confidence), Spacer(1, 0.3*cm)]
         story += [Paragraph(f"<i>{self.disclaimer}</i>", styles["Normal"])]
 
         doc.build(story)

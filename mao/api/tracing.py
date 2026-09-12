@@ -44,8 +44,13 @@ def _safety_flags(result: dict[str, Any], metadata: dict[str, Any]) -> list[str]
     if any(not f.get("entailed", True) for f in nli_flags):
         flags.append("nli_unentailed")
 
-    if metadata.get("uncertainty_flag"):
-        flags.append("mri_low_confidence")
+    # `mri_low_confidence` was raised here from `metadata["uncertainty_flag"]`.
+    # Both the flag and its one producer are gone with the MRI workflow (M-3):
+    # `clinical_node`'s confidence gate was the only thing in the codebase that
+    # ever set `uncertainty_flag` true, so the flag named a cause that can no
+    # longer occur. `uncertainty_flag` itself survives as a state/audit field
+    # for a later control to set; when one exists it needs a flag named after
+    # what it actually measures, not after a retired predictor.
 
     # The two advisory supervisors write these and nothing read them — not the
     # guardrails, not the audit row, not the trace. A signal a model was paid to

@@ -182,12 +182,19 @@ class TestAudioIsNotSilentlyDropped:
         assert seen == ["audio"]
 
     def test_image_still_wins_over_audio(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An MRI is the stronger clinical signal when both are present."""
+        """Dispatch precedence, unchanged by M-3.
+
+        The image branch no longer predicts anything - it returns the M-2
+        refusal - but it must still be the branch that CLAIMS the request when
+        both an image and audio are attached. Precedence is what decides which
+        modality the caller is told about, so it is asserted independently of
+        what the winning branch then does.
+        """
         seen: list[str] = []
         monkeypatch.setattr(
             clinical_agent,
-            "_handle_mri_image",
-            lambda *a, **k: (seen.append("image"), ("a", {"mode": "mri_image"}))[1],
+            "handle_image",
+            lambda *a, **k: (seen.append("image"), ("a", {"mode": "image"}))[1],
         )
         monkeypatch.setattr(
             clinical_agent,
