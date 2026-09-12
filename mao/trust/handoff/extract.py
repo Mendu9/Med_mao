@@ -143,21 +143,67 @@ class ExtractedFacts:
     vitals: tuple[tuple[str, str], ...] = ()
     labs: tuple[tuple[str, str], ...] = ()
     clinical_question: str = ""
-    #: Lines carrying clinical vocabulary that no rule above turned into a fact.
+    #: Every non-empty, non-heading line the document had. The DENOMINATOR, and
+    #: deliberately a count of document content rather than of lexicon hits.
+    content_lines: int = 0
+    #: Content lines that no rule above turned into a typed fact.
     #: Reported, not discarded: it is the measure of what the projection does
     #: NOT carry, and the compiler refuses when it is most of the document.
     uncovered: tuple[str, ...] = ()
 
     def coverage(self) -> float:
-        """The share of clinically-marked lines that became a typed fact.
+        """The share of the document's content lines that became a typed fact.
 
-        1.0 when there was nothing clinical to lose. A low number means the
-        projection would be a summary of a document it mostly did not read,
-        which is what `00_RULES.md` forbids presenting as equivalent.
+        The denominator is DOCUMENT CONTENT, and that is the whole of the fix.
+
+        It used to be `carried + len(uncovered)`, where `uncovered` was
+        populated only from lines `_is_clinical_line` marked clinical - the same
+        lexicon the de-identifier uses. A clinical line that lexicon does not
+        recognise was therefore in neither the numerator nor the denominator:
+        not "uncovered" but invisible, so this returned 1.00 exactly when the
+        loss was total (ADV16-6). The guard was bound to the detector it exists
+        to check, which is the one thing a guard may not be. Separately, the
+        branch that populated `uncovered` at all was unreachable, so the value
+        was unconditionally empty and every caller read a constant 1.0 (A-1).
+
+        A line count is a measurement. It cannot be defeated by a word nobody
+        put in a list, which is the property six remediation rounds could not
+        obtain from a vocabulary - and widening that vocabulary again is what
+        `00_RULES.md` forbids rather than what it asks for.
+
+        1.0 when the document had no content lines: there was genuinely nothing
+        to lose. NOT 1.0 when there was content and none of it was carried,
+        which is the case that mattered.
         """
-        carried = len(self.medications) + len(self.findings) + len(self.vitals) + len(self.labs)
-        total = carried + len(self.uncovered)
-        return 1.0 if total == 0 else carried / total
+        if self.content_lines == 0:
+            return 1.0
+        return (self.content_lines - len(self.uncovered)) / self.content_lines
+
+
+#: A redaction placeholder this system's own boundary emitted.
+_PLACEHOLDER = re.compile(r"\[[A-Z_]+\]")
+
+
+def _carries_nothing_to_lose(line: str) -> bool:
+    """Whether this line had a value at all once its identifier was removed.
+
+    `Patient Name: [NAME]` and `MRN: [MRN]` are lines whose entire value was an
+    identifier. The boundary removed it, correctly, and what remains is a label
+    with nothing behind it. Such a line cannot contribute clinical content to a
+    projection, so counting it in `coverage()`'s denominator would measure the
+    de-identifier's success as the extractor's failure - and on an ordinary
+    letterhead, where most lines are exactly this shape, it collapses coverage
+    and refuses documents that are perfectly answerable. The architecture
+    review predicted this precise trap in its A-1 remediation note.
+
+    This is a STRUCTURAL test and not a vocabulary one, which is what makes it
+    admissible here at all. It asks whether a placeholder THIS SYSTEM emitted
+    accounts for the whole of the line's value. It does not ask what the line
+    is about, consults no lexicon, and cannot be widened by adding words.
+    """
+    _, separator, value = line.partition(":")
+    candidate = value if separator else line
+    return not _PLACEHOLDER.sub("", candidate).strip(" \t.,;|-_")
 
 
 def _is_clinical_line(line: str) -> bool:
@@ -185,12 +231,18 @@ def extract(text: str, question: str = "") -> ExtractedFacts:
     vitals: dict[str, str] = {}
     labs: dict[str, str] = {}
     uncovered: list[str] = []
+    content_lines = 0
     age_group = ""
 
     for line in lines:
         stripped = line.strip()
         if not stripped or _is_heading(stripped):
             continue
+        if _carries_nothing_to_lose(stripped):
+            # A label whose only value was an identifier the boundary removed.
+            # Neither carried nor lost: there was nothing there to carry.
+            continue
+        content_lines += 1
 
         matched = False
 
@@ -221,7 +273,15 @@ def extract(text: str, question: str = "") -> ExtractedFacts:
             findings.append(stripped)
             matched = True
 
-        if not matched and _is_clinical_line(stripped):
+        if not matched:
+            # Not "and _is_clinical_line(stripped)". That conjunct was
+            # unsatisfiable - the `elif` above has already set `matched` for
+            # every line the lexicon calls clinical - so `uncovered` was
+            # unconditionally empty and the whole thin-projection refusal was
+            # dead code (A-1). Asking the lexicon again here would also
+            # reintroduce ADV16-6, because the question is whether this line
+            # became a fact, and that is answered by `matched`, not by a
+            # vocabulary that has never seen the words in question.
             uncovered.append(stripped)
 
     clinical_question = question.strip()
@@ -236,5 +296,6 @@ def extract(text: str, question: str = "") -> ExtractedFacts:
         vitals=tuple(sorted(vitals.items())),
         labs=tuple(sorted(labs.items())),
         clinical_question=clinical_question,
+        content_lines=content_lines,
         uncovered=tuple(uncovered),
     )
