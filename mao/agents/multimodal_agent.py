@@ -27,6 +27,51 @@ from mao.providers.registry import ModelRole
 
 logger = logging.getLogger(__name__)
 
+#: Control decision M-2. The external AUDIO path is DISABLED for Phase 1.
+#:
+#: `01_ARCHITECTURE.md` requires an audio/transcript path to "obey the same
+#: protected-input contract OR BE DISABLED". Wave 12 made it obey the call
+#: signature. The b63311d adversarial review then executed the real body
+#: against a realistic dictation - stubbing `whisper` into `sys.modules`,
+#: because it is not installed on this host - and measured what that signature
+#: delivers on continuous speech: 5 of 7 identifiers reach the provider. The
+#: patient's name, the hospital number in spoken form ("RGT slash 44219 slash
+#: B"), the NHS number, the date of birth and the telephone number all survive,
+#: every one of them spelled out in words. The ONE name that IS redacted is the
+#: clinician's, because the title "Doctor" precedes it.
+#:
+#: Speech has no labelled form, so the labelled-value machinery that works on
+#: typed text has nothing to attach to, and the accepted "bare name in prose"
+#: exception swallows 100% of the modality rather than an edge case. A-6 is the
+#: other half: `handle_audio` never passed structured patient fields, so the
+#: 422 asking for them could not be satisfied on this channel.
+#:
+#: Closing it any other way needs a spoken-identifier matcher. That would be
+#: the seventh vocabulary round, and the control plane has declined it.
+#: PROJECT_STATE.md records the four conditions for re-enabling. This flag is
+#: not a feature toggle: flipping it re-enables a measured disclosure.
+AUDIO_ENABLED = False
+
+#: Control decision M-2. Raw patient-image EXTERNAL EGRESS is DISABLED.
+#:
+#: Both b63311d reviews reached this independently (A-5, ADV16-7). The call
+#: below declared no trust class and so took `complete()`'s default of
+#: SAFE_DERIVED_TEXT - "de-identified text minted by the protected input
+#: boundary" - for a base64 patient scan that has been through no boundary at
+#: all, has no InputChannel origin, and cannot be read by any control:
+#: `gateway._outgoing_text` walks multipart content and collects only the text
+#: parts, so the run-scoped identifier assertion is a structural no-op for the
+#: image half. Measured: an identifier the boundary removed from the QUERY
+#: channel in the same request left the process intact inside the image.
+#:
+#: `policy._validate` refuses any row admitting a NEVER_EXTERNAL class, and was
+#: satisfied here only because the declaration was false. The policy row is
+#: gone too, so this is one of two independent walls.
+#:
+#: SCOPE: this disables EGRESS of raw imagery. The local EfficientNetB3 stage
+#: predictor runs in-process, sends nothing anywhere, and is untouched.
+IMAGE_ENABLED = False
+
 # ---------------------------------------------------------------------------
 # There is deliberately no `multimodal_node`.
 #
@@ -62,6 +107,18 @@ def handle_image(  # public: shared with `clinical_agent`
       - metadata["image_b64"]: base64-encoded image string
       - metadata["image_url"]: HTTP URL to download and encode
     """
+    if not IMAGE_ENABLED:
+        # Before the `image_b64` lookup and before any fetch, so a disabled
+        # egress never pulls a caller-supplied image across the network to hold
+        # it in memory either. The refusal precedes all I/O.
+        return (
+            "Image analysis is disabled in this release. A scan cannot be "
+            "de-identified by the text boundary and no control can read what is "
+            "burned into its pixels, so images are not sent to an external "
+            "model. MRI stage prediction still runs locally.",
+            {"error": "image_disabled_phase_1"},
+        )
+
     image_b64: str | None = metadata.get("image_b64")
 
     # Download if URL provided
@@ -144,6 +201,18 @@ def handle_audio(  # public: `clinical_agent` shares this one implementation
       - metadata["audio_path"]: local file path to audio file
       - metadata["audio_b64"]: base64-encoded audio (written to temp file)
     """
+    if not AUDIO_ENABLED:
+        # Before the whisper import and before the temp file, so a disabled
+        # path never creates a transcript it would then have to protect, log,
+        # cache or hold in memory. Nothing here echoes the caller's payload.
+        return (
+            "Audio consultations are disabled in this release. The transcript "
+            "path cannot yet keep spoken patient identifiers out of an external "
+            "model, so recordings are not processed. Type or upload the note "
+            "instead.",
+            {"error": "audio_disabled_phase_1"},
+        )
+
     try:
         import whisper  # lazy import — model is large
     except ImportError:
