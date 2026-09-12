@@ -164,7 +164,24 @@ def is_ambiguous_person_label(label: str) -> bool:
     return " ".join(label.split()).lower() in AMBIGUOUS_PERSON_LABELS
 
 
-_LABEL_RE = re.compile(rf"(?<![A-Za-z0-9]){ANY_LABEL}(?![A-Za-z0-9])", re.IGNORECASE)
+#: A label is a WORD, so it may not begin inside a token.
+#:
+#: The alphanumeric boundaries were not enough, because `@` and `.` are
+#: token-INTERNAL in the values this module exists to protect. In
+#: `Email: harold@nhs.uk` the `nhs` of the domain is preceded by `@` and
+#: followed by `.`, so it satisfied both boundaries and was read as an NHS
+#: field label — which then clipped the email's own value span at it:
+#:
+#:     'Email: harold@nhs.uk'  ->  'Email: [EMAIL]nhs.uk'
+#:
+#: A placeholder standing for half an address, with the domain left beside it,
+#: and a removal record saying `EMAIL = "harold@"` — so the run-scoped egress
+#: backstop was watching a string that is not what remained. Excluding `@` and
+#: `.` from what a label may follow is a statement about TOKENS, not about
+#: spellings: no vocabulary is added and none is widened.
+_LABEL_RE = re.compile(
+    rf"(?<![A-Za-z0-9@.]){ANY_LABEL}(?![A-Za-z0-9])", re.IGNORECASE
+)
 _TYPE_OF = tuple(
     (re.compile(rf"^{spelling}$", re.IGNORECASE), field_type)
     for spelling, field_type in _BY_LENGTH

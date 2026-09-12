@@ -128,6 +128,7 @@ def _labelled_edits(view: MatchView) -> list[Edit]:
                 kind=span.kind,
                 label=label,
                 certainty="guessed" if span.guessed else "settled",
+                announce=span.announce,
                 words=span.words,
                 reason=span.reason,
             )
@@ -248,6 +249,7 @@ def _removals(source: str, applied: list[Edit]) -> tuple[Removal, ...]:
                     else ""
                 ),
                 guessed=edit.certainty == "guessed",
+                announce=edit.announce,
                 words=edit.words,
                 reason=edit.reason,
             )
@@ -274,6 +276,7 @@ def _events(scrubbed: str, applied: list[AppliedEdit]) -> tuple[RedactionEvent, 
             ),
             line=_line_of(starts, item.out_start),
             guessed=item.edit.certainty == "guessed",
+            announce=item.edit.announce,
             words=item.edit.words,
             reason=item.edit.reason,
         )

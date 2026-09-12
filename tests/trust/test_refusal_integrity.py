@@ -43,17 +43,48 @@ from typing import ClassVar
 
 import pytest
 
-from mao.core.deident.ambiguity import find_ambiguities
+from mao.core.deident.ambiguity import AmbiguityReport, unresolved_from
 from mao.core.deident.text import split_lines
-from mao.core.pii_scrubber import scrub_pii
+from mao.core.pii_scrubber import scrub_pii, scrub_with_report
 
 from tests.core.pdf_layout_generator import Document, generate
 
 #: Rendered once: generating dominates the cost and nothing varies per test.
 _ALL: list[Document] = generate()
 
-REFUSED: list[Document] = [d for d in _ALL if find_ambiguities(d.extracted)]
-PROCESSED: list[Document] = [d for d in _ALL if not find_ambiguities(d.extracted)]
+
+def _is_refused(document: Document) -> bool:
+    """Whether the UPLOAD PATH would actually refuse this document.
+
+    `unresolved_from`, not `find_ambiguities`. The two are no longer the same
+    set and this file grades the QUARANTINE, so it has to read the predicate the
+    quarantine uses:
+
+        unresolved_from    the extent could not be established -> REFUSE
+        ambiguities_from   the removal may have taken more than the identifier
+                           -> TELL THE CLINICIAN  (a strict superset)
+
+    A notice does not remove a document from processing, so a document that is
+    announced but not refused is not quarantined and must not be counted here.
+    Measured on this corpus: 251 refused (4.84%, matching the recorded Wave 12
+    figure exactly) against 328 announced (6.33%). Reading the announced set as
+    the refused set overstated the quarantine by a third and pushed the widened-
+    quarantine mutation control over its own ceiling.
+    """
+    return bool(unresolved_from(scrub_with_report(document.extracted).events))
+
+
+def _refusal_report(text: str) -> AmbiguityReport:
+    """The report the UPLOAD PATH would refuse on, for an arbitrary string.
+
+    Every guard in this file grades the QUARANTINE, so every one of them has
+    to read the predicate the quarantine uses. See `_is_refused`.
+    """
+    return unresolved_from(scrub_with_report(text).events)
+
+
+REFUSED: list[Document] = [d for d in _ALL if _is_refused(d)]
+PROCESSED: list[Document] = [d for d in _ALL if not _is_refused(d)]
 
 
 def _ids(documents: list[Document]) -> list[str]:
@@ -108,7 +139,7 @@ def _violations(document: Document) -> list[tuple[str, int, str]]:
     # boundary instead; what is asserted here is the part that does not need a
     # forgeable marker: once the first pass has left nothing ambiguous, the
     # second has nothing to decide and must change nothing.
-    if not find_ambiguities(scrubbed) and scrub_pii(scrubbed) != scrubbed:
+    if not _refusal_report(scrubbed) and scrub_pii(scrubbed) != scrubbed:
         found.append(("b5_not_idempotent", -1, ""))
 
     return found
@@ -135,7 +166,7 @@ def covered_lines(text: str) -> set[int]:
     extraction whose value sits three rows below its orphan label — it must say
     so. Until it does, the strictest reading applies.
     """
-    report = find_ambiguities(text)
+    report = _refusal_report(text)
     declared = getattr(report, "covered_lines", None)
     if callable(declared):
         return set(declared())
@@ -285,7 +316,13 @@ class TestTheGuardDetectsAWidenedQuarantine:
         try:
             for key, value in patched.items():
                 setattr(layout, key, value)
-            return sum(1 for d in _ALL if ambiguity.find_ambiguities(d.extracted))
+            return sum(
+                1
+                for d in _ALL
+                if ambiguity.unresolved_from(
+                    scrub_with_report(d.extracted).events
+                )
+            )
         finally:
             for key, value in original.items():
                 setattr(layout, key, value)
@@ -355,7 +392,7 @@ class TestTheGuardDetectsAWidenedQuarantine:
             "so a cross-line refusal cannot be distinguished from a blanket and "
             "the correlation guard must fall back to the strictest reading"
         )
-        report = find_ambiguities(
+        report = _refusal_report(
             "Patient Name: Gordon Michael Whitfield Rockwood Frailty\n"
         )
         if report.items:

@@ -333,6 +333,22 @@ def shape_spans(text: str) -> list[ShapeSpan]:
     return found
 
 
+def _common_prefix(matched: str, produced: str) -> int:
+    limit = min(len(matched), len(produced))
+    index = 0
+    while index < limit and matched[index] == produced[index]:
+        index += 1
+    return index
+
+
+def _common_suffix(matched: str, produced: str) -> int:
+    limit = min(len(matched), len(produced))
+    index = 0
+    while index < limit and matched[-1 - index] == produced[-1 - index]:
+        index += 1
+    return index
+
+
 def _line_spans(line: str) -> list[ShapeSpan]:
     """Apply every shape rule to one line, tracking where each span began."""
     working = line
@@ -354,7 +370,18 @@ def _line_spans(line: str) -> list[ShapeSpan]:
             if produced == match.group():
                 cursor = max(end, start + 1)
                 continue
-            covered = origin[start:end]
+            # A rule may KEEP part of what it matched. `_cued_name` rewrites
+            # `daughter Sarah Okonkwo` as `daughter [NAME]`, and recording the
+            # whole match as replaced made the removal record claim that the
+            # word `daughter` had been removed too. The record is what the
+            # run-scoped egress backstop compares outgoing text against, so an
+            # over-wide record is a backstop watching a string that never
+            # existed in the output. Narrow to what actually changed.
+            kept_head = _common_prefix(match.group(), produced)
+            kept_tail = _common_suffix(
+                match.group()[kept_head:], produced[kept_head:]
+            )
+            covered = origin[start + kept_head : end - kept_tail]
             if covered:
                 span_start = min(item[0] for item in covered)
                 span_end = max(item[1] for item in covered)
@@ -369,7 +396,10 @@ def _line_spans(line: str) -> list[ShapeSpan]:
                         start=span_start,
                         end=span_end,
                         kind=kind.group(1) if kind else "UNKNOWN",
-                        replacement=produced,
+                        # The CHANGED part only, to match the narrowed span.
+                        # Keeping the whole replacement against a narrowed span
+                        # would write the retained prefix out twice.
+                        replacement=produced[kept_head : len(produced) - kept_tail],
                     )
                 )
             else:

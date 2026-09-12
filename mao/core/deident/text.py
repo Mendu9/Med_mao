@@ -36,7 +36,32 @@ from collections.abc import Callable
 #: SEPARATOR, U+2029, VT, FF or U+0085 NEL arrived as ONE line, no label line
 #: was recognisable, and the whole labelled path was disabled exactly as CRLF
 #: had disabled it.
-_TERMINATOR = re.compile("\r\n|[\n\r\v\f  ]")
+#: Every character that ENDS A LINE, named once as data.
+#:
+#: Two different parts of this module have to agree about this set, and a
+#: hand-written restatement of it in the second place was wrong for FOUR
+#: characters. `_carries_no_visible_content` exempted five characters while
+#: this pattern also broke on U+001C, U+001D, U+001E and U+0085 NEL - so
+#: those four were classified "carries no visible content", deleted before
+#: matching, and every line of a NEL-separated document was joined into one.
+#:
+#: Measured, through the real scrubber:
+#:   IN   Patient Name: Harold Nkemdirim<NEL>MRN: RGT/44219/B<NEL>NHS ...
+#:   OUT  Patient Name: [NAME]: RGT/44219/B<NEL>NHS Number: 943 476 5919...
+#: The name span swallowed the terminator AND the next label, and the record
+#: number and the NHS number reached the provider raw. The removal record
+#: said NAME = "Harold Nkemdirim<NEL>MRN", so the run-scoped egress backstop
+#: was comparing against a string that is not what leaked and was blind to it
+#: as well. Both walls failed on one missing character.
+#:
+#: `str.splitlines()` breaks on all of these and so does a PDF viewer.
+#: `re.split(r"\r\n|\r|\n")` did not, so a document using U+2028 LINE
+#: SEPARATOR, U+2029, VT, FF or NEL arrived as ONE line, no label line was
+#: recognisable, and the whole labelled path was disabled exactly as CRLF had
+#: disabled it.
+LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+_TERMINATOR = re.compile("\r\n|[" + re.escape(LINE_BREAKS) + "]")
 
 #: Invisible characters that are not whitespace to Python but are not content
 #: either: BOM, zero-width space/non-joiner/joiner, word joiner, soft hyphen.
@@ -115,7 +140,15 @@ def _carries_no_visible_content(character: str) -> bool:
         # which are structure rather than content and must survive: removing
         # them would join two lines, which is the deletion this module's whole
         # line-scope design exists to make impossible.
-        return character not in "\t\n\r\v\f"
+        # Line terminators are STRUCTURE rather than content and must
+        # survive: removing one joins two lines, which is the deletion this
+        # module's whole line-scope design exists to make impossible. The
+        # exemption READS `LINE_BREAKS` rather than restating it, because
+        # restating it is how U+001C, U+001D, U+001E and U+0085 came to be
+        # stripped while `_TERMINATOR` was still splitting on them - two
+        # enumerations of one set, disagreeing, with a raw record number
+        # reaching a third-party model in the gap between them.
+        return character not in LINE_BREAKS + "\t"
     if category in ("Mn", "Me"):
         # NOT every non-spacing mark. The previous premise was "zero advance
         # width by definition", which is true and is a DIFFERENT property from

@@ -297,6 +297,12 @@ class Edit:
     kind: str
     label: SourceSpan | None = None
     certainty: str = "settled"
+    #: Whether the clinician must be TOLD about this removal, independently
+    #: of whether the upload path would refuse it. See
+    #: `layout._extent_certainty`: the refusal answers "where does the run
+    #: end", the notice answers "may this span have taken more than the
+    #: identifier", and only the first has an answer for a long name.
+    announce: bool = False
     #: How many name-shaped words the removed span covered. 0 for every type
     #: whose shape is unambiguous.
     words: int = 0
@@ -346,6 +352,7 @@ def apply_edits(source: str, edits: list[Edit]) -> tuple[str, list[Edit]]:
                     else "settled"
                 ),
                 words=max(previous.words, edit.words),
+                announce=previous.announce or edit.announce,
                 reason=previous.reason or edit.reason,
             )
             continue

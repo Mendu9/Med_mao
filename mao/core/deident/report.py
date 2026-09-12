@@ -64,6 +64,12 @@ class Removal:
     #: Whether the extent of this span was established or guessed. Carried from
     #: `layout.Certainty`, so the notice and the refusal read one answer.
     guessed: bool = False
+    #: Whether the clinician must be TOLD about this removal. A SUPERSET of
+    #: `guessed`: the refusal answers "where does the run end", which a
+    #: following label or a mid-line stop can settle; the notice answers "may
+    #: this span have taken more than the identifier", which nothing settles
+    #: for a run of three or more name-shaped words.
+    announce: bool = False
     #: How many name-shaped words the span covered, for a person value.
     words: int = 0
     #: Why the extent could not be established. Names no value — this string is
@@ -110,6 +116,7 @@ class RedactionEvent:
     label: str = ""
     line: int = 0
     guessed: bool = False
+    announce: bool = False
     words: int = 0
     reason: str = ""
 

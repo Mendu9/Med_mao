@@ -135,6 +135,10 @@ class _Claim:
     #: made `Complete heart block, pacemaker implanted: <date>` invisible.
     label_start: int = -1
     label_end: int = -1
+    #: Whether the clinician must be TOLD about this removal, independently
+    #: of whether the upload path would REFUSE it. True for any person value
+    #: of `_UNBOUNDED_NAME_WORDS` or more words. See `_extent_certainty`.
+    announce: bool = False
 
 
 #: Separator characters that only a FIELD uses. A colon, pipe, equals or hash
@@ -266,8 +270,26 @@ def _value_before(line: str, label_start: int, field_type: FieldType) -> tuple[i
     The whole of the line before the label must parse as one value, which is a
     much stronger requirement than "a value ends here" and is what keeps this
     from firing inside narrative.
+
+    Decoration is stepped over on this side too, symmetrically with
+    `_skip_noise` on the after-side. Only separators were stripped here, so a
+    BRACKETED trailing label was not reachable at all:
+
+        'Harold Nkemdirim (Patient Name)'  ->  unchanged
+        'A1234567 (MRN)'                   ->  unchanged
+        'Harold Nkemdirim - Patient Name'  ->  '[NAME] - Patient Name'
+
+    The label was found in every one of those; the prefix simply ended in `(`
+    and stopped parsing. NHS numbers, postcodes and telephones in the same shape
+    were caught anyway by their free-text shape rules — the two types that
+    leaked are NAME and MRN, which have none, which is the same pair that leaked
+    when `_skip_noise` was missing on the other side.
+
+    This widens where a label may be FOUND and not what one may absorb: the
+    prefix must still parse ENTIRELY as one value of the label's own type, so a
+    clinical phrase before a bracketed word is still not claimable.
     """
-    prefix = line[:label_start].rstrip(_SEPARATORS)
+    prefix = line[:label_start].rstrip(_SEPARATORS + _DECORATION)
     if not prefix.strip():
         return None
     return whole_value(field_type, prefix)
@@ -449,6 +471,7 @@ def _same_line_claims(
                 reason=reason,
                 label_start=start,
                 label_end=end,
+                announce=words >= _UNBOUNDED_NAME_WORDS,
             )
         )
     return claims
@@ -484,22 +507,33 @@ def _extent_certainty(line: str, span: tuple[int, int]) -> tuple[Certainty, int,
     matters, because a refusal that fires on the shape every real patient banner
     has is a broken product rather than a policy.
 
-    A terminator SEPARATES, so it settles nothing when there is nothing on the
-    far side of it. That escape hatch was measured at `ff34722` deciding half
-    of every silent chat destruction:
+    ## Two questions, and only one of them has an answer
 
-        'Patient Name: Sarah May Okonkwo Complete Heart Block.'
-          tail is '.'  ->  declared settled  ->  the whole run is taken
-          ->  'Patient Name: [NAME].'  with redaction_notice = []
+    This function was asked one question and used to answer a different one.
 
-        'Patient Name: Sarah May Okonkwo Rockwood Frailty Scale 6.'
-          tail is ' 6.'  ->  guessed  ->  announced
+        where does the RUN end?          `name_tokens` answers it, and a
+                                         following label or a mid-line sentence
+                                         terminator corroborates it.
+        is the run ALL NAME?             nothing answers it, for a run of three
+                                         or more name-shaped words.
 
-    Identical shape, identical name, and the only difference is whether the
-    clinical phrase happened to end in a digit — which is a fact about the
-    phrase, not about the name's extent. Requiring content AFTER the terminator
-    is what makes the two cases agree, and it costs nothing on the banner shape
-    the rule exists for, where the terminator is mid-line by construction.
+    The escape hatches answer the FIRST. Treating them as answers to the second
+    is what produced the silent destructions, and the two measured shapes differ
+    by one character:
+
+        'Patient Name: Sarah Okonkwo Complete Heart Block.'      announced
+        'Patient Name: Sarah Okonkwo Complete Heart Block. X'    silent
+
+    A newline after the full stop announced; a space silenced. The discriminator
+    had moved from the lexicon to punctuation, which is not an improvement.
+
+    So the two questions are now reported separately. `Certainty` answers the
+    first and still drives the upload REFUSAL, which keeps an ordinary banner
+    processing rather than refusing. `announce` answers the second — it is true
+    for every run of `_UNBOUNDED_NAME_WORDS` or more, unconditionally — and it
+    drives the clinician's NOTICE, whose wording has always been "the removal
+    may have taken more than the identifier with it". That sentence is true of
+    every such span, and there is no punctuation that makes it false.
     """
     from .fields import find_labels as _find_labels
 
@@ -507,19 +541,18 @@ def _extent_certainty(line: str, span: tuple[int, int]) -> tuple[Certainty, int,
     words = len([token for token in tokens if token[0] == "word"])
     if words < _UNBOUNDED_NAME_WORDS:
         return Certainty.SETTLED, words, ""
+    reason = (
+        f"{words} name-shaped words were removed as one value — the end of the "
+        "name cannot be established from the text, so the removal may have "
+        "taken clinical content with it"
+    )
     tail = line[span[1] :]
     leading = tail.lstrip()
     if leading[:1] in _SENTENCE_END and leading[1:].strip():
-        return Certainty.SETTLED, words, ""
+        return Certainty.SETTLED, words, reason
     if _find_labels(tail):
-        return Certainty.SETTLED, words, ""
-    return (
-        Certainty.GUESSED,
-        words,
-        f"{words} name-shaped words — the end of the name cannot be established "
-        "from the text, so taking the run risks deleting clinical content and "
-        "stopping short risks leaving part of the name",
-    )
+        return Certainty.SETTLED, words, reason
+    return Certainty.GUESSED, words, reason
 
 
 _SENTENCE_END = ".?!;"
@@ -1239,6 +1272,7 @@ class LabelledSpan:
     label_end: int = -1
     label: str = ""
     guessed: bool = False
+    announce: bool = False
     words: int = 0
     reason: str = ""
     line: int = 0
@@ -1277,6 +1311,7 @@ def labelled_spans(text: str) -> list[LabelledSpan]:
                 label_end=label_end,
                 label=claim.label,
                 guessed=claim.certainty is Certainty.GUESSED,
+                announce=claim.announce,
                 words=claim.words,
                 reason=claim.reason,
                 line=claim.line,

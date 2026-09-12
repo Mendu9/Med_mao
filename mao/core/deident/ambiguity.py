@@ -154,7 +154,7 @@ def ambiguities_from(events: Sequence[RedactionEvent]) -> AmbiguityReport:
     """
     report = AmbiguityReport()
     for event in sorted(
-        (event for event in events if event.guessed),
+        (event for event in events if event.guessed or event.announce),
         key=lambda event: event.start,
     ):
         report.items.append(
@@ -167,6 +167,35 @@ def ambiguities_from(events: Sequence[RedactionEvent]) -> AmbiguityReport:
             )
         )
     return report
+
+
+def unresolved_from(events: Sequence[RedactionEvent]) -> AmbiguityReport:
+    """Only the removals whose EXTENT could not be established.
+
+    The upload path refuses on this and the chat path announces on
+    `ambiguities_from`, which is a strict superset. The two are separated
+    because they answer different questions:
+
+        refuse    "can this document be de-identified without guessing?"
+                  A following field label or a mid-line sentence terminator
+                  genuinely bounds the run, so an ordinary
+                  `Patient Name: John Michael Smith MRN: ...` banner is not
+                  refused - and refusing on the shape every real patient
+                  banner has would be a broken product rather than a policy.
+
+        announce  "may this removal have taken more than the identifier?"
+                  True of every run of three or more name-shaped words,
+                  bounded or not, because the boundary between the name and
+                  whatever follows it inside the run is what was never
+                  established.
+
+    Collapsing them is what made the notice depend on punctuation: a newline
+    after the full stop announced and a space silenced, on the same
+    destruction.
+    """
+    return ambiguities_from(
+        [event for event in events if event.guessed]
+    )
 
 
 def find_ambiguities(text: str) -> AmbiguityReport:

@@ -232,13 +232,22 @@ _MARKDOWN_HEADING = re.compile(r"^\s*#+\s")
 def account(
     protected_text: str,
     events: tuple[RedactionEvent, ...],
-    carried: dict[int, tuple[str, str]],
+    carried: dict[int, list[tuple[int, int, str]]],
 ) -> SourceAccounting:
     """Attribute every part of `protected_text` to exactly one state.
 
     `events` are the redactions that actually happened, in this text's own
-    coordinates. `carried` maps a line index to `(field_name, text)` for every
-    line the extractor turned into a typed fact.
+    coordinates. `carried` maps a line index to the SPANS of that line the
+    extractor turned into a typed fact, each with the field that carries it.
+
+    SPANS, not a per-line boolean. A line-level flag said "something on this
+    line became a fact", and `Contraindicated per cardiology, HR 36` yields
+    `heart_rate 36` — one two-digit number — so the whole line counted as
+    carried and `Contraindicated per cardiology` was accounted nowhere. The
+    projection then reported itself complete while the reason for the
+    contraindication was absent. That is the AR17-1 shape at sub-line
+    granularity, and a boolean cannot express the difference between a rule that
+    carried the LINE and a rule that carried a NUMBER out of it.
 
     The walk is positional from beginning to end. Nothing is skipped, nothing is
     excluded before it is counted, and there is no branch in which a segment is
@@ -252,11 +261,16 @@ def account(
         offsets.append(position)
         position += len(content) + len(terminator)
 
-    by_line: dict[int, list[tuple[int, int, str, bool]]] = {}
+    by_line: dict[int, list[tuple[int, int, SegmentState, str]]] = {}
     for event in events:
         base = offsets[event.line] if event.line < len(offsets) else 0
         by_line.setdefault(event.line, []).append(
-            (event.start - base, event.end - base, event.kind, False)
+            (
+                event.start - base,
+                event.end - base,
+                SegmentState.IDENTIFIER_REMOVED,
+                event.kind,
+            )
         )
         if event.has_label() and 0 <= event.label_start:
             label_line = _line_containing(offsets, event.label_start)
@@ -265,15 +279,20 @@ def account(
                 (
                     event.label_start - label_base,
                     event.label_end - label_base,
+                    SegmentState.STRUCTURAL,
                     event.kind,
-                    True,
                 )
+            )
+    for index, spans in carried.items():
+        for start, end, field in spans:
+            by_line.setdefault(index, []).append(
+                (start, end, SegmentState.TYPED_FACT, field)
             )
 
     segments: list[Segment] = []
     for index, line in enumerate(lines):
         segments.extend(
-            _account_line(index, offsets[index], line, by_line.get(index, []), carried)
+            _account_line(index, offsets[index], line, by_line.get(index, []))
         )
     return SourceAccounting(segments=tuple(segments))
 
@@ -288,24 +307,36 @@ def _account_line(
     index: int,
     base: int,
     line: str,
-    marks: list[tuple[int, int, str, bool]],
-    carried: dict[int, tuple[str, str]],
+    marks: list[tuple[int, int, SegmentState, str]],
 ) -> list[Segment]:
-    """Account one line: the marked spans, then everything between them."""
+    """Account one line: the marked spans, then everything between them.
+
+    A mark is a span whose state is already known — a redaction that happened, a
+    label that attributed one, or a span the projection carries. Whatever is
+    left between them is residue, and residue that carries meaning and was not
+    carried is UNRESOLVED. There is no fourth possibility and no branch that
+    drops one.
+    """
     segments: list[Segment] = []
     ordered = sorted(
         (
-            (max(0, start), min(len(line), end), kind, is_label)
-            for start, end, kind, is_label in marks
+            (max(0, start), min(len(line), end), state, kind)
+            for start, end, state, kind in marks
             if start < len(line) and end > 0 and start < end
-        )
+        ),
+        # A whole-line TYPED_FACT and a redaction inside it both claim the same
+        # characters. The redaction wins the overlap: a carried finding quotes
+        # the line INCLUDING its placeholder, and counting the placeholder as
+        # carried clinical content would overstate the projection.
+        key=lambda mark: (mark[0], mark[2] is SegmentState.TYPED_FACT, -mark[1]),
     )
 
     cursor = 0
     residue: list[tuple[int, int]] = []
-    for start, end, kind, is_label in ordered:
-        if start < cursor:
+    for start, end, state, kind in ordered:
+        if end <= cursor:
             continue
+        start = max(start, cursor)
         if start > cursor:
             residue.append((cursor, start))
         segments.append(
@@ -313,13 +344,10 @@ def _account_line(
                 line=index,
                 start=base + start,
                 end=base + end,
-                state=(
-                    SegmentState.STRUCTURAL
-                    if is_label
-                    else SegmentState.IDENTIFIER_REMOVED
-                ),
+                state=state,
                 text=line[start:end],
-                kind=kind,
+                kind="" if state is SegmentState.TYPED_FACT else kind,
+                carried_as=kind if state is SegmentState.TYPED_FACT else "",
             )
         )
         cursor = end
@@ -327,27 +355,12 @@ def _account_line(
         residue.append((cursor, len(line)))
 
     remainder = "".join(line[start:end] for start, end in residue)
+    if not residue:
+        return segments
+
     if not _carries_meaning(remainder):
         # Whitespace, separators and the punctuation a removed value left
         # behind. Nothing here can be lost because nothing here says anything.
-        if remainder.strip(_PUNCTUATION) or residue:
-            segments.append(
-                Segment(
-                    line=index,
-                    start=base + (residue[0][0] if residue else 0),
-                    end=base + (residue[-1][1] if residue else 0),
-                    state=SegmentState.STRUCTURAL,
-                    text=remainder,
-                )
-            )
-        return segments
-
-    if _MARKDOWN_HEADING.match(line):
-        # `## Findings` is a structure marker the author typed. The test reads
-        # the `#` character and not the words after it, so no heading vocabulary
-        # exists to be widened — which is what `_HEADING`'s Titlecase-plus-colon
-        # rule was, and it was one of the routes clinical lines disappeared
-        # through.
         segments.append(
             Segment(
                 line=index,
@@ -359,15 +372,29 @@ def _account_line(
         )
         return segments
 
-    field, _ = carried.get(index, ("", ""))
+    if _MARKDOWN_HEADING.match(line):
+        # `## Findings` is a structure marker the author typed. The test reads
+        # the `#` character and not the words after it, so no heading vocabulary
+        # exists to be widened — which is what the old Titlecase-plus-colon rule
+        # was, and it was one of the routes clinical lines disappeared through.
+        segments.append(
+            Segment(
+                line=index,
+                start=base + residue[0][0],
+                end=base + residue[-1][1],
+                state=SegmentState.STRUCTURAL,
+                text=remainder,
+            )
+        )
+        return segments
+
     segments.append(
         Segment(
             line=index,
             start=base + residue[0][0],
             end=base + residue[-1][1],
-            state=SegmentState.TYPED_FACT if field else SegmentState.UNRESOLVED,
+            state=SegmentState.UNRESOLVED,
             text=remainder,
-            carried_as=field,
         )
     )
     return segments

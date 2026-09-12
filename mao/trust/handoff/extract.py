@@ -202,21 +202,29 @@ def extract(
     findings: list[str] = []
     vitals: dict[str, str] = {}
     labs: dict[str, str] = {}
-    carried: dict[int, tuple[str, str]] = {}
+    carried: dict[int, list[tuple[int, int, str]]] = {}
     age_group = ""
 
     for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
+        #: Where `stripped` sits inside `line`, so every span recorded below is
+        #: in the LINE's coordinates and not the stripped copy's.
+        shift = line.index(stripped) if stripped else 0
+        spans: list[tuple[int, int, str]] = []
 
-        field_name = ""
-
+        # A rule that carries a NUMBER records the number's span. A rule that
+        # carries the LINE records the whole line. The distinction is the whole
+        # of the sub-line accounting fix: `Contraindicated per cardiology, HR
+        # 36` gives `heart_rate 36` and nothing else, so `Contraindicated per
+        # cardiology` is residue and must be accounted as such rather than
+        # covered by its neighbour's success.
         age = _AGE.search(stripped)
         if age is not None:
             try:
                 age_group = age_group or age_group_for(int(age.group(1)))
-                field_name = field_name or "age_group"
+                spans.append((shift + age.start(), shift + age.end(), "age_group"))
             except ValueError:  # pragma: no cover - the pattern guarantees digits
                 pass
 
@@ -224,23 +232,23 @@ def extract(
             found = pattern.search(stripped)
             if found is not None and name not in vitals:
                 vitals[name] = found.group(1)
-                field_name = field_name or "vitals"
+                spans.append((shift + found.start(), shift + found.end(), "vitals"))
 
         for name, pattern in _LABS:
             found = pattern.search(stripped)
             if found is not None and name not in labs:
                 labs[name] = found.group(1)
-                field_name = field_name or "labs"
+                spans.append((shift + found.start(), shift + found.end(), "labs"))
 
         if _DOSE.search(stripped):
             medications.append(stripped)
-            field_name = "medications"
+            spans = [(shift, shift + len(stripped), "medications")]
         elif _is_clinical_line(stripped):
             findings.append(stripped)
-            field_name = field_name or "findings"
+            spans = [(shift, shift + len(stripped), "findings")]
 
-        if field_name:
-            carried[index] = (field_name, stripped)
+        if spans:
+            carried[index] = spans
 
     clinical_question = question.strip()
     if not clinical_question:

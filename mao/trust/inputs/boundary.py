@@ -49,6 +49,7 @@ from mao.core.deident.ambiguity import (
     AmbiguityReport,
     AmbiguousDocument,
     ambiguities_from,
+    unresolved_from,
 )
 from mao.core.deident.report import RedactionEvent, ScrubResult
 from mao.core.deident.text import split_lines
@@ -134,13 +135,13 @@ def _decide_once(
     document that is not going to be processed are not this request's to hold.
     """
     result = scrub_with_report(text)
-    report = ambiguities_from(result.events)
-    if report and refuse_ambiguity:
-        raise AmbiguousDocument(report)
+    unresolved = unresolved_from(result.events)
+    if unresolved and refuse_ambiguity:
+        raise AmbiguousDocument(unresolved)
     _record(result, channel, protection)
     return (
         SafeDerivedText(text=result.text, origin=channel, events=result.events),
-        report,
+        ambiguities_from(result.events),
     )
 
 
@@ -388,9 +389,9 @@ def protect_channel(
 
     result = scrub_with_report(masked)
     if refuse_ambiguity:
-        report = ambiguities_from(result.events)
-        if report:
-            raise AmbiguousDocument(report)
+        unresolved = unresolved_from(result.events)
+        if unresolved:
+            raise AmbiguousDocument(unresolved)
 
     if protection is None:
         logger.debug(
