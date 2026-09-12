@@ -32,11 +32,9 @@ def run_clinical(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
     monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
     monkeypatch.setattr(clinical_agent, "_call_llm", lambda s, u: "A description.")
-    monkeypatch.setattr(
-        clinical_agent,
-        "_run_mri_prediction",
-        lambda metadata: {"error": "not an MRI"},
-    )
+    # The `_run_mri_prediction` stub that used to be here is gone with the
+    # predictor (M-3). `handle_image` is now what the image branch calls
+    # directly, so stubbing it is enough to drive this path without a provider.
     monkeypatch.setattr(
         clinical_agent,
         "handle_image",
@@ -89,10 +87,16 @@ class TestNoRawPayloadInState:
         assert "abc-123" not in str(out["metadata"])
 
     def test_the_agents_own_modality_output_is_still_reported(self, run_clinical) -> None:
-        """The strip must not take the agent's own provenance with it."""
+        """The strip must not take the agent's own provenance with it.
+
+        `mri_image`/`vision_fallback` were the retired workflow's provenance
+        (M-3). The property asserted is unchanged: whatever the handler reports
+        about its OWN work survives the strip, while the caller's payload does
+        not.
+        """
         out = run_clinical({"image_b64": "x", "modality": "image"})
-        assert out["metadata"]["mode"] == "mri_image"
-        assert out["metadata"]["vision_fallback"] is True
+        assert out["metadata"]["mode"] == "image"
+        assert out["metadata"]["vision_model"] == "stub"
 
 
 class TestEveryAttachmentTypeReachesACapability:
@@ -101,7 +105,7 @@ class TestEveryAttachmentTypeReachesACapability:
     @pytest.mark.parametrize(
         "key,expected_mode",
         [
-            ("image_b64", "mri_image"),
+            ("image_b64", "image"),
             ("report_b64", "pdf_report"),
             ("audio_b64", "audio"),
         ],

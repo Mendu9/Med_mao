@@ -11,11 +11,12 @@ which case its only possible reply is "please provide an image or audio". A
 top-level agent that cannot receive the data it exists to process is not a
 design choice.
 
-Found while checking that: `_handle_mri_image` never looks at the image when MRI
-prediction fails. A non-MRI upload — a photo of a rash, a pill bottle, an ECG —
-takes the "prediction unavailable" branch and is answered from retrieval alone,
-with no indication the picture was ignored. Same silent-drop class as the audio
-finding.
+The second class below was found while checking that `_handle_mri_image` never
+looked at the image when MRI prediction failed: a non-MRI upload — a photo of a
+rash, a pill bottle, an ECG — took the "prediction unavailable" branch and was
+answered from retrieval alone, with no indication the picture had been ignored.
+That workflow is retired under M-3, but the silent-drop invariant it was written
+for is not, so the class now binds to how the image branch behaves today.
 """
 from __future__ import annotations
 
@@ -61,91 +62,58 @@ class TestModalityIsNotATopLevelAgent:
 
 
 class TestAnImageIsNeverSilentlyIgnored:
-    def test_a_failed_mri_prediction_falls_back_to_vision(
-        self, monkeypatch: pytest.MonkeyPatch
+    """The invariant survives M-3; what satisfies it changed.
+
+    These tests used to drive `_handle_mri_image`: when stage prediction
+    failed, the image had to be described by the vision model rather than
+    answered from retrieval alone. That whole path is retired — the predictor
+    is deleted and the vision egress is shut by M-2 — so there is nothing left
+    to fall back BETWEEN.
+
+    What must still hold is the thing the class is named for: an uploaded image
+    must never be quietly dropped so the caption gets answered as though
+    nothing was attached. It is now satisfied by refusing out loud.
+    """
+
+    def test_an_image_upload_is_answered_by_saying_the_modality_is_unavailable(
+        self,
     ) -> None:
-        monkeypatch.setattr(
-            clinical_agent,
+        state = clinical_agent.clinical_node(
+            {
+                "user_query": "Does this scan show atrophy?",
+                "metadata": {"image_b64": "eA=="},
+                "memory_context": "",
+            }
+        )
+        response = state["response"].lower()
+        assert response.strip()
+        assert "image analysis is not available" in response, (
+            "the upload was answered without saying the image was not used"
+        )
+
+    def test_the_image_branch_is_what_answers_and_not_the_text_path(self) -> None:
+        """Non-vacuity control. If the `has_image` branch were deleted rather
+        than repointed, the request would fall through to `_handle_text_question`
+        and this mode would read `text_question` — which is precisely the silent
+        drop this class exists to prevent."""
+        state = clinical_agent.clinical_node(
+            {
+                "user_query": "Does this scan show atrophy?",
+                "metadata": {"image_b64": "eA=="},
+                "memory_context": "",
+            }
+        )
+        assert state["metadata"].get("mode") != "text_question"
+
+    def test_the_retired_predictor_entrypoints_are_gone(self) -> None:
+        """M-3. Named individually so a partial revert fails loudly here."""
+        for attribute in (
+            "_handle_mri_image",
             "_run_mri_prediction",
-            lambda metadata: {"error": "not an MRI"},
-        )
-        monkeypatch.setattr(
-            clinical_agent,
-            "handle_image",
-            lambda *a, **k: ("A photograph of a pill bottle.", {"vision_model": "stub"}),
-        )
-        monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
-        monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
-
-        seen: dict[str, str] = {}
-
-        def _call_llm(system_prompt: str, user_prompt: str) -> str:
-            seen["user"] = user_prompt
-            return "answer"
-
-        monkeypatch.setattr(clinical_agent, "_call_llm", _call_llm)
-
-        clinical_agent._handle_mri_image("what is this?", {"image_b64": "x"}, "")
-        assert "pill bottle" in seen["user"], (
-            "the image was never described to the model"
-        )
-
-    def test_a_successful_mri_prediction_does_not_pay_for_vision(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        called: list[str] = []
-        monkeypatch.setattr(
-            clinical_agent,
-            "_run_mri_prediction",
-            lambda metadata: {
-                "prediction": "AD",
-                "full_label": "Alzheimer's disease",
-                "confidence": 0.91,
-                "all_scores": {"AD": 0.91},
-            },
-        )
-        monkeypatch.setattr(
-            clinical_agent,
-            "handle_image",
-            lambda *a, **k: (called.append("vision"), ("x", {}))[1],
-        )
-        monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
-        monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
-        monkeypatch.setattr(clinical_agent, "_call_llm", lambda s, u: "answer")
-
-        clinical_agent._handle_mri_image("stage this scan", {"image_b64": "x"}, "")
-        assert called == []
-
-    def test_the_mode_records_that_vision_was_used(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            clinical_agent, "_run_mri_prediction", lambda metadata: {"error": "no"}
-        )
-        monkeypatch.setattr(
-            clinical_agent, "handle_image", lambda *a, **k: ("a rash", {})
-        )
-        monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
-        monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
-        monkeypatch.setattr(clinical_agent, "_call_llm", lambda s, u: "answer")
-
-        _, meta = clinical_agent._handle_mri_image("what is this?", {"image_b64": "x"}, "")
-        assert meta.get("vision_fallback") is True
-
-    def test_a_vision_failure_does_not_break_the_request(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            clinical_agent, "_run_mri_prediction", lambda metadata: {"error": "no"}
-        )
-
-        def _boom(*a: object, **k: object) -> tuple[str, dict]:
-            raise RuntimeError("vision down")
-
-        monkeypatch.setattr(clinical_agent, "handle_image", _boom)
-        monkeypatch.setattr(clinical_agent, "retrieve", lambda *a, **k: [])
-        monkeypatch.setattr(clinical_agent, "_web_search_clinical", lambda q: "")
-        monkeypatch.setattr(clinical_agent, "_call_llm", lambda s, u: "answer")
-
-        response, _ = clinical_agent._handle_mri_image("what?", {"image_b64": "x"}, "")
-        assert response == "answer"
+            "_format_prediction",
+            "_interpret_stage",
+            "_describe_image",
+        ):
+            assert not hasattr(clinical_agent, attribute), (
+                f"clinical_agent.{attribute} survived the M-3 retirement"
+            )

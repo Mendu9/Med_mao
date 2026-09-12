@@ -308,8 +308,10 @@ def test_clinical_node_does_not_echo_raw_attachment_payloads(raw_key: str):
 
     state = _minimal_state({raw_key: "QkFTRTY0UEFZTE9BRA==", "trace_id": "keep-me"})
 
-    with patch("mao.agents.clinical_agent._handle_mri_image",
-               return_value=("MRI answer.", {"mode": "mri_image", "_ranked_chunks": []})), \
+    # `image_b64` now reaches `handle_image`, which refuses under M-2 without
+    # touching the payload; `report_b64` still reaches the report handler.
+    with patch("mao.agents.clinical_agent.handle_image",
+               return_value=("Image analysis is not available.", {"mode": "image"})), \
          patch("mao.agents.clinical_agent._handle_pdf_report",
                return_value=("PDF answer.", {"mode": "pdf_report", "_ranked_chunks": []})):
         out = clinical_node(state)
@@ -322,49 +324,21 @@ def test_clinical_node_does_not_echo_raw_attachment_payloads(raw_key: str):
         "caller-supplied metadata must not be echoed into the response — it is "
         "cached in Redis and returned to the client (adversarial H-2)"
     )
-    assert out["metadata"]["mode"] in {"mri_image", "pdf_report"}, (
+    assert out["metadata"]["mode"] in {"image", "pdf_report"}, (
         "the agent's own output must still reach the client"
     )
 
 
 # ---------------------------------------------------------------------------
-# uncertainty_flag propagation (patient-safety signal)
+# uncertainty_flag propagation
+#
+# `test_low_confidence_mri_sets_uncertainty_flag_in_metadata` was here. It built
+# a prediction dict with confidence 0.40, patched `_handle_mri_image` to return
+# it, and asserted the confidence gate raised the flag. All three of those are
+# retired by M-3, so the test is removed WITH the workflow rather than rewritten
+# around a measurement that nothing makes any more.
+#
+# That the FIELD still reaches `state["metadata"]` - which is where the API
+# reads it - is covered by `test_clinical_agent_contracts.py`, which asserts the
+# key is present without asserting an MRI prediction produced it.
 # ---------------------------------------------------------------------------
-
-def test_low_confidence_mri_sets_uncertainty_flag_in_metadata():
-    """A low-confidence MRI prediction must surface uncertainty_flag=True in
-    state['metadata'] — that is where the API reads it (main.py:305,444)."""
-    from mao.agents.clinical_agent import clinical_node
-
-    low_conf_pred = {
-        "prediction": "MildDemented",
-        "full_label": "Mild Demented",
-        "confidence": 0.40,  # below MRI_CONFIDENCE_GATE (0.60)
-        "all_scores": {},
-    }
-    result_meta = {
-        "mode": "mri_image",
-        "prediction": low_conf_pred,
-        "sources": [],
-        "chunks_retrieved": 0,
-        "top_rag_score": 0.0,
-        "rag_sufficient": False,
-        "_ranked_chunks": [],
-    }
-
-    state = {
-        "user_query": "Analyse this MRI",
-        "user_id": "u-test",
-        "domain": "alzheimer",
-        "metadata": {"image_b64": "ZmFrZQ=="},  # triggers the MRI path
-        "memory_context": "ctx",
-    }
-
-    with patch("mao.agents.clinical_agent._handle_mri_image",
-               return_value=("MRI shows mild changes.", result_meta)):
-        out = clinical_node(state)
-
-    assert out["metadata"].get("uncertainty_flag") is True, (
-        "uncertainty_flag must be present in metadata (API reads it there), "
-        f"got metadata keys: {sorted(out['metadata'].keys())}"
-    )

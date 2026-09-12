@@ -21,9 +21,12 @@ call declared no trust class and so took `complete()`'s default of
 SAFE_DERIVED_TEXT - "de-identified text minted by the protected input boundary"
 - for a base64 patient scan that had been through no boundary at all.
 
-Scope, stated precisely: what is disabled is EXTERNAL EGRESS of raw imagery.
-The local EfficientNetB3 stage predictor runs in-process, sends nothing
-anywhere, and is untouched.
+Scope, stated precisely: what is disabled HERE is EXTERNAL EGRESS of raw
+imagery. At M-2 the local EfficientNetB3 stage predictor was explicitly out of
+scope, because it ran in-process and sent nothing anywhere. M-3 has since
+retired that predictor too, so no local image workflow remains behind this gate
+- but that is a separate decision, and these assertions still bind to the
+egress rather than to the predictor.
 
 The boundary that failed for both is the PROVIDER SEAM, so that is where these
 assertions are bound. "It returns a refusal string" is satisfiable by a
@@ -182,13 +185,17 @@ class TestRawImageryDoesNotLeaveTheProcess:
                 trust_class=TrustClass.SAFE_DERIVED_TEXT,
             )
 
-    def test_the_local_stage_predictor_is_not_what_was_disabled(self) -> None:
-        """Scope check, asserted so a later reader does not widen M-2 into
-        "no image support". EfficientNetB3 runs in-process and sends nothing
-        anywhere; it is not an egress and it is untouched."""
-        from mao.agents import clinical_agent
-
-        assert hasattr(clinical_agent, "_run_mri_prediction")
+    # `test_the_local_stage_predictor_is_not_what_was_disabled` was here. It
+    # asserted M-2's scope boundary: EfficientNetB3 ran in-process, was not an
+    # egress, and was therefore untouched by the image gate.
+    #
+    # That was true of M-2 and is now obsolete, because M-3 retired the
+    # predictor outright - a product decision, not a privacy one. A scope note
+    # cannot be re-asserted against a module that no longer exists, so it is
+    # removed rather than inverted. Its replacement is
+    # `tests/agents/test_mri_workflow_is_retired.py`, which asserts the
+    # predictor is unreachable while these tests keep asserting that M-2 is
+    # still what refuses an image.
 
 
 class TestTheClinicalRouteStillAnswersWithAnAttachment:
