@@ -5,7 +5,12 @@ from mao.prompts.registry import PromptSpec
 
 ROUTER_CLASSIFY = PromptSpec(
     name="router.classify",
-    version="1.0.0",
+    # 1.1.0 — M-3. The `clinical` description advertised MRI scan analysis and
+    # Alzheimer's stage prediction, which the system no longer does. A router
+    # told to send scans somewhere that cannot analyse them routes correctly
+    # into a dead end. The intent itself stays: it still owns patient reports
+    # and specific-patient questions.
+    version="1.1.0",
     output_contract="one intent label from ALL_INTENTS",
     required_variables=(),
     description="Classifies a user query into exactly one intent label.",
@@ -21,10 +26,10 @@ Classify the user query into EXACTLY ONE of these intent labels:
   tool        - User needs live web search, a calculator, or a Wikipedia lookup
   multimodal  - User provides or asks about an image, audio, or non-text media
   critic      - User wants feedback, review, or evaluation of a text or plan
-  clinical    - User provides an MRI scan, brain image, or medical report FOR ANALYSIS;
-                asks about a SPECIFIC PATIENT'S scan results, Alzheimer's stage prediction
-                for a patient, clinical decision support for brain imaging, or wants a
-                structured medical report card generated from patient data
+  clinical    - User provides a medical report FOR ANALYSIS, asks about a SPECIFIC
+                PATIENT'S case, wants clinical decision support for a named patient,
+                or wants a structured medical report card generated from patient data.
+                (Image/scan analysis is NOT available in this release.)
   chitchat    - Greetings, pleasantries, acknowledgements, off-topic conversation
                 (hi, hello, thanks, yes, no, ok)
   fallback    - Query does not fit any above category
@@ -32,14 +37,14 @@ Classify the user query into EXACTLY ONE of these intent labels:
 Rules:
   - Respond with ONLY the label word, nothing else.
   - When unsure between graphrag and tool, prefer graphrag.
-  - Use clinical ONLY when the user is asking about a specific patient case, medical image,
-    or report - NOT for general biomedical science questions (those are graphrag).
+  - Use clinical ONLY when the user is asking about a specific patient case or
+    report - NOT for general biomedical science questions (those are graphrag).
   - Examples of graphrag (NOT clinical): "what are tau tangles?", "explain amyloid cascade",
     "what does APOE4 do?", "how does neuroinflammation work?",
     "what causes brain stroke?", "what is ischemic stroke?", "what are stroke risk factors?",
     "how does dementia progress?", "what is the blood-brain barrier?"
-  - Examples of clinical (NOT graphrag): "analyse this MRI", "what stage is this patient?",
-    "summarise this medical report", "does this scan show Alzheimer's?"
+  - Examples of clinical (NOT graphrag): "what stage is this patient?",
+    "summarise this medical report", "what should I do for this patient?"
   - When unsure between graphrag and summarize, check if the user provides
     a passage to summarize (summarize) or just asks a question (graphrag).
 """,
