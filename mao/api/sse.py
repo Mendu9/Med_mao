@@ -47,6 +47,10 @@ def meta_payload(result: dict[str, Any], agent_used: str, latency_ms: float) -> 
         "sources": metadata.get("sources", []),
         "web_sources": metadata.get("web_sources", []),
         "uncertainty_flag": metadata.get("uncertainty_flag", False),
+        # A-2. The buffered route returns this as a ChatResponse field; the
+        # streamed one has only this frame, and the two must not differ about
+        # what the boundary removed.
+        "redaction_notice": metadata.get("redaction_notice", []),
     }
     return f"data: __meta__:{json.dumps(payload)}\n\n"
 

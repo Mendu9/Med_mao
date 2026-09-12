@@ -171,6 +171,36 @@ def protect_chat_request(
     return protected
 
 
+def redaction_notice(protected: ProtectedInput) -> list[str]:
+    """What the chat boundary removed, in words safe to return to the caller.
+
+    A-2. The chat posture does not refuse - it redacts and answers - and at
+    b63311d it also said nothing, so a clinician who typed
+    `Patient Name: Sarah Parkinson    Katz Independence Ladder` got an answer
+    from a model that had never been told about the instrument, and no
+    indication that anything had been removed. `00_RULES.md` forbids exactly
+    that: "a transformation may not silently delete clinically material content
+    and then present the result as equivalent to the original."
+
+    Built from `AmbiguityReport.describe()`, which is the SAME formatter the
+    422 refusal uses. An over-redaction notice and a refusal are the same
+    information delivered with a different posture, and `/chat` and
+    `/chat/stream` formatting their own text independently is how they drifted
+    apart over `AmbiguousDocument` once already (ADV15-2 / G-3).
+
+    Names the line and the field, NEVER the value. This is returned over HTTP
+    and written to a log, so a notice that quoted the identifier it removed
+    would be the disclosure the redaction just prevented.
+    """
+    if not protected.chat_ambiguities:
+        return []
+    return [
+        "Some text was removed from your message before it was processed, and "
+        "the removal may have taken more than the identifier with it.",
+        protected.chat_ambiguities.describe(),
+    ]
+
+
 def payload_too_large(exc: limits.InputTooLarge, request_id: str) -> HTTPException:
     """The 413 both chat routes answer with. One construction, so they cannot
     drift the way `/chat` and `/chat/stream` drifted over `AmbiguousDocument` —

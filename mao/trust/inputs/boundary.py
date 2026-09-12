@@ -67,7 +67,25 @@ class ProtectedInput:
     report: SafeDerivedText | None = None
     transcript: SafeDerivedText | None = None
     structured_fields: dict[str, str] = field(default_factory=dict)
+    #: Ambiguities on the REPORT channel. Unchanged meaning.
     ambiguities: AmbiguityReport = field(default_factory=AmbiguityReport)
+    #: Ambiguities on the QUERY and CHAT_HISTORY channels.
+    #:
+    #: These two channels consulted `find_ambiguities` for NOTHING at all, so
+    #: the `refuse_ambiguity=False` the chat route passes was not even the
+    #: operative control for them - there was no check to disable, and the
+    #: scrubber's guess was taken unconditionally. 227 of 1476 hold-out cases
+    #: lose clinical content here, across 38 distinct phrases, six of which are
+    #: implanted cardiac devices and leads (A-2).
+    #:
+    #: The chat posture is unchanged and stays "do not refuse". Refusing would
+    #: apply the three-token-name refusal rate - measured at 100% for an
+    #: ordinary inline banner (A-7) - to the interactive route, which is the
+    #: worse trade and is not what either review asks for. What changes is that
+    #: the report is CARRIED instead of discarded, so the third option
+    #: `00_RULES.md` actually prescribes for this case is available: say what
+    #: was removed.
+    chat_ambiguities: AmbiguityReport = field(default_factory=AmbiguityReport)
 
     def history_as_messages(self) -> list[dict[str, str]]:
         """The de-identified history in the shape the agents already consume."""
@@ -271,16 +289,32 @@ def protect(
       upload — the document is processed unseen, so a wrong guess is silent. An
                unresolvable patient header is refused and the caller is asked
                for structured fields.
-      chat   — the clinician wrote the text and reads the answer, so an
-               over-redaction is visible and recoverable while a leak is not.
+      chat   - the clinician wrote the text and reads the answer, so an
+               over-redaction is recoverable while a leak is not - PROVIDED the
+               route says what it removed. It did not. `ChatResponse` carries
+               no protected text and no list of removed spans, and
+               `api/protected_input.py` states as a design premise that "the
+               server never returns the de-identified query to the client", so
+               "visible" was not supported by the response contract at all: the
+               clinician saw an answer, not the question the model was asked
+               (A-2). The judgement that a leak is worse than an over-redaction
+               is sound, but the boundary was not choosing between those two -
+               the third option, and the one `00_RULES.md` prescribes here, is
+               to say what was removed. `chat_ambiguities` is how.
 
     Both paths run the same transformation over the same channels. Only the
     response to an unresolved boundary differs, which is what stops the two
     drifting apart the way `/chat` and `/chat/stream` did.
     """
     protection = RequestProtection(trace_id=trace_id or uuid.uuid4().hex)
+    chat_ambiguities = AmbiguityReport()
 
     limits.check("query", len(raw.query), limits.MAX_QUERY_CHARS)
+    # A-2. The detector runs on this channel now. It did not before, which is
+    # why `refuse_ambiguity` was not the operative control here: there was no
+    # check to disable. The report is not raised on the chat posture - it is
+    # carried, so the route can tell the caller what was removed.
+    chat_ambiguities.items.extend(find_ambiguities(raw.query).items)
     query = _protect_channel(raw.query, InputChannel.QUERY, protection)
 
     history: list[tuple[str, SafeDerivedText]] = []
@@ -290,6 +324,7 @@ def protect(
     # dropping rather than by refusing.
     for role, content in list(raw.chat_history)[-limits.MAX_HISTORY_TURNS :]:
         limits.check("a chat_history turn", len(content), limits.MAX_HISTORY_TURN_CHARS)
+        chat_ambiguities.items.extend(find_ambiguities(content).items)
         history.append(
             (role, _protect_channel(content, InputChannel.CHAT_HISTORY, protection))
         )
@@ -358,6 +393,7 @@ def protect(
         transcript=transcript,
         structured_fields=structured,
         ambiguities=ambiguities,
+        chat_ambiguities=chat_ambiguities,
     )
 
 

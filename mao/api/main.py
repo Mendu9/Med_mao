@@ -22,7 +22,11 @@ from mao.core.rate_limiter import check_rate_limit
 from mao.core.deadline import request_deadline
 from mao.core.redis_client import get_redis, safe_get, safe_set
 from mao.api.cache_key import CacheKeyInputs, build_chat_cache_key
-from mao.api.protected_input import payload_too_large, protect_chat_request
+from mao.api.protected_input import (
+    payload_too_large,
+    protect_chat_request,
+    redaction_notice,
+)
 from mao.api.streaming import may_stream_raw_tokens
 from mao.api.tracing import emit_trace
 from mao.core.state import initial_state_from_protected
@@ -237,6 +241,13 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Web search citations: [{title, url}]",
     )
+    redaction_notice: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What the protected input boundary removed from the query or the "
+            "history, by line and field. Never the value."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +301,14 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         )
     except limits.InputTooLarge as exc:
         raise payload_too_large(exc, request_id) from exc
+
+    # A-2. The chat posture redacts rather than refusing, and at b63311d it
+    # also said nothing - so a clinician whose instrument name was taken with
+    # the patient's surname got an answer built without it and no indication
+    # that anything had gone. Computed once here and carried by both routes
+    # from the same formatter the 422 uses, because `/chat` and `/chat/stream`
+    # formatting their own text is how they drifted apart before.
+    _redaction_notice = redaction_notice(protected)
 
     safe_query = protected.query.text
     safe_history = protected.history_as_messages()
@@ -369,6 +388,10 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
                     latency_ms=round(_cached_latency, 1),
                     sources=_cached_meta.get("sources", []),
                     web_sources=_cached_meta.get("web_sources", []),
+                    # From THIS request's boundary, not from the cached entry.
+                    # The notice is a property of what was removed from the
+                    # text this caller sent, and a cache hit still removed it.
+                    redaction_notice=_redaction_notice,
                 )
             except Exception as _cache_exc:
                 logger.debug("Cache entry malformed, ignoring: %s", _cache_exc)
@@ -496,6 +519,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
             latency_ms=round(latency_ms, 1),
             sources=metadata.get("sources", []),
             web_sources=metadata.get("web_sources", []),
+            redaction_notice=_redaction_notice,
         )
 
 
@@ -541,6 +565,14 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         )
     except limits.InputTooLarge as exc:
         raise payload_too_large(exc, request_id) from exc
+
+    # A-2. The chat posture redacts rather than refusing, and at b63311d it
+    # also said nothing - so a clinician whose instrument name was taken with
+    # the patient's surname got an answer built without it and no indication
+    # that anything had gone. Computed once here and carried by both routes
+    # from the same formatter the 422 uses, because `/chat` and `/chat/stream`
+    # formatting their own text is how they drifted apart before.
+    _redaction_notice = redaction_notice(protected)
 
     safe_query = protected.query.text
 
@@ -613,6 +645,10 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
         _loop.run_in_executor(
             get_executor(), _persist_session, safe_query, request.user_id, result, request_id
         )
+
+        # Onto the metadata frame the stream already emits, so the streamed
+        # route carries exactly what the buffered one does.
+        result.setdefault("metadata", {})["redaction_notice"] = _redaction_notice
 
         def _trailer() -> str:
             return sse.meta_payload(result, agent_used, sse.elapsed_ms(start_time))
