@@ -25,10 +25,24 @@ from __future__ import annotations
 
 import pytest
 
-from mao.core.deident.ambiguity import find_ambiguities
+from mao.core.deident.ambiguity import find_ambiguities, unresolved_from
+from mao.core.pii_scrubber import scrub_with_report as _scrub_with_report
 from mao.core.pii_scrubber import scrub_pii
 
 from .test_holdout_deidentification import visible
+
+
+def _refused(text: str) -> bool:
+    """Whether the UPLOAD PATH refuses this document.
+
+    These reproductions skip on "refused: the policy's other permitted
+    outcome". They must therefore read the REFUSAL predicate and not the
+    notice, which is now a strict superset of it: skipping on the superset
+    would stop asserting the phrase survives on documents the product
+    PROCESSES, and these are the exact predecessor reproductions 00_RULES
+    requires be re-run before any new corpus.
+    """
+    return bool(unresolved_from(_scrub_with_report(text).events))
 
 
 class TestG1EponymSurname:
@@ -298,7 +312,7 @@ class TestADV15_1ClinicalPhrasesOnTheUploadPath:
     def test_layout_a_orphan_label_above_the_phrase(self, phrase: str) -> None:
         """A printed-but-blank `Patient Name:` field, which every real form has."""
         document = f"Patient Name:\nMRN:\n{phrase}\nRGT/44219/B\n"
-        if find_ambiguities(document):
+        if _refused(document):
             return  # refused: the policy's other permitted outcome
         scrubbed = scrub_pii(document)
         assert phrase in scrubbed, (
@@ -309,7 +323,7 @@ class TestADV15_1ClinicalPhrasesOnTheUploadPath:
     @pytest.mark.parametrize("phrase", CLINICAL)
     def test_layout_b_phrase_trailing_a_name_on_one_line(self, phrase: str) -> None:
         document = f"Patient Name: Harold Nkemdirim {phrase}\n"
-        if find_ambiguities(document):
+        if _refused(document):
             return
         scrubbed = scrub_pii(document)
         assert phrase in scrubbed, (
@@ -326,7 +340,7 @@ class TestADV15_1ClinicalPhrasesOnTheUploadPath:
         trading them off could not do.
         """
         document = f"Patient Name: Harold Nkemdirim {phrase}\n"
-        if find_ambiguities(document):
+        if _refused(document):
             return
         out = visible(scrub_pii(document))
         assert "Nkemdirim" not in out, f"{document!r} -> {out!r}"
@@ -387,7 +401,7 @@ class TestThePostGateIdempotenceRegression:
         of them.
         """
         once = scrub_pii(document)
-        if find_ambiguities(once):
+        if _refused(once):
             return
         assert scrub_pii(once) == once, (
             f"{document!r}\n  x1 {once!r}\n  x2 {scrub_pii(once)!r}"
@@ -413,7 +427,7 @@ class TestThePostGateIdempotenceRegression:
         document = "Patient Name:\nMRN:\nHarold Nkemdirim\nRockwood Frailty\n"
         once = scrub_pii(document)
 
-        assert not find_ambiguities(document), "an ordinary letterhead was refused"
+        assert not _refused(document), "an ordinary letterhead was refused"
         assert "Harold Nkemdirim" not in visible(once)
         assert "Rockwood Frailty" in once
 

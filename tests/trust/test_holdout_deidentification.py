@@ -320,9 +320,17 @@ class TestNoClinicalContentIsDestroyed:
 
     def test_the_refusal_cannot_swallow_the_corpus(self) -> None:
         """The bound that stops "refuse everything" being a passing strategy."""
-        from mao.core.deident.ambiguity import find_ambiguities
+        from mao.core.deident.ambiguity import unresolved_from
+        from mao.core.pii_scrubber import scrub_with_report
 
-        refused = [case for case in _CASES if find_ambiguities(case.text)]
+        # The REFUSAL predicate. A notice is not a quarantine: it does
+        # not remove a document from processing, so counting announced
+        # documents here would measure something this bound is not about.
+        refused = [
+            case
+            for case in _CASES
+            if unresolved_from(scrub_with_report(case.text).events)
+        ]
         share = len(refused) / len(_CASES)
         assert share < 0.35, (
             f"{len(refused)}/{len(_CASES)} ({share:.0%}) of the hold-out corpus "

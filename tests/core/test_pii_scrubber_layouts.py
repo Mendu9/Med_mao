@@ -32,8 +32,8 @@ import re
 
 import pytest
 
-from mao.core.deident.ambiguity import find_ambiguities
-from mao.core.pii_scrubber import scrub_pii
+from mao.core.deident.ambiguity import unresolved_from
+from mao.core.pii_scrubber import scrub_pii, scrub_with_report
 
 from .pdf_layout_generator import (
     ALLOWED_PLACEHOLDERS,
@@ -48,6 +48,32 @@ from .pdf_layout_generator import (
 #: test, and generating them dominates the cost.
 _ALL: list[Document] = generate()
 
+def _refusal_report(text: str):
+    """The report the UPLOAD PATH would refuse on. See `_is_refused`."""
+    return unresolved_from(scrub_with_report(text).events)
+
+
+def _is_refused(document: Document) -> bool:
+    """Whether the upload path REFUSES this document.
+
+    `unresolved_from`, not `find_ambiguities`. The two stopped being the same
+    set when the clinician's notice was separated from the refusal:
+
+        unresolved_from    the extent could not be established -> 422
+        ambiguities_from   the removal may have taken more than the identifier
+                           -> tell the caller  (a strict superset)
+
+    Splitting on the SUPERSET moved 77 documents out of `DOCUMENTS` and into
+    `REFUSED` — 616 assertions, across the eight parametrised tests below, about
+    documents the product PROCESSES and answers. A notice is not a quarantine,
+    and excluding a processed document from "both invariants hold here" because
+    the caller was told something is the exact shape `00_RULES.md` names: "a
+    green suite is not evidence that a safety invariant holds if failing cases
+    are excluded by the same mechanism under test."
+    """
+    return bool(unresolved_from(scrub_with_report(document.extracted).events))
+
+
 #: Documents whose patient header cannot be de-identified unambiguously.
 #:
 #: Under the agreed policy these are REFUSED on the upload path rather than
@@ -55,10 +81,10 @@ _ALL: list[Document] = generate()
 #: answers 422. Asserting a clean scrub on them would be asserting the guess
 #: that three remediation rounds proved cannot be made. They are held to a
 #: different and stricter contract in `TestAmbiguityIsRefusedNotGuessed`.
-REFUSED: list[Document] = [d for d in _ALL if find_ambiguities(d.extracted)]
+REFUSED: list[Document] = [d for d in _ALL if _is_refused(d)]
 
 #: Everything the system will actually process. Both invariants hold here.
-DOCUMENTS: list[Document] = [d for d in _ALL if not find_ambiguities(d.extracted)]
+DOCUMENTS: list[Document] = [d for d in _ALL if not _is_refused(d)]
 
 _PLACEHOLDER = re.compile(r"\[([A-Z_]+)\]")
 
@@ -160,16 +186,16 @@ class TestAmbiguityIsRefusedNotGuessed:
 
     def test_a_refusal_names_what_it_could_not_resolve(self) -> None:
         for document in REFUSED[:20]:
-            report = find_ambiguities(document.extracted)
+            report = _refusal_report(document.extracted)
             assert report.describe() != "no ambiguous fields"
             assert "name-shaped words" in report.describe()
 
     def test_an_ordinary_letterhead_is_never_refused(self) -> None:
         """The shape almost every real document has must go straight through."""
-        assert not find_ambiguities(
+        assert not _refusal_report(
             "Patient Name: Harold Nkemdirim\nMRN: RGT/44219/B\nDOB: 12/03/1948\n"
         )
-        assert not find_ambiguities(
+        assert not _refusal_report(
             "Patient Name:\nHarold Nkemdirim\nMRN:\nRGT/44219/B\n"
         )
 
@@ -326,13 +352,13 @@ class TestScrubbingIsStable:
         self, document: Document
     ) -> None:
         once = scrub_pii(document.extracted)
-        if find_ambiguities(once):
+        if _refusal_report(once):
             return
         assert scrub_pii(once) == once, document.id
 
     def test_most_documents_reach_a_stable_state_after_one_pass(self) -> None:
         """The exclusion above must not be where the whole corpus goes."""
-        stable = [d for d in DOCUMENTS if not find_ambiguities(scrub_pii(d.extracted))]
+        stable = [d for d in DOCUMENTS if not _refusal_report(scrub_pii(d.extracted))]
         share = len(stable) / len(DOCUMENTS)
         assert share > 0.75, (
             f"only {share:.0%} of processed documents are unambiguous after one "
