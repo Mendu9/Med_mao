@@ -37,6 +37,7 @@ import pytest
 
 from mao.prompts import get_prompt
 from mao.providers import gateway
+from mao.trust.classes import TrustClass
 from mao.trust.egress.policy import EgressPurpose
 from mao.providers.registry import ModelRole
 
@@ -367,7 +368,7 @@ class TestTheSynthesisCallSites:
         the migrated report path makes.
         """
         from mao.agents.clinical_agent import _SYNTHESIS_MAX_TOKENS
-        from mao.trust.classes import PublicEvidence, SafeSynthesisContext, TrustClass
+        from mao.trust.classes import PublicEvidence, SafeSynthesisContext
 
         context = SafeSynthesisContext(
             context_id="live-probe",

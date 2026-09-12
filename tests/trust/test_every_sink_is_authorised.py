@@ -37,6 +37,7 @@ including one a library builds for itself.
 from __future__ import annotations
 
 import pathlib
+from typing import ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
@@ -119,7 +120,7 @@ def retrieval_returns_sources(monkeypatch):
     class _Chunk:
         text = "NICE NG97 advises an ECG before starting a cholinesterase inhibitor."
         score = 0.9
-        metadata = {"source": "NG97", "chunk_id": "c1"}
+        metadata: ClassVar[dict[str, str]] = {"source": "NG97", "chunk_id": "c1"}
 
     for module in (clinical_agent, graphrag_agent):
         if hasattr(module, "retrieve"):
