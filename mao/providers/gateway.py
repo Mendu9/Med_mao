@@ -290,7 +290,16 @@ _CLINICAL_SYNTHESIS_FRAMING = (
     "contains no identifiers and it is not the full record: facts that could "
     "not be carried safely are absent rather than summarised. Reason only from "
     "what is stated and from the evidence supplied. Where a fact you would need "
-    "is missing, say which fact and do not assume it."
+    "is missing, say which fact and do not assume it. "
+    # The projection now STATES whether it is complete, on its second line, and
+    # this instruction is what makes that statement actionable. Previously the
+    # model was told to look for missing facts with nothing telling it whether
+    # any were missing - and then, briefly, with the missing lines themselves
+    # pasted in, which put unparsed note prose into this prompt (AR17-2).
+    "Read the 'Case completeness' line first. If it says the projection is "
+    "INCOMPLETE, the omitted content may be clinically decisive: say so in your "
+    "answer, name what you would need, and do not present your conclusion as if "
+    "the whole case were before you."
 )
 
 
