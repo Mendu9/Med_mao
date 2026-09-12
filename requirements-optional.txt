@@ -7,14 +7,15 @@
 # out of requirements.txt because each one costs far more install time, image
 # size or RAM than the feature it unlocks is worth on a free-tier host.
 
-# --- MRI prediction (mao/models/mri_predictor.py) --------------------------
-# ~2 GB of wheels. Without these get_predictor().predict() returns
-# {"error": "tensorflow and huggingface_hub are required ..."} and the clinical
-# agent's MRI tab reports the model as unavailable.
-# opencv-python-headless (not opencv-python): no Qt/GUI deps in a container.
-tensorflow>=2.16,<3.0
-tf-keras>=2.16,<3.0
-opencv-python-headless>=4.9.0
+# --- MRI prediction: RETIRED (control decision M-3) ------------------------
+# tensorflow, tf-keras and opencv-python-headless were declared here, ~2 GB of
+# wheels, for `mao/models/mri_predictor.py` alone. That module is deleted and
+# nothing in the repo imports tensorflow, keras or cv2 any more, so the extras
+# are removed with it.
+#
+# huggingface_hub is NOT removed and is not listed here: it is a hard
+# dependency in requirements.txt and `mao/rag/retriever.py` calls
+# hf_hub_download to fetch the BM25 index. It was shared, not MRI-only.
 
 # --- Audio transcription (mao/agents/multimodal_agent.py) ------------------
 # Also needs the ffmpeg system package (see packages.txt / the Dockerfile).

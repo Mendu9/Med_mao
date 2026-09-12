@@ -90,7 +90,7 @@ RUNTIME_ROOTS = ("mao", "app/streamlit_app.py", "app/graph_explorer.py", "app.py
 # Modules that are deliberately NOT part of the runtime manifest.
 NOT_RUNTIME = {
     "pytest", "playwright", "setuptools",      # dev/test tooling
-    "tensorflow", "cv2", "whisper",            # heavyweight optional models
+    "whisper",                                 # heavyweight optional model
     "chromadb", "datasets", "Bio", "lxml",     # ingestion / non-default backend
 }
 
@@ -262,8 +262,20 @@ def test_heavy_optional_extras_are_documented_not_silently_dropped() -> None:
     optional = REPO_ROOT / "requirements-optional.txt"
     assert optional.exists(), "heavyweight extras must live in a documented extras file"
     declared = _declared(optional)
-    for distribution in ("tensorflow", "opencv-python-headless", "chromadb"):
+    # `tensorflow` and `opencv-python-headless` were in this list. Both existed
+    # solely for `mao/models/mri_predictor.py`, which M-3 deleted, so after the
+    # retirement nothing in the repo imports either one and ~2 GB of wheels
+    # were documenting a feature that is gone. `chromadb` and `openai-whisper`
+    # keep the assertion honest: real opt-in extras must still be declared here
+    # rather than silently dropped.
+    for distribution in ("chromadb", "openai-whisper"):
         assert distribution in declared, f"{distribution} must be declared as an opt-in extra"
+
+    for retired in ("tensorflow", "tf-keras", "opencv-python-headless"):
+        assert retired not in declared, (
+            f"{retired} is declared as an extra but nothing imports it since "
+            "the MRI workflow was retired (M-3)"
+        )
 
 
 def test_requirements_declares_nothing_the_code_never_imports() -> None:
