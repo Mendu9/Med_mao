@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from . import values
 from .fields import is_ambiguous_person_label
@@ -288,6 +289,99 @@ def _redact_line(line: str, removed: list[Removal] | None = None, index: int = 0
 
         line = pattern.sub(_substitute, line)
     return line
+
+
+@dataclass(frozen=True)
+class ShapeSpan:
+    """One span a shape rule replaced, in absolute offsets of the input text."""
+
+    start: int
+    end: int
+    kind: str
+    replacement: str
+
+
+def shape_spans(text: str) -> list[ShapeSpan]:
+    r"""Every span the shape rules would replace, WITHOUT rewriting anything.
+
+    The rules are applied in order and each one runs on the previous one's
+    output, which is deliberate — a national insurance number must be consumed
+    before the bare ten-digit rule sees its digits. That composition is what
+    makes a span's position drift, so the position is carried rather than
+    recomputed: each character of the working line remembers which range of the
+    ORIGINAL line it stands for, and a match that lands partly inside an earlier
+    replacement widens to cover the whole of it.
+
+    Without this the offsets would be those of an intermediate string nothing
+    downstream has, and mapping a redaction back onto the immutable source would
+    be impossible for every rule after the first.
+    """
+    found: list[ShapeSpan] = []
+    contents, terminators = split_lines(text)
+    position = 0
+    for content, terminator in zip(contents, terminators, strict=True):
+        found.extend(
+            ShapeSpan(
+                start=position + span.start,
+                end=position + span.end,
+                kind=span.kind,
+                replacement=span.replacement,
+            )
+            for span in _line_spans(content)
+        )
+        position += len(content) + len(terminator)
+    return found
+
+
+def _line_spans(line: str) -> list[ShapeSpan]:
+    """Apply every shape rule to one line, tracking where each span began."""
+    working = line
+    #: For each character of `working`, the original range it stands for.
+    origin: list[tuple[int, int]] = [(index, index + 1) for index in range(len(line))]
+    claimed: list[ShapeSpan] = []
+
+    for pattern, replacement in _COMPILED:
+        # A forward cursor, never a rescan. `re.sub` does not re-examine what it
+        # has already written, and a rescan here would both diverge from it and
+        # risk a rule whose own placeholder re-matches it looping forever.
+        cursor = 0
+        while cursor <= len(working):
+            match = pattern.search(working, cursor)
+            if match is None:
+                break
+            produced = replacement(match) if callable(replacement) else replacement
+            start, end = match.span()
+            if produced == match.group():
+                cursor = max(end, start + 1)
+                continue
+            covered = origin[start:end]
+            if covered:
+                span_start = min(item[0] for item in covered)
+                span_end = max(item[1] for item in covered)
+                kind = _PLACEHOLDER_RE.search(produced)
+                claimed = [
+                    span
+                    for span in claimed
+                    if not (span.start >= span_start and span.end <= span_end)
+                ]
+                claimed.append(
+                    ShapeSpan(
+                        start=span_start,
+                        end=span_end,
+                        kind=kind.group(1) if kind else "UNKNOWN",
+                        replacement=produced,
+                    )
+                )
+            else:
+                span_start = span_end = origin[start][0] if start < len(origin) else 0
+            working = working[:start] + produced + working[end:]
+            origin = (
+                origin[:start]
+                + [(span_start, span_end)] * len(produced)
+                + origin[end:]
+            )
+            cursor = max(start + len(produced), start + 1)
+    return sorted(claimed, key=lambda span: (span.start, span.end))
 
 
 def redact_by_shape_with_report(text: str) -> tuple[str, list[Removal]]:

@@ -26,7 +26,8 @@ from mao.trust.classes import (
 )
 from mao.trust.egress.gateway import current_protection
 from mao.trust.egress.policy import EgressPurpose
-from mao.trust.handoff.compiler import compile_handoff
+from mao.trust.handoff.accounting import CompletenessReport
+from mao.trust.handoff.compiler import SafeHandoff, compile_handoff
 from mao.trust.inputs import limits
 from mao.trust.inputs.boundary import protect_channel
 
@@ -378,6 +379,11 @@ def _handle_pdf_report(
         question=user_query,
         structured=_structured_fields(metadata),
         provenance=("report",),
+        # The boundary's OWN record of what it removed. The accounting reads
+        # these rather than re-deriving them from the shape of what is left,
+        # which is what let a clinician's `Pacing mode: [DDDR]` be accounted as
+        # an identifier removal and a whole clinical line disappear with it.
+        events=tuple(protected.events),
     )
 
     # Retrieval is seeded from the SAFE EVIDENCE QUERY, not from the first 500
@@ -431,10 +437,22 @@ def _handle_pdf_report(
         # exactly the requests where everything had (A-1). The system did not
         # merely fail to detect the loss; it published a measurement denying it.
         #
-        # It is a real measurement now, and what was NOT carried is reported
-        # beside it rather than left for the caller to infer from a number.
-        "clinical_coverage": round(handoff.facts.coverage(), 3),
-        "clinical_facts_not_carried": list(handoff.facts.uncovered),
+        # It then became a real measurement with the residue reported BESIDE it,
+        # as a list of the actual unparsed lines - which put a personal name and
+        # a contact extension into this dictionary, and therefore into the
+        # response, the Redis cache and the trace (AR17-2). This dictionary is
+        # an egress surface and what goes in it is an egress decision.
+        #
+        # So what travels is the ACCOUNT: how many segments were carried, how
+        # many were not, whether the projection is complete, and which SOURCE
+        # LINE NUMBERS to look at. A line number says where to look, not what is
+        # there. The residue itself stays on `handoff.facts.accounting`, which
+        # never leaves the process.
+        "clinical_coverage": round(_completeness(handoff).coverage(), 3),
+        "clinical_projection_complete": _completeness(handoff).complete,
+        "clinical_segments_carried": _completeness(handoff).carried,
+        "clinical_segments_not_carried": _completeness(handoff).unresolved,
+        "clinical_lines_not_carried": list(_completeness(handoff).unresolved_lines),
         "sources": sources,
         "chunks_retrieved": len(ranked_chunks),
         "top_rag_score": round(top_score, 4),
@@ -509,6 +527,11 @@ def _extract_pdf_text(metadata: dict) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.error("PDF extraction failed: %s", exc)
         return ""
+
+
+def _completeness(handoff: SafeHandoff) -> CompletenessReport:
+    """The content-free account. The only thing about the loss that may travel."""
+    return handoff.facts.completeness()
 
 
 def _protected_report(metadata: dict) -> SafeDerivedText | None:

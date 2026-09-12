@@ -57,10 +57,18 @@ Normalising inside the scrubber makes it impossible for a caller to forget.
 """
 from __future__ import annotations
 
-from mao.core.deident.freetext import redact_by_shape_with_report
-from mao.core.deident.layout import redact_labelled_fields_with_report
-from mao.core.deident.report import Removal, ScrubResult
-from mao.core.deident.text import normalise, strip_leading_bom
+from mao.core.deident.freetext import shape_spans
+from mao.core.deident.layout import labelled_spans
+from mao.core.deident.report import RedactionEvent, Removal, ScrubResult
+from mao.core.deident.source import (
+    AppliedEdit,
+    Edit,
+    MatchView,
+    apply_edits,
+    build_match_view,
+    place,
+)
+from mao.core.deident.text import split_lines
 
 __all__ = ["ScrubResult", "scrub_pii", "scrub_with_report"]
 
@@ -68,20 +76,187 @@ __all__ = ["ScrubResult", "scrub_pii", "scrub_with_report"]
 def scrub_with_report(text: str) -> ScrubResult:
     """`scrub_pii`, plus the record of every span it replaced.
 
-    The record is what lets the egress boundary assert, at the real sink, that
-    no identifier THIS request's boundary removed is in an outgoing payload.
-    That check is a lookup against what was actually found, not another grammar
-    applied to the characters — which is the difference between it and the six
-    detectors that preceded it. See `mao/core/deident/report.py`.
+    ## The source is immutable
+
+    The detectors read a normalised MATCH VIEW and never the document. Every
+    span they find is mapped back through `MatchView` and written over the
+    ORIGINAL characters, so the output differs from the input at redaction spans
+    and nowhere else — measured byte for byte by
+    `tests/core/test_source_is_preserved.py`.
+
+    That ordering is what ends the six-wave trade-off. The match view may fold
+    an accent as aggressively as an ASCII identifier grammar needs, because
+    folding it costs nothing now: `café` is matched as `cafe` and shipped as
+    `café`, and `Postcode: SW1<acute>A 1AA` is matched as `SW1A 1AA` and the
+    ORIGINAL five characters are replaced by `[POSTCODE]`. At `ff34722` the
+    folded form was the output, so 608 of 615 precomposed Latin letters, every
+    Greek and Cyrillic diacritic, and every Devanagari, Thai, Telugu and Sinhala
+    vowel sign were destroyed in text a clinician reads.
+
+    ## The record
+
+    Each `Removal` carries its SOURCE span, the label that attributed it, and
+    whether its extent was established or guessed. The egress boundary compares
+    values; the Safe Handoff accounting and the clinician's redaction notice
+    read the spans. Both therefore describe the transformation that actually
+    happened rather than a second opinion about the same string.
     """
     if not text:
         return ScrubResult(text=text)
-    bom, body = strip_leading_bom(text)
-    body = normalise(body)
-    body, labelled = redact_labelled_fields_with_report(body)
-    body, shaped = redact_by_shape_with_report(body)
-    removals: list[Removal] = [*labelled, *shaped]
-    return ScrubResult(text=bom + body, removals=tuple(removals))
+
+    view = build_match_view(text)
+    edits = _labelled_edits(view) + _shape_edits(view)
+    scrubbed, merged = apply_edits(text, edits)
+    return ScrubResult(
+        text=scrubbed,
+        removals=_removals(text, merged),
+        events=_events(scrubbed, place(text, merged)),
+    )
+
+
+def _labelled_edits(view: MatchView) -> list[Edit]:
+    """Every value a field label identifies, mapped onto the source."""
+    edits: list[Edit] = []
+    for span in labelled_spans(view.text):
+        label = None
+        if span.label_start >= 0 and span.label_end > span.label_start:
+            label = view.source_span(span.label_start, span.label_end)
+        edits.append(
+            Edit(
+                span=view.source_span(span.start, span.end),
+                replacement=f"[{span.kind}]",
+                kind=span.kind,
+                label=label,
+                certainty="guessed" if span.guessed else "settled",
+                words=span.words,
+                reason=span.reason,
+            )
+        )
+    return edits
+
+
+def _shape_edits(view: MatchView) -> list[Edit]:
+    """Identifiers no label introduces, mapped onto the source.
+
+    Run against the LABELLED-REDACTED match text rather than the raw match text,
+    because the rules are ordered against each other and a value already claimed
+    by its label must not be re-examined by a shape rule that would type it
+    differently. The offsets come back through the same staged map, so both
+    passes land in one coordinate system.
+    """
+    labelled = labelled_spans(view.text)
+    staged, origin = _stage(view.text, labelled)
+    edits: list[Edit] = []
+    for span in shape_spans(staged):
+        start, end = _unstage(origin, span.start, span.end)
+        if start >= end:
+            continue
+        edits.append(
+            Edit(
+                span=view.source_span(start, end),
+                replacement=span.replacement,
+                kind=span.kind,
+            )
+        )
+    return edits
+
+
+def _stage(text: str, spans: list) -> tuple[str, list[tuple[int, int]]]:
+    """Apply the labelled spans, keeping each character's match-view origin."""
+    ordered = sorted(spans, key=lambda span: (span.start, -span.end))
+    out: list[str] = []
+    origin: list[tuple[int, int]] = []
+    cursor = 0
+    for span in ordered:
+        if span.start < cursor:
+            continue
+        out.append(text[cursor : span.start])
+        origin.extend((index, index + 1) for index in range(cursor, span.start))
+        placeholder = f"[{span.kind}]"
+        out.append(placeholder)
+        origin.extend([(span.start, span.end)] * len(placeholder))
+        cursor = span.end
+    out.append(text[cursor:])
+    origin.extend((index, index + 1) for index in range(cursor, len(text)))
+    return "".join(out), origin
+
+
+def _unstage(origin: list[tuple[int, int]], start: int, end: int) -> tuple[int, int]:
+    covered = origin[start:end]
+    if not covered:
+        return 0, 0
+    return min(item[0] for item in covered), max(item[1] for item in covered)
+
+
+def _removals(source: str, applied: list[Edit]) -> tuple[Removal, ...]:
+    """The applied edits as the record the protected plane carries."""
+    starts = _line_starts(source)
+    removals: list[Removal] = []
+    for edit in applied:
+        label_start = edit.label.start if edit.label else -1
+        label_end = edit.label.end if edit.label else -1
+        removals.append(
+            Removal(
+                kind=edit.kind,
+                value=source[edit.span.start : edit.span.end],
+                line=_line_of(starts, edit.span.start),
+                start=edit.span.start,
+                end=edit.span.end,
+                label_start=label_start,
+                label_end=label_end,
+                label=(
+                    " ".join(source[label_start:label_end].split())
+                    if edit.label
+                    else ""
+                ),
+                guessed=edit.certainty == "guessed",
+                words=edit.words,
+                reason=edit.reason,
+            )
+        )
+    return tuple(removals)
+
+
+def _events(scrubbed: str, applied: list[AppliedEdit]) -> tuple[RedactionEvent, ...]:
+    """The applied edits, content-free, in the scrubbed text's coordinates."""
+    starts = _line_starts(scrubbed)
+    return tuple(
+        RedactionEvent(
+            kind=item.edit.kind,
+            start=item.out_start,
+            end=item.out_end,
+            label_start=item.label_out.start if item.label_out else -1,
+            label_end=item.label_out.end if item.label_out else -1,
+            label=(
+                " ".join(
+                    scrubbed[item.label_out.start : item.label_out.end].split()
+                )
+                if item.label_out
+                else ""
+            ),
+            line=_line_of(starts, item.out_start),
+            guessed=item.edit.certainty == "guessed",
+            words=item.edit.words,
+            reason=item.edit.reason,
+        )
+        for item in applied
+    )
+
+
+def _line_starts(text: str) -> list[int]:
+    contents, terminators = split_lines(text)
+    starts: list[int] = []
+    position = 0
+    for content, terminator in zip(contents, terminators, strict=True):
+        starts.append(position)
+        position += len(content) + len(terminator)
+    return starts
+
+
+def _line_of(starts: list[int], offset: int) -> int:
+    from bisect import bisect_right
+
+    return max(0, bisect_right(starts, offset) - 1)
 
 
 def scrub_pii(text: str) -> str:

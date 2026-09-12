@@ -56,10 +56,10 @@ string because they are reading the same answer.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .layout import Certainty, build_claims
-from .text import normalise, strip_leading_bom
+from .report import RedactionEvent
 
 
 class AmbiguousDocument(Exception):
@@ -130,33 +130,56 @@ class AmbiguityReport:
         )
 
 
-def find_ambiguities(text: str) -> AmbiguityReport:
-    """Every point where a person value's identity or extent had to be guessed.
+def ambiguities_from(events: Sequence[RedactionEvent]) -> AmbiguityReport:
+    """The report, built from redactions that ACTUALLY HAPPENED.
 
-    Reads the scrubber's own claims rather than re-deriving them, so the
-    quarantine and the redaction cannot disagree about a document.
+    This is the whole of the "unify redaction evidence" decision. The notice a
+    clinician reads, the 422 an upload path answers with, and the completeness
+    accounting now all consume one event list — the one the transformation
+    emitted while it was rewriting the text — rather than each re-deriving the
+    question from the characters.
 
-    Normalises exactly as `scrub_pii` does before deciding. Without that, a
-    document whose fullwidth colon or soft hyphen only becomes visible after
-    normalisation would be judged on a different string from the one the
-    scrubber acts on — and the two halves would be back to disagreeing.
+    At `ff34722` they did not. `find_ambiguities` re-normalised the text and
+    re-ran the claim builder, and the two halves disagreed in measured, opposite
+    directions on identically shaped input:
+
+        'Patient Name: Sarah May Okonkwo Complete Heart Block.'
+            -> 'Patient Name: [NAME].'          redaction_notice = []
+        'Patient Name: Sarah May Okonkwo Rockwood Frailty Scale 6.'
+            -> 'Patient Name: [NAME] 6.'        redaction_notice = [...]
+
+    Whether a destruction was announced turned out to be a function of which
+    clinical phrase was destroyed, which is a lexicon property — the ADV16-6
+    shape, reappearing in the announcement instead of in the measurement.
     """
-    if not text:
-        return AmbiguityReport()
-    _, body = strip_leading_bom(text)
-    _, _, claims = build_claims(normalise(body))
     report = AmbiguityReport()
-    for claim in sorted(
-        (c for c in claims if c.certainty is Certainty.GUESSED),
-        key=lambda c: (c.line, c.start),
+    for event in sorted(
+        (event for event in events if event.guessed),
+        key=lambda event: event.start,
     ):
         report.items.append(
             Ambiguity(
-                line=claim.line,
-                words=claim.words,
-                label=claim.label,
-                reason=claim.reason,
-                label_line=claim.label_line,
+                line=event.line,
+                words=event.words,
+                label=event.label,
+                reason=event.reason,
+                label_line=event.line,
             )
         )
     return report
+
+
+def find_ambiguities(text: str) -> AmbiguityReport:
+    """Every point where a person value's identity or extent had to be guessed.
+
+    Runs the SCRUBBER and reads what it did, rather than re-deriving the
+    question with a pass of its own. A caller that has already scrubbed should
+    use `ambiguities_from` with the events it already holds; this convenience
+    exists for callers that have only the text, and it is defined as the same
+    computation so the two cannot drift.
+    """
+    if not text:
+        return AmbiguityReport()
+    from mao.core.pii_scrubber import scrub_with_report
+
+    return ambiguities_from(scrub_with_report(text).events)

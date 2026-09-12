@@ -45,30 +45,27 @@ from mao.trust.classes import (
     SafeEvidenceQuery,
     SafeSynthesisContext,
 )
+from mao.core.deident.report import RedactionEvent
+from mao.trust.handoff.accounting import CompletenessReport
 from mao.trust.handoff.extract import ExtractedFacts, age_group_for, extract
 
 logger = logging.getLogger(__name__)
 
-#: Below this share of clinically-marked lines carried into the projection, the
+#: Below this share of ACCOUNTABLE segments carried into the projection, the
 #: projection is a summary of a document it mostly did not read.
 #:
-#: Not tuned to make a test pass: it is the point at which the majority of the
-#: document's content lines are absent, and answering from a minority of a
-#: clinical document is the behaviour the rules forbid.
+#: A JUDGEMENT, and recorded as one. It is deliberately NOT re-tuned: tuning it
+#: to make one example refuse would make the threshold a function of whichever
+#: examples someone happened to try, which is the failure mode this phase exists
+#: to end. Phase 2's Evaluation Lab owes this number a measurement.
 #:
-#: A JUDGEMENT, and recorded as one. It was UNREACHABLE at b63311d, because
-#: `coverage()` returned a constant 1.0 (A-1), so no operating experience
-#: stands behind this number - it has never actually gated anything.
-#:
-#: It is deliberately NOT re-tuned now that it is live. The adversarial
-#: reviewer's own demonstration document scores 0.556 and therefore still does
-#: not refuse; lowering the bar to 0.6 to make that one letter refuse would
-#: make the threshold a function of whichever examples someone happened to try,
-#: which is the failure mode this phase exists to end. What closes ADV16-6 is
-#: that the loss is no longer SILENT: `uncovered` names the lines, the
-#: projection carries them as `uncertainties`, and `clinical_coverage` reports
-#: 0.556 to the caller instead of 1.0. Phase 2's Evaluation Lab owes this
-#: number a measurement.
+#: It is NOT what closes the false-completeness class, and the distinction
+#: matters because the threshold argument has now been defeated twice. Both
+#: `ff34722` reviews observed that where the loss was invisible, coverage was
+#: 1.00 — so no threshold at any value would have refused. What closes the class
+#: is `_require_complete_projection` below, which does not consult a number at
+#: all: a projection with any unresolved segment is never REPRESENTED as
+#: complete, on any path, to any reader.
 MINIMUM_COVERAGE = 0.5
 
 
@@ -139,12 +136,42 @@ def case_from_facts(
         vitals=dict(facts.vitals),
         labs=dict(facts.labs),
         jurisdiction=jurisdiction or structured.get("jurisdiction", ""),
-        uncertainties=facts.uncovered,
+        # Caller-STATED uncertainties only. This used to be `facts.uncovered` —
+        # the residue, selected precisely for being unparseable, which is the
+        # population with the highest residual-identifier density — and
+        # `compile_synthesis_context` forwarded it into the external payload
+        # verbatim. Measured at `ff34722`: a full personal name and a contact
+        # extension rendered to the model inside the class whose own docstring
+        # prohibits raw or scrubbed report text.
+        #
+        # Measuring the loss and transmitting the residue are different
+        # requirements. The measurement lives on `facts.accounting`, which never
+        # leaves the process; what crosses the boundary is
+        # `CompletenessReport`, which is counts and line numbers.
+        uncertainties=_listed("uncertainties"),
         source_provenance=provenance,
     )
 
 
 def _require_substance(context: ProtectedCaseContext, facts: ExtractedFacts) -> None:
+    """Refuse rather than answer from a projection that carries too little.
+
+    Two conditions, and a third obligation that is not a condition at all.
+
+      empty     nothing was established. Answering would be generic advice
+                wearing the appearance of case-specific advice.
+
+      thin      a minority of the accountable segments were carried. A
+                JUDGEMENT, with `MINIMUM_COVERAGE` behind it.
+
+    The obligation is `_require_complete_projection`, and it is separate on
+    purpose. A threshold can only refuse what it can see, and both `ff34722`
+    reviews defeated the threshold argument the same way: in every case where
+    clinical content vanished, coverage was 1.0000, so no value of the threshold
+    would have refused. Truthful completeness is therefore enforced
+    unconditionally and everywhere, and the threshold is left to do the smaller
+    job it can actually do.
+    """
     if not context.has_clinical_facts():
         raise HandoffRefused(
             "No clinical fact could be established from this request without "
@@ -152,18 +179,52 @@ def _require_substance(context: ProtectedCaseContext, facts: ExtractedFacts) -> 
             "permit.",
             _WANTED,
         )
-    coverage = facts.coverage()
+    completeness = facts.completeness()
+    coverage = completeness.coverage()
     if coverage < MINIMUM_COVERAGE:
         logger.warning(
-            "safe projection covers %.0f%% of the clinical lines — refusing",
+            "safe projection carries %d of %d accountable source segment(s) "
+            "(%.0f%%) — refusing",
+            completeness.carried,
+            completeness.accountable,
             coverage * 100,
         )
         raise HandoffRefused(
-            f"Only {coverage:.0%} of this document's clinical content could be "
-            "carried into a payload that excludes direct identifiers, so an "
-            "answer would be based on a minority of the case.",
+            f"Only {coverage:.0%} of this document's clinically accountable "
+            "content could be carried into a payload that excludes direct "
+            "identifiers, so an answer would be based on a minority of the "
+            "case.",
             _WANTED,
         )
+
+
+def _require_complete_projection(
+    context: ProtectedCaseContext, facts: ExtractedFacts
+) -> CompletenessReport:
+    """Establish the completeness statement that MUST travel with the payload.
+
+    `00_RULES.md` and M-1 require that a projection which cannot represent the
+    case is clarified or refused — and, above that, that an incomplete
+    projection is never presented as equivalent to the original. Phase 1 cannot
+    decide whether an unresolved segment MATTERED; that needs the clinical
+    understanding Phase 3 allocates. What it can do, and what this guarantees,
+    is never to claim otherwise.
+
+    So the report is built here, once, from the account, and
+    `SafeSynthesisContext` has no constructor that omits it. A caller cannot
+    forget to state it and there is no branch in which a projection is emitted
+    without one.
+    """
+    report = facts.completeness()
+    if not report.complete:
+        logger.info(
+            "safe projection is INCOMPLETE: %d of %d accountable segment(s) "
+            "unresolved on source line(s) %s",
+            report.unresolved,
+            report.accountable,
+            report.unresolved_lines,
+        )
+    return report
 
 
 def compile_evidence_query(
@@ -230,6 +291,7 @@ def compile_synthesis_context(
         risk_factors=context.risk_factors,
         jurisdiction=context.jurisdiction,
         uncertainties=context.uncertainties,
+        completeness=_require_complete_projection(context, facts),
         provenance=context.source_provenance,
     )
 
@@ -251,13 +313,18 @@ def compile_handoff(
     structured: dict[str, str] | None = None,
     jurisdiction: str = "",
     provenance: tuple[str, ...] = (),
+    events: tuple[RedactionEvent, ...] = (),
 ) -> SafeHandoff:
     """Protected text and structured fields in, two safe projections out.
 
     Raises `HandoffRefused` rather than producing a projection that would be
     empty or would leave most of the document behind.
+
+    `events` are the redactions the boundary performed on `protected_text`. See
+    `extract` for why they are optional and why omitting them can only make the
+    account more pessimistic, never less.
     """
-    facts = extract(protected_text, question=question)
+    facts = extract(protected_text, question=question, events=events)
     case = case_from_facts(
         facts,
         structured=structured,

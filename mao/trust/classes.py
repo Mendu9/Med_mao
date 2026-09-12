@@ -208,6 +208,15 @@ class SafeSynthesisContext:
     Explicitly prohibited, and asserted by `test_egress_policy.py`: direct
     identifiers, free-text patient headers, raw or scrubbed report text, raw
     chat history, raw transcript text, identifying metadata.
+
+    `uncertainties` is CALLER-STATED only. At `ff34722` it was populated from
+    the extractor's residue — every line no grammar could parse, which is the
+    population selected for being unparseable and therefore the one with the
+    highest residual-identifier density — and `render()` emitted it verbatim.
+    Measured: a full personal name and a contact extension in the payload. The
+    compiler now builds it from structured fields the caller supplied, and the
+    account of what was NOT carried travels as `completeness`, which is counts
+    and line numbers and no text at all.
     """
 
     trust_class = TrustClass.SAFE_SYNTHESIS_CONTEXT
@@ -227,6 +236,15 @@ class SafeSynthesisContext:
     risk_factors: tuple[str, ...] = ()
     jurisdiction: str = ""
     uncertainties: tuple[str, ...] = ()
+    #: The account of what this projection does and does not carry. Counts,
+    #: statuses and source LINE NUMBERS — never source text.
+    #:
+    #: `Any` rather than the concrete type because `mao.trust.handoff` imports
+    #: this module; the compiler is the only producer and it supplies a
+    #: `CompletenessReport`. A projection built without one renders as
+    #: "completeness not established", which is a true statement about a
+    #: payload nobody accounted for and is the fail-closed direction.
+    completeness: Any = None
     provenance: tuple[str, ...] = ()
 
     def render(self) -> str:
@@ -236,8 +254,16 @@ class SafeSynthesisContext:
         synthesis model receives is a function of the typed fields and of
         nothing else. A caller cannot append to it, and there is no branch in
         which a free-text note is substituted for it.
+
+        The completeness statement is emitted UNCONDITIONALLY and first. A model
+        asked whether a drug is safe must not be handed a projection that reads
+        as the whole case when it is not, and the only way to guarantee that is
+        for the statement to have no branch that omits it.
         """
-        parts: list[str] = [f"Clinical question: {self.clinical_question}"]
+        parts: list[str] = [
+            f"Clinical question: {self.clinical_question}",
+            f"Case completeness: {self._completeness_statement()}",
+        ]
         for label, values in (
             ("Conditions", self.conditions),
             ("Medications and doses", self.medications_and_doses),
@@ -262,6 +288,20 @@ class SafeSynthesisContext:
             if value:
                 parts.append(f"{label}: {value}")
         return "\n".join(parts)
+
+    def _completeness_statement(self) -> str:
+        describe = getattr(self.completeness, "describe", None)
+        if describe is None:
+            return (
+                "NOT ESTABLISHED: no account was made of how much of the source "
+                "this projection represents. Treat the case as incompletely "
+                "described."
+            )
+        return describe()
+
+    def is_complete(self) -> bool:
+        """Whether the account says every accountable segment is represented."""
+        return bool(getattr(self.completeness, "complete", False))
 
 
 @dataclass(frozen=True)
@@ -314,6 +354,20 @@ class SafeDerivedText:
 
     text: str
     origin: InputChannel
+    #: What the boundary actually removed from this text, as content-free
+    #: `RedactionEvent`s in `text`'s own coordinates.
+    #:
+    #: Carried on the value rather than looked up later because every reader of
+    #: "what did the transformation do" must read the SAME record. At `ff34722`
+    #: the Safe Handoff accounting re-derived it with a placeholder regex and
+    #: the clinician's notice re-derived it with a second detector pass, and
+    #: both disagreed with the transformation in measured, opposite ways.
+    #:
+    #: Content-free by construction: `RedactionEvent` has offsets, a kind and a
+    #: label, and no value. The sensitive `Removal` record stays behind in the
+    #: protected plane, which is why this can ride on the class that reaches the
+    #: egress gateway.
+    events: tuple[Any, ...] = ()
 
     def __str__(self) -> str:  # pragma: no cover - convenience only
         return self.text

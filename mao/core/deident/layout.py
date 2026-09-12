@@ -127,6 +127,14 @@ class _Claim:
     label: str = ""
     words: int = 0
     reason: str = ""
+    #: Where on `label_line` the label sits. The Safe Handoff accounting needs
+    #: this: `Patient Name` left standing beside `[NAME]` is the label that
+    #: ATTRIBUTED the removal, not clinical content the projection dropped, and
+    #: the only non-guessing way to know that is to ask the claim that made it.
+    #: Reading "everything before the first colon" instead is the predicate that
+    #: made `Complete heart block, pacemaker implanted: <date>` invisible.
+    label_start: int = -1
+    label_end: int = -1
 
 
 #: Separator characters that only a FIELD uses. A colon, pipe, equals or hash
@@ -367,7 +375,18 @@ def _same_line_claims(
                 span = _value_before(line, start, field_type)
             span = _clip_to_labels(span, labels[index], (start, end))
             if span is not None:
-                claims.append(_Claim(index, span[0], span[1], field_type))
+                claims.append(
+                    _Claim(
+                        index,
+                        span[0],
+                        span[1],
+                        field_type,
+                        label_line=index,
+                        label=" ".join(line[start:end].split()),
+                        label_start=start,
+                        label_end=end,
+                    )
+                )
 
     form_evidence = _form_evidence(lines, claims)
     for index, start, end, field_type in deferred:
@@ -428,6 +447,8 @@ def _same_line_claims(
                 label=" ".join(line[start:end].split()),
                 words=words,
                 reason=reason,
+                label_start=start,
+                label_end=end,
             )
         )
     return claims
@@ -462,6 +483,23 @@ def _extent_certainty(line: str, span: tuple[int, int]) -> tuple[Certainty, int,
     Michael Smith MRN: RGT/44219/B` is an ordinary banner and is settled — which
     matters, because a refusal that fires on the shape every real patient banner
     has is a broken product rather than a policy.
+
+    A terminator SEPARATES, so it settles nothing when there is nothing on the
+    far side of it. That escape hatch was measured at `ff34722` deciding half
+    of every silent chat destruction:
+
+        'Patient Name: Sarah May Okonkwo Complete Heart Block.'
+          tail is '.'  ->  declared settled  ->  the whole run is taken
+          ->  'Patient Name: [NAME].'  with redaction_notice = []
+
+        'Patient Name: Sarah May Okonkwo Rockwood Frailty Scale 6.'
+          tail is ' 6.'  ->  guessed  ->  announced
+
+    Identical shape, identical name, and the only difference is whether the
+    clinical phrase happened to end in a digit — which is a fact about the
+    phrase, not about the name's extent. Requiring content AFTER the terminator
+    is what makes the two cases agree, and it costs nothing on the banner shape
+    the rule exists for, where the terminator is mid-line by construction.
     """
     from .fields import find_labels as _find_labels
 
@@ -470,7 +508,8 @@ def _extent_certainty(line: str, span: tuple[int, int]) -> tuple[Certainty, int,
     if words < _UNBOUNDED_NAME_WORDS:
         return Certainty.SETTLED, words, ""
     tail = line[span[1] :]
-    if tail.lstrip()[:1] in _SENTENCE_END and tail.strip():
+    leading = tail.lstrip()
+    if leading[:1] in _SENTENCE_END and leading[1:].strip():
         return Certainty.SETTLED, words, ""
     if _find_labels(tail):
         return Certainty.SETTLED, words, ""
@@ -707,7 +746,15 @@ def _table_claims(
             if not matched:
                 continue
             claims += [
-                _Claim(neighbour, claim.start, claim.end, claim.field_type)
+                _Claim(
+                    neighbour,
+                    claim.start,
+                    claim.end,
+                    claim.field_type,
+                    label_line=index,
+                    label_start=0,
+                    label_end=len(line),
+                )
                 for claim in matched
             ]
             consumed.add(neighbour)
@@ -815,6 +862,8 @@ def _cross_line_claim(
         ),
         label_line=label_line,
         label=label,
+        label_start=start,
+        label_end=end,
         words=len(lines[candidate].split()),
         reason=(
             "a person label on another line was paired with this one by "
@@ -1171,6 +1220,70 @@ def build_claims(text: str) -> tuple[list[str], list[str], list[_Claim]]:
         lines, labels, consumed, _form_evidence(lines, claims)
     )
     return lines, terminators, claims
+
+
+@dataclass(frozen=True)
+class LabelledSpan:
+    """One claim, in absolute offsets of the text it was found in.
+
+    `build_claims` reports `(line, start, end)`, which is the right shape for
+    rewriting a line in place and the wrong one for mapping back to an immutable
+    source. This is the same decision, re-expressed once, here — rather than
+    every caller re-deriving line offsets and getting it subtly different.
+    """
+
+    start: int
+    end: int
+    kind: str
+    label_start: int = -1
+    label_end: int = -1
+    label: str = ""
+    guessed: bool = False
+    words: int = 0
+    reason: str = ""
+    line: int = 0
+    label_line: int = -1
+
+
+def _line_offsets(contents: list[str], terminators: list[str]) -> list[int]:
+    offsets: list[int] = []
+    position = 0
+    for content, terminator in zip(contents, terminators, strict=True):
+        offsets.append(position)
+        position += len(content) + len(terminator)
+    return offsets
+
+
+def labelled_spans(text: str) -> list[LabelledSpan]:
+    """Every span a field label identifies, as offsets into `text` itself."""
+    lines, terminators, claims = build_claims(text)
+    offsets = _line_offsets(lines, terminators)
+    found: list[LabelledSpan] = []
+    for claim in claims:
+        if claim.line < 0 or claim.start >= claim.end:
+            continue
+        base = offsets[claim.line]
+        label_start = label_end = -1
+        if claim.label_line >= 0 and claim.label_start >= 0:
+            label_base = offsets[claim.label_line]
+            label_start = label_base + claim.label_start
+            label_end = label_base + claim.label_end
+        found.append(
+            LabelledSpan(
+                start=base + claim.start,
+                end=base + claim.end,
+                kind=claim.field_type.value,
+                label_start=label_start,
+                label_end=label_end,
+                label=claim.label,
+                guessed=claim.certainty is Certainty.GUESSED,
+                words=claim.words,
+                reason=claim.reason,
+                line=claim.line,
+                label_line=claim.label_line,
+            )
+        )
+    return found
 
 
 def redact_labelled_fields_with_report(text: str) -> tuple[str, list[Removal]]:

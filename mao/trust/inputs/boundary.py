@@ -42,9 +42,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from bisect import bisect_right
+from dataclasses import dataclass, field, replace
 
-from mao.core.deident.ambiguity import AmbiguityReport, AmbiguousDocument, find_ambiguities
+from mao.core.deident.ambiguity import (
+    AmbiguityReport,
+    AmbiguousDocument,
+    ambiguities_from,
+)
+from mao.core.deident.report import RedactionEvent, ScrubResult
+from mao.core.deident.text import split_lines
 from mao.core.pii_scrubber import scrub_with_report
 from mao.trust.classes import (
     InputChannel,
@@ -97,9 +104,44 @@ def _protect_channel(
 ) -> SafeDerivedText:
     """De-identify one channel exactly once and record what came out of it."""
     result = scrub_with_report(text)
+    _record(result, channel, protection)
+    return SafeDerivedText(text=result.text, origin=channel, events=result.events)
+
+
+def _record(
+    result: ScrubResult, channel: InputChannel, protection: RequestProtection
+) -> None:
     for removal in result.removals:
         protection.record_identifier(removal.kind, removal.value, channel)
-    return SafeDerivedText(text=result.text, origin=channel)
+
+
+def _decide_once(
+    text: str,
+    channel: InputChannel,
+    protection: RequestProtection,
+    *,
+    refuse_ambiguity: bool,
+) -> tuple[SafeDerivedText, AmbiguityReport]:
+    """Scrub ONCE, and answer the refusal question from what that scrub did.
+
+    The refusal used to run `find_ambiguities` over the text and the redaction
+    then ran the scrubber over it again. Two passes is two opinions, and the
+    module docstring for `ambiguity` records what happened the last time they
+    were allowed to differ. One pass cannot disagree with itself.
+
+    A refused document records NOTHING against the request's protection: the
+    caller is being asked for structured fields, and the identifiers found in a
+    document that is not going to be processed are not this request's to hold.
+    """
+    result = scrub_with_report(text)
+    report = ambiguities_from(result.events)
+    if report and refuse_ambiguity:
+        raise AmbiguousDocument(report)
+    _record(result, channel, protection)
+    return (
+        SafeDerivedText(text=result.text, origin=channel, events=result.events),
+        report,
+    )
 
 
 #: How a structured identifier is spelled once it has been removed by name.
@@ -205,8 +247,32 @@ def _sentinel(index: int) -> str:
 
 def restore_known_identifiers(text: str, structured: dict[str, str]) -> str:
     """Swap each sentinel for the typed placeholder its field deserves."""
+    return _restore(text, structured, ())[0]
+
+
+def _restore(
+    text: str,
+    structured: dict[str, str],
+    events: tuple[RedactionEvent, ...],
+) -> tuple[str, tuple[RedactionEvent, ...]]:
+    r"""Restore the typed placeholders, and account for what they stand for.
+
+    A caller-NAMED identifier is removed before the scrubber runs, so the
+    scrubber never sees it and produces no event for it. Without one, the Safe
+    Handoff accounting would look at `Patient Name: [NAME]` and find
+    meaning-bearing text the projection does not carry — and an ordinary
+    letterhead whose identifiers the caller supplied correctly would account as
+    unresolved and refuse. That is the A-1 trap arriving through the structured
+    pathway, which is the pathway the refusal policy points callers at.
+
+    So the restoration emits the events, exactly as the scrubber does for the
+    identifiers IT found, and the surrounding events are shifted by whatever the
+    substitution did to the length. The label is attributed with the same
+    `find_labels` grammar `layout` uses, at the position a removal actually
+    happened — not by reading text before a colon.
+    """
     if not structured:
-        return text
+        return text, events
     named = sorted(
         (
             (str(value).strip(), _STRUCTURED_PLACEHOLDER[key])
@@ -219,9 +285,74 @@ def restore_known_identifiers(text: str, structured: dict[str, str]) -> str:
         key=lambda pair: len(pair[0]),
         reverse=True,
     )
+    restored: list[tuple[int, int, str]] = []
     for index, (_, placeholder) in enumerate(named):
-        text = text.replace(_sentinel(index), placeholder)
-    return text
+        sentinel = _sentinel(index)
+        while True:
+            at = text.find(sentinel)
+            if at < 0:
+                break
+            text = text[:at] + placeholder + text[at + len(sentinel) :]
+            drift = len(placeholder) - len(sentinel)
+            restored = [
+                (start + drift, end + drift, kind) if start >= at else (start, end, kind)
+                for start, end, kind in restored
+            ]
+            events = tuple(
+                _shift(event, drift) if event.start >= at else event
+                for event in events
+            )
+            restored.append((at, at + len(placeholder), placeholder.strip("[]")))
+    return text, tuple(sorted(events + _named_events(text, restored),
+                              key=lambda event: event.start))
+
+
+def _shift(event: RedactionEvent, drift: int) -> RedactionEvent:
+    return replace(
+        event,
+        start=event.start + drift,
+        end=event.end + drift,
+        label_start=event.label_start + drift if event.label_start >= 0 else -1,
+        label_end=event.label_end + drift if event.label_end >= 0 else -1,
+    )
+
+
+def _named_events(
+    text: str, restored: list[tuple[int, int, str]]
+) -> tuple[RedactionEvent, ...]:
+    """A `RedactionEvent` for each caller-named identifier, with its label."""
+    from mao.core.deident.fields import find_labels
+
+    contents, terminators = split_lines(text)
+    starts: list[int] = []
+    position = 0
+    for content, terminator in zip(contents, terminators, strict=True):
+        starts.append(position)
+        position += len(content) + len(terminator)
+
+    events: list[RedactionEvent] = []
+    for start, end, kind in restored:
+        line_index = max(0, bisect_right(starts, start) - 1)
+        base = starts[line_index]
+        line = contents[line_index]
+        label_start = label_end = -1
+        label_text = ""
+        for found_start, found_end, _ in find_labels(line):
+            if found_end <= start - base and found_end > label_end:
+                label_start, label_end = found_start, found_end
+                label_text = " ".join(line[found_start:found_end].split())
+        events.append(
+            RedactionEvent(
+                kind=kind,
+                start=start,
+                end=end,
+                label_start=base + label_start if label_start >= 0 else -1,
+                label_end=base + label_end if label_start >= 0 else -1,
+                label=label_text,
+                line=line_index,
+            )
+        )
+    return tuple(events)
 
 
 def protect_channel(
@@ -255,24 +386,21 @@ def protect_channel(
     fields = structured or {}
     masked = remove_known_identifiers(text, fields, protection)
 
+    result = scrub_with_report(masked)
     if refuse_ambiguity:
-        report = find_ambiguities(masked)
+        report = ambiguities_from(result.events)
         if report:
             raise AmbiguousDocument(report)
 
     if protection is None:
-        result = scrub_with_report(masked)
         logger.debug(
             "no request protection bound — %s de-identified without recording",
             channel.value,
         )
-        return SafeDerivedText(
-            text=restore_known_identifiers(result.text, fields), origin=channel
-        )
-    protected = _protect_channel(masked, channel, protection)
-    return SafeDerivedText(
-        text=restore_known_identifiers(protected.text, fields), origin=channel
-    )
+    else:
+        _record(result, channel, protection)
+    restored, events = _restore(result.text, fields, result.events)
+    return SafeDerivedText(text=restored, origin=channel, events=events)
 
 
 def protect(
@@ -314,8 +442,13 @@ def protect(
     # why `refuse_ambiguity` was not the operative control here: there was no
     # check to disable. The report is not raised on the chat posture - it is
     # carried, so the route can tell the caller what was removed.
-    chat_ambiguities.items.extend(find_ambiguities(raw.query).items)
+    #
+    # And it is built from the TRANSFORMATION's own events rather than from a
+    # second pass over the same string. A second pass is a second opinion, and
+    # at `ff34722` the two opinions differed on 256 of 1600 measured chat
+    # queries - always in the direction of saying nothing.
     query = _protect_channel(raw.query, InputChannel.QUERY, protection)
+    chat_ambiguities.items.extend(ambiguities_from(query.events).items)
 
     history: list[tuple[str, SafeDerivedText]] = []
     # Most recent turns kept. The agents already read only the last three or
@@ -324,10 +457,9 @@ def protect(
     # dropping rather than by refusing.
     for role, content in list(raw.chat_history)[-limits.MAX_HISTORY_TURNS :]:
         limits.check("a chat_history turn", len(content), limits.MAX_HISTORY_TURN_CHARS)
-        chat_ambiguities.items.extend(find_ambiguities(content).items)
-        history.append(
-            (role, _protect_channel(content, InputChannel.CHAT_HISTORY, protection))
-        )
+        turn = _protect_channel(content, InputChannel.CHAT_HISTORY, protection)
+        chat_ambiguities.items.extend(ambiguities_from(turn.events).items)
+        history.append((role, turn))
 
     report: SafeDerivedText | None = None
     ambiguities = AmbiguityReport()
@@ -337,10 +469,12 @@ def protect(
             len(raw.report_text),
             limits.MAX_EXTRACTED_TEXT_CHARS,
         )
-        ambiguities = find_ambiguities(raw.report_text)
-        if ambiguities and refuse_ambiguity:
-            raise AmbiguousDocument(ambiguities)
-        report = _protect_channel(raw.report_text, InputChannel.REPORT, protection)
+        report, ambiguities = _decide_once(
+            raw.report_text,
+            InputChannel.REPORT,
+            protection,
+            refuse_ambiguity=refuse_ambiguity,
+        )
 
     transcript: SafeDerivedText | None = None
     if raw.transcript_text:
@@ -354,11 +488,11 @@ def protect(
         # is. The audio path previously called neither the ambiguity check nor
         # the scrubber, so an ambiguous spoken header was neither refused nor
         # redacted; it is on the same contract now.
-        transcript_ambiguities = find_ambiguities(raw.transcript_text)
-        if transcript_ambiguities and refuse_ambiguity:
-            raise AmbiguousDocument(transcript_ambiguities)
-        transcript = _protect_channel(
-            raw.transcript_text, InputChannel.TRANSCRIPT, protection
+        transcript, _ = _decide_once(
+            raw.transcript_text,
+            InputChannel.TRANSCRIPT,
+            protection,
+            refuse_ambiguity=refuse_ambiguity,
         )
 
     structured: dict[str, str] = {}

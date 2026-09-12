@@ -42,11 +42,17 @@ case the model was told half of.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mao.core.deident.lexicon import NOT_A_NAME, has_clinical_head
+from mao.core.deident.report import RedactionEvent
 from mao.core.deident.text import split_lines
 from mao.core.deident.values import _fold, _parts
+from mao.trust.handoff.accounting import (
+    CompletenessReport,
+    SourceAccounting,
+    account,
+)
 
 #: A dose: a number, a unit, and optionally a frequency.
 _DOSE = re.compile(
@@ -85,35 +91,21 @@ _LABS = (
 #: 89 and is rarely what changes a recommendation below it.
 _AGE = re.compile(r"\b(?:age[ds]?|aged)\D{0,4}(\d{1,3})\b", re.I)
 
-#: A line that is a section heading rather than a fact.
+#: Section headings are no longer excluded HERE.
 #:
-#: It must END IN A COLON (or be a markdown heading). Matching a bare Titlecase
-#: line instead was the same mistake this project has made in five other places:
-#: `Complete Heart Block`, `Sick Sinus Syndrome` and `Mild Cognitive Impairment`
-#: are all Titlecase noun phrases, all section-heading-shaped, and all cardiac
-#: or cognitive findings — the first is a contraindication to the drug this
-#: system is asked about. Requiring the colon costs nothing (a real heading has
-#: one, or is `## Findings`) and `_is_clinical_line` is consulted as a second
-#: guard, so a colon-terminated clinical line is still carried.
-_HEADING = re.compile(r"^\s*(?:#+\s*[A-Z][A-Za-z /]{2,30}|[A-Z][A-Za-z /]{2,30}:)\s*$")
-
-
-#: Markdown heading syntax. Explicit structure a clinician typed deliberately,
-#: so it needs no tie-break: `## Findings` is a heading whatever words follow.
-_MARKDOWN_HEADING = re.compile(r"^\s*#+\s*\S")
-
-
-def _is_heading(line: str) -> bool:
-    """Structure, not content. Clinical vocabulary wins every ambiguous tie.
-
-    A line that is heading-SHAPED but says something clinical is kept, because
-    the cost of the two errors is not symmetric: carrying `Current medications:`
-    into the findings list adds a word to a prompt, and dropping
-    `Complete Heart Block` removes a contraindication to the drug under review.
-    """
-    if _MARKDOWN_HEADING.match(line):
-        return True
-    return _HEADING.match(line) is not None and not _is_clinical_line(line)
+#: The old `_is_heading` matched a Titlecase line ending in a colon and dropped
+#: it before anything counted it, which is one more "exclude before measuring"
+#: branch of exactly the kind `accounting` exists to end — and the exclusion was
+#: never safe: `Complete Heart Block:`, `Sick Sinus Syndrome:` and `Mild
+#: Cognitive Impairment:` are all Titlecase noun phrases ending in a colon, and
+#: the first is a contraindication to the drug this system is asked about.
+#:
+#: Structure is now recognised structurally, in `accounting`, by reading the `#`
+#: of a markdown heading and by the fact that a field label attributed a removal.
+#: A heading-shaped clinical line is carried as a finding, and the module's own
+#: asymmetry argument says that is the right way round: carrying `Current
+#: medications:` into the findings list adds a word to a prompt, and dropping
+#: `Complete Heart Block` removes a contraindication.
 
 #: What the caller was asking. Kept as the clinical question when nothing more
 #: specific is available.
@@ -135,7 +127,7 @@ def age_group_for(age: int) -> str:
 
 @dataclass(frozen=True)
 class ExtractedFacts:
-    """What a deterministic pass could establish, and how much it covered."""
+    """What a deterministic pass could establish, and where the rest went."""
 
     age_group: str = ""
     medications: tuple[str, ...] = ()
@@ -143,67 +135,29 @@ class ExtractedFacts:
     vitals: tuple[tuple[str, str], ...] = ()
     labs: tuple[tuple[str, str], ...] = ()
     clinical_question: str = ""
-    #: Every non-empty, non-heading line the document had. The DENOMINATOR, and
-    #: deliberately a count of document content rather than of lexicon hits.
-    content_lines: int = 0
-    #: Content lines that no rule above turned into a typed fact.
-    #: Reported, not discarded: it is the measure of what the projection does
-    #: NOT carry, and the compiler refuses when it is most of the document.
-    uncovered: tuple[str, ...] = ()
+    #: Every segment of the source, in exactly one state. The account replaces
+    #: the content-line denominator AND the exclusion predicate that used to sit
+    #: in front of it: see `mao/trust/handoff/accounting.py` for why a fourth
+    #: predicate was not the available move.
+    accounting: SourceAccounting = field(default_factory=SourceAccounting)
+
+    def completeness(self) -> CompletenessReport:
+        """The account with every piece of source text removed.
+
+        This is what may travel. `accounting` may not.
+        """
+        return self.accounting.report()
 
     def coverage(self) -> float:
-        """The share of the document's content lines that became a typed fact.
+        """The share of accountable segments the projection carries."""
+        return self.completeness().coverage()
 
-        The denominator is DOCUMENT CONTENT, and that is the whole of the fix.
+    def is_complete(self) -> bool:
+        return self.completeness().complete
 
-        It used to be `carried + len(uncovered)`, where `uncovered` was
-        populated only from lines `_is_clinical_line` marked clinical - the same
-        lexicon the de-identifier uses. A clinical line that lexicon does not
-        recognise was therefore in neither the numerator nor the denominator:
-        not "uncovered" but invisible, so this returned 1.00 exactly when the
-        loss was total (ADV16-6). The guard was bound to the detector it exists
-        to check, which is the one thing a guard may not be. Separately, the
-        branch that populated `uncovered` at all was unreachable, so the value
-        was unconditionally empty and every caller read a constant 1.0 (A-1).
-
-        A line count is a measurement. It cannot be defeated by a word nobody
-        put in a list, which is the property six remediation rounds could not
-        obtain from a vocabulary - and widening that vocabulary again is what
-        `00_RULES.md` forbids rather than what it asks for.
-
-        1.0 when the document had no content lines: there was genuinely nothing
-        to lose. NOT 1.0 when there was content and none of it was carried,
-        which is the case that mattered.
-        """
-        if self.content_lines == 0:
-            return 1.0
-        return (self.content_lines - len(self.uncovered)) / self.content_lines
-
-
-#: A redaction placeholder this system's own boundary emitted.
-_PLACEHOLDER = re.compile(r"\[[A-Z_]+\]")
-
-
-def _carries_nothing_to_lose(line: str) -> bool:
-    """Whether this line had a value at all once its identifier was removed.
-
-    `Patient Name: [NAME]` and `MRN: [MRN]` are lines whose entire value was an
-    identifier. The boundary removed it, correctly, and what remains is a label
-    with nothing behind it. Such a line cannot contribute clinical content to a
-    projection, so counting it in `coverage()`'s denominator would measure the
-    de-identifier's success as the extractor's failure - and on an ordinary
-    letterhead, where most lines are exactly this shape, it collapses coverage
-    and refuses documents that are perfectly answerable. The architecture
-    review predicted this precise trap in its A-1 remediation note.
-
-    This is a STRUCTURAL test and not a vocabulary one, which is what makes it
-    admissible here at all. It asks whether a placeholder THIS SYSTEM emitted
-    accounts for the whole of the line's value. It does not ask what the line
-    is about, consults no lexicon, and cannot be widened by adding words.
-    """
-    _, separator, value = line.partition(":")
-    candidate = value if separator else line
-    return not _PLACEHOLDER.sub("", candidate).strip(" \t.,;|-_")
+    def unresolved_text(self) -> tuple[str, ...]:
+        """The residue, for LOCAL measurement only. Never an egress payload."""
+        return self.accounting.unresolved_text()
 
 
 def _is_clinical_line(line: str) -> bool:
@@ -222,35 +176,47 @@ def _is_clinical_line(line: str) -> bool:
     return has_clinical_head([_fold(word) for word in words])
 
 
-def extract(text: str, question: str = "") -> ExtractedFacts:
-    """Everything a deterministic pass can establish from protected text."""
+def extract(
+    text: str,
+    question: str = "",
+    events: tuple[RedactionEvent, ...] = (),
+) -> ExtractedFacts:
+    """Everything a deterministic pass can establish, plus where the rest went.
+
+    `events` are the redactions the boundary actually performed on this text. A
+    caller that has them gets an account in which an identifier the boundary
+    removed and the label that introduced it are recognised as such — which is
+    what keeps an ordinary letterhead from collapsing to a refusal without
+    excluding anything from the measurement.
+
+    A caller without them still gets a truthful account, and a more pessimistic
+    one: with no record of a removal, `Patient Name: [NAME]` is meaning-bearing
+    text the projection does not carry, so it counts as UNRESOLVED and coverage
+    falls. That direction is the safe one, and it is the reason the parameter
+    is not required: a missing record can never make a projection look MORE
+    complete than it is.
+    """
     lines, _ = split_lines(text)
 
     medications: list[str] = []
     findings: list[str] = []
     vitals: dict[str, str] = {}
     labs: dict[str, str] = {}
-    uncovered: list[str] = []
-    content_lines = 0
+    carried: dict[int, tuple[str, str]] = {}
     age_group = ""
 
-    for line in lines:
+    for index, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped or _is_heading(stripped):
+        if not stripped:
             continue
-        if _carries_nothing_to_lose(stripped):
-            # A label whose only value was an identifier the boundary removed.
-            # Neither carried nor lost: there was nothing there to carry.
-            continue
-        content_lines += 1
 
-        matched = False
+        field_name = ""
 
         age = _AGE.search(stripped)
         if age is not None:
             try:
                 age_group = age_group or age_group_for(int(age.group(1)))
-                matched = True
+                field_name = field_name or "age_group"
             except ValueError:  # pragma: no cover - the pattern guarantees digits
                 pass
 
@@ -258,31 +224,23 @@ def extract(text: str, question: str = "") -> ExtractedFacts:
             found = pattern.search(stripped)
             if found is not None and name not in vitals:
                 vitals[name] = found.group(1)
-                matched = True
+                field_name = field_name or "vitals"
 
         for name, pattern in _LABS:
             found = pattern.search(stripped)
             if found is not None and name not in labs:
                 labs[name] = found.group(1)
-                matched = True
+                field_name = field_name or "labs"
 
         if _DOSE.search(stripped):
             medications.append(stripped)
-            matched = True
+            field_name = "medications"
         elif _is_clinical_line(stripped):
             findings.append(stripped)
-            matched = True
+            field_name = field_name or "findings"
 
-        if not matched:
-            # Not "and _is_clinical_line(stripped)". That conjunct was
-            # unsatisfiable - the `elif` above has already set `matched` for
-            # every line the lexicon calls clinical - so `uncovered` was
-            # unconditionally empty and the whole thin-projection refusal was
-            # dead code (A-1). Asking the lexicon again here would also
-            # reintroduce ADV16-6, because the question is whether this line
-            # became a fact, and that is answered by `matched`, not by a
-            # vocabulary that has never seen the words in question.
-            uncovered.append(stripped)
+        if field_name:
+            carried[index] = (field_name, stripped)
 
     clinical_question = question.strip()
     if not clinical_question:
@@ -296,6 +254,5 @@ def extract(text: str, question: str = "") -> ExtractedFacts:
         vitals=tuple(sorted(vitals.items())),
         labs=tuple(sorted(labs.items())),
         clinical_question=clinical_question,
-        content_lines=content_lines,
-        uncovered=tuple(uncovered),
+        accounting=account(text, events, carried),
     )
