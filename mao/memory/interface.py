@@ -31,16 +31,34 @@ class MemoryStore(Protocol):
 
 
 class Mem0MemoryStore:
-    """MemoryStore backed by Mem0."""
+    """MemoryStore backed by Mem0.
+
+    The authorise() calls are HERE and not in `recall_node` / `remember_node`,
+    because this class is the one that talks to a third party. An in-process
+    test double bound through `set_memory_store` is not an external sink and
+    must not be made to look like one.
+
+    A-4 / A-11's caveat: ADV15-9 and G-8c are closed - the content written IS
+    protected text - but neither call was routed through `authorise()`, so the
+    (EXTERNAL_MEMORY, MEMORY_WRITE) policy row was never consulted and the
+    run-scoped identifier assertion never ran on this sink. There was no row
+    for the READ at all, so `recall` could not have been authorised even by a
+    call site that wanted to be, although it sends this request's query to the
+    same third party the write sends its content to.
+    """
 
     def recall(self, query: str, user_id: str) -> str:
         from mao.memory.mem0_handler import search_memories
+        from mao.trust.egress.sinks import authorise_memory_read
 
+        authorise_memory_read([query])
         return search_memories(query, user_id)
 
     def remember(self, query: str, response: str, user_id: str) -> None:
         from mao.memory.mem0_handler import save_memory
+        from mao.trust.egress.sinks import authorise_memory_write
 
+        authorise_memory_write([query, response])
         save_memory(query, response, user_id)
 
 

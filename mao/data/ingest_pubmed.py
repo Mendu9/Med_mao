@@ -368,6 +368,16 @@ def live_pubmed_search(query: str, max_results: int = 5) -> list[dict[str, str]]
         list of {"title", "abstract", "source", "year", "journal"} dicts.
         Empty list if biopython unavailable, NCBI unreachable, or any error.
     """
+    # A-4. The query goes to NCBI, a third party, and this path had no
+    # authorise() call at all - so the (SCHOLARLY_API, EVIDENCE_SEARCH) policy
+    # row was a row nothing read, and the run-scoped identifier assertion never
+    # ran on this sink. Authorised before the availability checks, so a
+    # deployment that later installs biopython does not silently acquire an
+    # unguarded egress.
+    from mao.trust.egress.sinks import authorise_scholarly
+
+    authorise_scholarly(query)
+
     if not _BIOPYTHON_AVAILABLE:
         logger.debug("live_pubmed_search skipped — biopython not installed")
         return []

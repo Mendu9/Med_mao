@@ -385,6 +385,20 @@ def retrieve(
 
 def _vector_search(query: str, n: int) -> list[dict[str, Any]]:
     """Embed query and fetch top-n chunks. Dispatches on cfg.vector_backend."""
+    # A-4. Authorised at the DISPATCH rather than inside either backend: both
+    # `_vector_search_chroma` and `_vector_search_qdrant` wrap their bodies in
+    # `except Exception: return []`, so an EgressRefused raised in there would
+    # be swallowed into an empty result - fail-closed, but silently, which is
+    # the one thing a de-identification failure reaching a sink must not be.
+    #
+    # Authorised unconditionally rather than only for a configured remote host.
+    # A local store is not an external sink, but this call site cannot tell the
+    # difference, and a deployment that turns on `chroma_host` must not quietly
+    # acquire an unguarded egress. The identifier assertion costs nothing local.
+    from mao.trust.egress.sinks import authorise_vector_query
+
+    authorise_vector_query([query])
+
     if cfg.vector_backend == "qdrant":
         return _vector_search_qdrant(query, n)
     return _vector_search_chroma(query, n)
@@ -457,6 +471,13 @@ def _entity_search(entities: list[str], limit: int) -> list[dict[str, Any]]:
     """Fetch chunks mentioning entities. Dispatches on cfg.vector_backend."""
     if not entities:
         return []
+    # A-4, same sink and same reasoning as `_vector_search`. Entity names are
+    # extracted from the query, so an identifier the boundary missed arrives
+    # here as an "entity" and is searched for by name.
+    from mao.trust.egress.sinks import authorise_vector_query
+
+    authorise_vector_query(entities)
+
     if cfg.vector_backend == "qdrant":
         return _entity_search_qdrant(entities, limit)
     return _entity_search_chroma(entities, limit)

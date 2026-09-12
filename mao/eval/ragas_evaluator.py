@@ -63,13 +63,19 @@ async def score_response(
 
     # De-identify here, not only at the call site. This parameter previously
     # documented itself as "the user's original question", and `main.py` duly
-    # passed the raw one — reaching the SAFETY_JUDGE, a ChatGroq built outside
+    # passed the raw one - reaching the SAFETY_JUDGE, a ChatGroq built outside
     # the gateway, and a RetrainingCandidate row in Postgres that
-    # `_persist_session` explicitly refuses to write.
+    # `_persist_session` explicitly refuses to write. Fixing that one call site
+    # leaves the next caller free to repeat it, so the guarantee is established
+    # where it cannot be skipped.
     #
-    # Fixing that one call site leaves the next caller free to repeat it, so the
-    # guarantee is established where it cannot be skipped. `scrub_pii` is
-    # idempotent, so an already-scrubbed query passes through unchanged.
+    # ADV16-3's remediation does NOT remove this. The adversarial review folded
+    # a double-scrub residual into ADV16-3 - at b63311d this was the last
+    # reachable site where already-protected text was scrubbed a second time -
+    # and the reason it is no longer one is that the REQUEST-PATH CALLER is
+    # gone, not that the scrub is. An offline caller may hand this function raw
+    # text, and for that caller the scrub is the only control there is.
+    # `scrub_pii` is idempotent, so an already-protected question is unchanged.
     question = scrub_pii(question)
 
     try:
@@ -236,11 +242,28 @@ def _run_ragas_sync(
         # that happened afterwards. `resolve()` walks the fallback chain, so a
         # retired id is refused here exactly as it is on the serving path.
         #
-        # The `ChatGroq` object itself stays: ragas 0.3.x takes a LangChain LLM,
-        # not a callable, so this is a genuine adapter to a third-party
-        # interface rather than a shortcut around the gateway. It is confined to
-        # these three lines, and this module is eval-only — nothing here is on
-        # the request path.
+        # The `ChatGroq` object itself stays: ragas 0.3.x takes a LangChain
+        # LLM, not a callable, so this is a genuine adapter to a third-party
+        # interface rather than a shortcut around the gateway.
+        #
+        # This comment used to end 'and this module is eval-only - nothing
+        # here is on the request path.' That was FALSE at b63311d, and it is
+        # its own finding (ADV16-4): `mao/api/main.py` fired this module as a
+        # background task on /chat, and the adversarial review measured it
+        # executing inside the request. A claim about the CALLER cannot be
+        # verified from the module, which is exactly why a reviewer reading
+        # this file in isolation would conclude the adapter was out of scope.
+        #
+        # `ChatGroq.validate_environment` constructs its OWN `groq.Groq` and
+        # `groq.AsyncGroq`. They are not `mao.core.llm._get_groq_client`, do
+        # not go through `mao.providers.gateway`, and therefore never call
+        # `authorise()` - no destination, no purpose, no trust class, and no
+        # run-scoped identifier assertion. That is tolerable ONLY offline.
+        #
+        # The request-path caller is removed and
+        # `tests/trust/test_every_sink_is_authorised.py` now enforces from
+        # the CALLER's side that no route reaches this module. Do not
+        # reintroduce one without routing this adapter through the gateway.
         from mao.providers.gateway import resolve
         from mao.providers.registry import ModelRole
 

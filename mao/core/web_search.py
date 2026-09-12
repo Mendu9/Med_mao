@@ -131,6 +131,20 @@ def web_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
         List of dicts with keys ``title``, ``href``, ``body``.
         Returns ``[]`` if all providers fail -- never raises.
     """
+    # A-4. Authorised at the SINK, not at `_web_search_clinical`: that agent
+    # is one caller of this function, and an authorise() there would leave the
+    # next caller unguarded - the "missing call site on a second channel" shape
+    # this phase exists to end, and the shape history, audio and the ragas
+    # client each took in turn.
+    #
+    # This is also where the run-scoped identifier assertion runs. Without it a
+    # de-identification defect that put a patient's name into a retrieval query
+    # was refused on its way to the synthesis model and sent to the web-search
+    # provider without comment.
+    from mao.trust.egress.sinks import authorise_web_search
+
+    authorise_web_search(query)
+
     import mao.core.web_search as _self
     _providers = [
         ("brave",      _self._brave_search),
