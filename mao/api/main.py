@@ -63,8 +63,9 @@ REQUEST_DEADLINE_SECONDS = 180.0
 
 # The thread pool lives in `mao.api.executor` so the route modules can share it
 # without importing this one.
-# Keep strong references to fire-and-forget asyncio tasks to prevent GC cancellation.
-_bg_tasks: set[asyncio.Task] = set()
+#  held strong references to fire-and-forget asyncio tasks so the GC
+# could not cancel them. The only such task was the RAGAS scorer, which is off
+# the request path under ADV16-3, so there is nothing left to hold.
 
 
 # ---------------------------------------------------------------------------
@@ -468,22 +469,23 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
 
         loop.run_in_executor(get_executor(), _cache_session)
 
-        # Fire RAGAS hallucination scoring as a background task (non-blocking)
-        contexts = [s.get("snippet", "") for s in metadata.get("sources", []) if s.get("snippet")]
-        if contexts:
-            _task = asyncio.create_task(
-                _score_response_async(
-                    question=safe_query,
-                    answer=result.get("response", ""),
-                    contexts=contexts,
-                    user_id=request.user_id,
-                    request_id=request_id,
-                    agent_used=agent_used,
-                    latency_ms=latency_ms,
-                )
-            )
-            _bg_tasks.add(_task)
-            _task.add_done_callback(_bg_tasks.discard)
+        # RAGAS scoring was fired here as a background task ON THE REQUEST
+        # PATH. `mao/eval/ragas_evaluator.py` builds a `langchain_groq.ChatGroq`,
+        # whose `validate_environment` constructs its own `groq.Groq` and
+        # `groq.AsyncGroq` - clients the EgressGateway cannot see. Measured at
+        # b63311d: 45 SDK create() calls against 8 authorise() calls on one
+        # ordinary /chat, every async one unauthorised, carrying the question
+        # and the FULL GENERATED CLINICAL ANSWER to a third-party model with no
+        # destination, no purpose, no trust class and - the part that matters
+        # most - no run-scoped identifier assertion (ADV16-3).
+        #
+        # The evaluator's own source already said it was eval-only and not on
+        # the request path (ADV16-4). That is now true. Scoring belongs to the
+        # offline evaluation lane, which reads the trace.
+        #
+        # Removing it also takes out the last reachable double-scrub site and
+        # the 89-138 s per request that both PROJECT_STATE's latency
+        # observation and the reviewer's measurement attribute to these jobs.
 
         return ChatResponse(
             response=result.get("response", ""),
@@ -732,29 +734,6 @@ def _persist_session(
         logger.warning("ChatSession persist failed request_id=%s: %s", request_id, exc)
 
 
-async def _score_response_async(
-    question: str,
-    answer: str,
-    contexts: list[str],
-    user_id: str,
-    request_id: str,
-    agent_used: str,
-    latency_ms: float,
-) -> None:
-    """Fire-and-forget RAGAS scoring — never raises, never blocks the caller."""
-    try:
-        from mao.eval.ragas_evaluator import score_response
-        await score_response(
-            question=question,
-            answer=answer,
-            contexts=contexts,
-            user_id=user_id,
-            request_id=request_id,
-            agent_used=agent_used,
-            latency_ms=latency_ms,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Background RAGAS scoring failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
