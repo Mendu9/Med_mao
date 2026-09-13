@@ -100,12 +100,20 @@ _AGE = re.compile(r"\b(?:age[ds]?|aged)\D{0,4}(\d{1,3})\b", re.I)
 #: Cognitive Impairment:` are all Titlecase noun phrases ending in a colon, and
 #: the first is a contraindication to the drug this system is asked about.
 #:
-#: Structure is now recognised structurally, in `accounting`, by reading the `#`
-#: of a markdown heading and by the fact that a field label attributed a removal.
-#: A heading-shaped clinical line is carried as a finding, and the module's own
-#: asymmetry argument says that is the right way round: carrying `Current
-#: medications:` into the findings list adds a word to a prompt, and dropping
-#: `Complete Heart Block` removes a contraindication.
+#: Nor are they excluded in `accounting`, which briefly recognised structure by
+#: reading the `#` of a markdown heading until both `46a198a` reviewers measured
+#: `# Permanent pacemaker in situ` out of a payload that still called itself
+#: complete (AR18-1 / ADV18-1). Structure is now attributable ONLY from the
+#: transformation's own record — the field label an event says introduced the
+#: identifier it removed — never from how a line is spelled.
+#:
+#: So a heading-shaped line is carried as a finding if the extractor recognises
+#: it and is UNRESOLVED if it does not, and the module's own asymmetry argument
+#: says that is the right way round: carrying `Current medications:` into the
+#: findings list adds a word to a prompt, and dropping `Complete Heart Block`
+#: removes a contraindication. The cost is that `## Findings` is now reported
+#: unresolved — pessimism in the safe direction, which is the R-2 trade the
+#: control plane has already accepted.
 
 #: What the caller was asking. Kept as the clinical question when nothing more
 #: specific is available.

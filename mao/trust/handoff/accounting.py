@@ -24,10 +24,21 @@ consecutive gates, by a different mechanism each time:
              any bracketed uppercase token, so a clinician's `Pacing mode:
              [DDDR]` was accounted as an identifier the boundary had removed.
 
+    46a198a  a fourth, carried INTO this module from the one it replaced:
+             `_MARKDOWN_HEADING = r"^\s*#+\s"` attributed a whole line's residue
+             to `STRUCTURAL` whatever it said. Both independent reviewers found
+             it as the sole blocker. Measured: `# Permanent pacemaker in situ`
+             absent from the projection handed to a model asked whether a
+             bradycardic drug was safe, at coverage 1.0000, with the payload
+             affirmatively stating `Complete`. `#` is the standard UK shorthand
+             for FRACTURE (`# NOF`) and the standard problem-list marker, so the
+             population was ordinary clinical notation rather than markdown.
+                                                          AR18-1 · ADV18-1
+
 `00_RULES.md` names the response: *"If repeated fixes to one mechanism
 repeatedly introduce new failures in the same invariant class, stop patching
 symptoms and escalate the abstraction/design before another remediation round."*
-A fourth predicate is the thing that clause forbids.
+A fifth predicate is the thing that clause forbids.
 
 ## What replaces it
 
@@ -47,11 +58,20 @@ the states are exhaustive by construction rather than by a rule someone wrote:
     UNRESOLVED           none of the above. Meaning-bearing text that the
                          projection does not carry.
 
+Both `STRUCTURAL` producers are facts about what HAPPENED to the document. What
+neither of them is, and what nothing here may become, is a fact about what the
+document LOOKS like. Presentation syntax — `#`, `##`, bullets, list markers,
+punctuation, indentation, whatever a PDF extractor emits — is chosen by whoever
+typed or generated the source, and it says nothing about whether the words after
+it can be lost. A heading whose residue carries meaning is carried or it is
+`UNRESOLVED`, and there is no third answer that is safe.
+
 Completeness is then not a judgement. A projection is complete when nothing is
 `UNRESOLVED`, and the number reported is the share of accountable segments that
-became typed facts. No vocabulary decides it, no colon decides it, and no
-regex over placeholder-shaped text decides it — the only inputs are the spans
-the transformation recorded and the fields the projection actually carries.
+became typed facts. No vocabulary decides it, no colon decides it, no regex over
+placeholder-shaped text decides it, and no character at the start of a line
+decides it — the only inputs are the spans the transformation recorded and the
+fields the projection actually carries.
 
 ## What it deliberately does not do
 
@@ -63,7 +83,6 @@ reported, the status is reported, and the external synthesis is told.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -224,11 +243,6 @@ class SourceAccounting:
         )
 
 
-#: Markdown heading syntax. A `#` at the start of a line is structure the author
-#: typed deliberately, and recognising it reads a CHARACTER, not a word.
-_MARKDOWN_HEADING = re.compile(r"^\s*#+\s")
-
-
 def account(
     protected_text: str,
     events: tuple[RedactionEvent, ...],
@@ -272,6 +286,13 @@ def account(
                 event.kind,
             )
         )
+        # The other STRUCTURAL producer, and the reason it is legitimate: the
+        # span comes from the EVENT. The transformation recorded which label
+        # attributed the removal it performed, so calling that label structure
+        # is a statement about what happened, checkable against the record. It
+        # is not a vocabulary of field names and it cannot fire on a line where
+        # nothing was redacted — which is what separates it from every predicate
+        # this module has had to delete.
         if event.has_label() and 0 <= event.label_start:
             label_line = _line_containing(offsets, event.label_start)
             label_base = offsets[label_line]
@@ -316,6 +337,15 @@ def _account_line(
     left between them is residue, and residue that carries meaning and was not
     carried is UNRESOLVED. There is no fourth possibility and no branch that
     drops one.
+
+    That sentence was previously written while a branch below dropped one, which
+    is `AR18-1` / `ADV18-1`. What makes it true rather than aspirational is that
+    this function never looks at `line` to decide a STATE. It reads `line` for
+    its LENGTH and to slice text out of it; every state comes from `marks`, which
+    the transformation and the extractor produced. There is no predicate here
+    over the appearance of source text, and adding one is the move `00_RULES`
+    forbids — `tests/trust/test_presentation_syntax_is_not_an_exclusion.py`
+    asserts that no such pattern exists in this module at all.
     """
     segments: list[Segment] = []
     ordered = sorted(
@@ -361,22 +391,14 @@ def _account_line(
     if not _carries_meaning(remainder):
         # Whitespace, separators and the punctuation a removed value left
         # behind. Nothing here can be lost because nothing here says anything.
-        segments.append(
-            Segment(
-                line=index,
-                start=base + residue[0][0],
-                end=base + residue[-1][1],
-                state=SegmentState.STRUCTURAL,
-                text=remainder,
-            )
-        )
-        return segments
-
-    if _MARKDOWN_HEADING.match(line):
-        # `## Findings` is a structure marker the author typed. The test reads
-        # the `#` character and not the words after it, so no heading vocabulary
-        # exists to be widened — which is what the old Titlecase-plus-colon rule
-        # was, and it was one of the routes clinical lines disappeared through.
+        #
+        # This is the ONE remaining test against text in the walk, and it is not
+        # an exclusion: it is where the accountable population is DEFINED. It
+        # cannot remove meaning-bearing residue, because it only fires when the
+        # residue bears no meaning — no alphanumeric character in any script.
+        # A `#`, a bullet or an indent sitting in FRONT of words does not reach
+        # it; the words make the run meaning-bearing and the run is UNRESOLVED,
+        # carrying its presentation characters with it.
         segments.append(
             Segment(
                 line=index,
