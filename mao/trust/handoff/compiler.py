@@ -47,7 +47,8 @@ from mao.trust.classes import (
 )
 from mao.core.deident.report import RedactionEvent
 from mao.trust.handoff.accounting import CompletenessReport
-from mao.trust.handoff.extract import ExtractedFacts, age_group_for, extract
+from mao.trust.handoff.effective import EffectiveProjection
+from mao.trust.handoff.extract import ExtractedFacts, extract
 
 logger = logging.getLogger(__name__)
 
@@ -108,31 +109,42 @@ def case_from_facts(
     age is better evidence than a regex finding a two-digit number near the word
     "aged", and the structured pathway is what the ambiguity policy points a
     refused caller at — so it has to be worth using.
+
+    What CHANGED at ADV19-1 is not that they win. It is that winning is no
+    longer invisible. The resolution happens once, in
+    `EffectiveProjection.resolve`, which records for every field what it carries
+    and which extracted values it therefore does not — and the account is
+    re-stated against that same model before any completeness claim is made. A
+    displaced finding becomes `UNRESOLVED` and is named, instead of remaining
+    `TYPED_FACT` in a payload that calls itself complete.
     """
     structured = structured or {}
-    age_group = facts.age_group
-    if structured.get("age"):
-        try:
-            age_group = age_group_for(int(str(structured["age"]).strip()))
-        except ValueError:
-            logger.debug("structured age %r is not a number", structured.get("age"))
-
-    def _listed(key: str) -> tuple[str, ...]:
-        raw = structured.get(key, "")
-        return tuple(part.strip() for part in raw.split(";") if part.strip())
+    projection = EffectiveProjection.resolve(facts, structured)
+    age_group = projection.values_for("age_group")
 
     return ProtectedCaseContext(
         case_id_internal=uuid.uuid4().hex,
+        # `clinical_question` and `jurisdiction` are resolved here rather than
+        # through the effective model, and the reason is the model's scope
+        # rather than an oversight: the model exists to make DISPLACEMENT
+        # accountable, and neither of these can displace anything. The extractor
+        # records no carried span against either — `_QUESTION` sets
+        # `clinical_question` without claiming a segment — so no source segment
+        # is counted carried on the strength of them, and there is nothing for
+        # the account to be wrong about. A field that ever acquires a carried
+        # span must move into the model, and `represents` fails closed for any
+        # field the model does not name, so that move is forced rather than
+        # remembered.
         clinical_question=(
             question.strip()
             or structured.get("clinical_question", "").strip()
             or facts.clinical_question
         ),
-        demographics={"age_group": age_group} if age_group else {},
-        conditions=_listed("conditions"),
-        medications=_listed("medications") or facts.medications,
-        allergies=_listed("allergies"),
-        findings=_listed("findings") or facts.findings,
+        demographics={"age_group": age_group[0]} if age_group else {},
+        conditions=projection.values_for("conditions"),
+        medications=projection.values_for("medications"),
+        allergies=projection.values_for("allergies"),
+        findings=projection.values_for("findings"),
         vitals=dict(facts.vitals),
         labs=dict(facts.labs),
         jurisdiction=jurisdiction or structured.get("jurisdiction", ""),
@@ -148,9 +160,36 @@ def case_from_facts(
         # requirements. The measurement lives on `facts.accounting`, which never
         # leaves the process; what crosses the boundary is
         # `CompletenessReport`, which is counts and line numbers.
-        uncertainties=_listed("uncertainties"),
+        uncertainties=projection.values_for("uncertainties"),
         source_provenance=provenance,
     )
+
+
+def accounted_projection(
+    context: ProtectedCaseContext, facts: ExtractedFacts
+) -> ExtractedFacts:
+    """These facts with the account re-stated against the projection that ships.
+
+    THE seam ADV19-1 turns on, and the reason it is a named function called on
+    every path rather than a line inside `compile_handoff`.
+
+    The extractor's account is a claim about an intermediate object: it says
+    which source spans IT turned into facts. The payload is built from `context`
+    — in which a caller-supplied structured field may have displaced an
+    extracted one — so the claim has to be put to `context` before any
+    completeness statement derives from it. `EffectiveProjection.of_case` reads
+    the compiled context, `accounting.against` re-states each `TYPED_FACT`
+    segment the projection cannot be asked to show, and completeness, coverage
+    and the named source lines then all describe the object the external model
+    actually receives.
+
+    Idempotent, so calling it on the refusal path and again on the compile path
+    cannot compound: a segment already `UNRESOLVED` stays `UNRESOLVED`, and one
+    the projection still carries is unaffected by being asked twice. That is
+    what lets every entry point apply it without any of them having to know
+    whether another already did.
+    """
+    return facts.accounted_against(EffectiveProjection.of_case(context, facts).represents)
 
 
 def _require_substance(context: ProtectedCaseContext, facts: ExtractedFacts) -> None:
@@ -241,7 +280,7 @@ def compile_evidence_query(
     only here because it survived the protected boundary, and the boundary
     removed the identifiers from it.
     """
-    _require_substance(context, facts)
+    _require_substance(context, accounted_projection(context, facts))
     return SafeEvidenceQuery(
         query_id=uuid.uuid4().hex,
         search_intent=context.clinical_question or "clinical evidence",
@@ -275,7 +314,14 @@ def compile_synthesis_context(
     is substituted for the projection — which is what makes "external clinical
     synthesis receives only SafeSynthesisContext" a property of the type rather
     than a rule somebody has to remember.
+
+    The account is re-stated against `context` HERE, and not left to the caller,
+    for the same reason: a projection whose completeness was measured against
+    something other than itself is the ADV19-1 defect, and the only way to
+    guarantee it cannot be built is for the re-statement to have no branch that
+    omits it.
     """
+    facts = accounted_projection(context, facts)
     _require_substance(context, facts)
     return SafeSynthesisContext(
         context_id=uuid.uuid4().hex,
@@ -332,6 +378,12 @@ def compile_handoff(
         jurisdiction=jurisdiction,
         provenance=provenance,
     )
+    # The account the handoff CARRIES is the one re-stated against the compiled
+    # case, so `handoff.facts.completeness()` describes the payload rather than
+    # the extractor's intermediate view. Without this the response metadata, the
+    # Redis cache and the trace would keep reporting the pre-override account
+    # even though the projection itself no longer does.
+    facts = accounted_projection(case, facts)
     return SafeHandoff(
         facts=facts,
         case=case,

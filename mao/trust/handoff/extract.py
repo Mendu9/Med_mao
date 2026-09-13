@@ -42,7 +42,8 @@ case the model was told half of.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
 from mao.core.deident.lexicon import NOT_A_NAME, has_clinical_head
 from mao.core.deident.report import RedactionEvent
@@ -156,6 +157,22 @@ class ExtractedFacts:
         """
         return self.accounting.report()
 
+    def accounted_against(
+        self, represented: Callable[[str, str], bool]
+    ) -> ExtractedFacts:
+        """These facts with the account re-stated against the shipped projection.
+
+        The extractor's own view of what it carried is a CLAIM about an
+        intermediate object. What ships is the compiled projection, in which a
+        caller-supplied structured field may have displaced an extracted one, so
+        the claim has to be put to the projection before it can be reported as
+        completeness. See `accounting.against` and ADV19-1.
+
+        The typed fields are untouched: this changes what is ACCOUNTED, never
+        what was extracted.
+        """
+        return replace(self, accounting=self.accounting.against(represented))
+
     def coverage(self) -> float:
         """The share of accountable segments the projection carries."""
         return self.completeness().coverage()
@@ -210,7 +227,7 @@ def extract(
     findings: list[str] = []
     vitals: dict[str, str] = {}
     labs: dict[str, str] = {}
-    carried: dict[int, list[tuple[int, int, str]]] = {}
+    carried: dict[int, list[tuple[int, int, str, str]]] = {}
     age_group = ""
 
     for index, line in enumerate(lines):
@@ -220,7 +237,12 @@ def extract(
         #: Where `stripped` sits inside `line`, so every span recorded below is
         #: in the LINE's coordinates and not the stripped copy's.
         shift = line.index(stripped) if stripped else 0
-        spans: list[tuple[int, int, str]] = []
+        #: `(start, end, field, represents)`. `represents` is the VALUE the
+        #: field would carry for this span, which is not always the span's text:
+        #: an age ships as a band and a vital ships as a number. The account
+        #: later puts that value to the projection that actually ships, so
+        #: recording it here is what makes the TYPED_FACT claim checkable.
+        spans: list[tuple[int, int, str, str]] = []
 
         # A rule that carries a NUMBER records the number's span. A rule that
         # carries the LINE records the whole line. The distinction is the whole
@@ -231,8 +253,15 @@ def extract(
         age = _AGE.search(stripped)
         if age is not None:
             try:
-                age_group = age_group or age_group_for(int(age.group(1)))
-                spans.append((shift + age.start(), shift + age.end(), "age_group"))
+                # The BAND this span represents, not the band that is kept. A
+                # second, differing age on a later line represents a band the
+                # projection does not carry, and saying so is the same property
+                # as saying so when a caller's `age` displaces it.
+                band = age_group_for(int(age.group(1)))
+                age_group = age_group or band
+                spans.append(
+                    (shift + age.start(), shift + age.end(), "age_group", band)
+                )
             except ValueError:  # pragma: no cover - the pattern guarantees digits
                 pass
 
@@ -240,20 +269,34 @@ def extract(
             found = pattern.search(stripped)
             if found is not None and name not in vitals:
                 vitals[name] = found.group(1)
-                spans.append((shift + found.start(), shift + found.end(), "vitals"))
+                spans.append(
+                    (
+                        shift + found.start(),
+                        shift + found.end(),
+                        "vitals",
+                        f"{name}={found.group(1)}",
+                    )
+                )
 
         for name, pattern in _LABS:
             found = pattern.search(stripped)
             if found is not None and name not in labs:
                 labs[name] = found.group(1)
-                spans.append((shift + found.start(), shift + found.end(), "labs"))
+                spans.append(
+                    (
+                        shift + found.start(),
+                        shift + found.end(),
+                        "labs",
+                        f"{name}={found.group(1)}",
+                    )
+                )
 
         if _DOSE.search(stripped):
             medications.append(stripped)
-            spans = [(shift, shift + len(stripped), "medications")]
+            spans = [(shift, shift + len(stripped), "medications", stripped)]
         elif _is_clinical_line(stripped):
             findings.append(stripped)
-            spans = [(shift, shift + len(stripped), "findings")]
+            spans = [(shift, shift + len(stripped), "findings", stripped)]
 
         if spans:
             carried[index] = spans

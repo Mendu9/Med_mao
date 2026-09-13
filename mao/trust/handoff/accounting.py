@@ -58,6 +58,38 @@ the states are exhaustive by construction rather than by a rule someone wrote:
     UNRESOLVED           none of the above. Meaning-bearing text that the
                          projection does not carry.
 
+## Why `TYPED_FACT` is now a claim about the SHIPPED projection
+
+`TYPED_FACT`'s contract above was, until `ea46e7e`, an ASSUMPTION. The extractor
+reported which spans it had turned into facts, and this module believed it —
+but the extractor's facts are not the payload. `compile_handoff` builds the
+shipped `SafeSynthesisContext` from an EFFECTIVE field resolution in which a
+caller-supplied structured field displaces the extracted one, so a segment could
+sit in the numerator of `coverage()` after its represented value had been
+displaced out of the payload:
+
+    ea46e7e  `medications=_listed("medications") or facts.medications` and
+             `findings=_listed("findings") or facts.findings`. With either key
+             supplied, the extractor's values were discarded ENTIRELY and this
+             account was never told. Measured through the real report boundary:
+             `Complete heart block`, `Penicillin allergy - anaphylaxis` and
+             `Warfarin 5mg od` all absent from the payload at coverage 1.0000
+             with the payload affirmatively stating `Complete`, on a request
+             asking whether a bradycardic drug was safe.        ADV19-1
+
+That is the same absent-and-complete signature as the four predicates above,
+reached from OUTSIDE the account rather than inside it: the account measured one
+object and the payload was built from another. So no fifth predicate closes it,
+and neither does a merge rule — merging narrows the population without making
+the two objects agree.
+
+`against()` closes it by construction. The account is RE-STATED against the
+effective projection that actually ships: a segment stays `TYPED_FACT` only when
+that projection can be asked to show the value it represents, and becomes
+`UNRESOLVED` when it cannot. Completeness, coverage and the named source lines
+then all derive from the object the external model receives, which is what makes
+the contract above true rather than aspirational.
+
 Both `STRUCTURAL` producers are facts about what HAPPENED to the document. What
 neither of them is, and what nothing here may become, is a fact about what the
 document LOOKS like. Presentation syntax — `#`, `##`, bullets, list markers,
@@ -83,6 +115,7 @@ reported, the status is reported, and the external synthesis is told.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -131,6 +164,14 @@ class Segment:
     #: Which projection field carried it, when `TYPED_FACT`. Field names only.
     carried_as: str = ""
     kind: str = ""
+    #: The VALUE the projection would carry for this span, when `TYPED_FACT`.
+    #:
+    #: Not always the source text, which is why it is recorded rather than
+    #: re-derived: a carried age ships as a BAND and a carried vital ships as a
+    #: number, so `Aged 84` represents `older_adult_75_89` and `HR 36`
+    #: represents `heart_rate=36`. `against()` asks the shipped projection
+    #: whether it can show THIS, which is what the `TYPED_FACT` contract claims.
+    represents: str = ""
 
 
 @dataclass(frozen=True)
@@ -230,6 +271,61 @@ class SourceAccounting:
             segment.text for segment in self.in_state(SegmentState.UNRESOLVED)
         )
 
+    def against(self, represented: Callable[[str, str], bool]) -> SourceAccounting:
+        """Re-state this account against the projection that actually ships.
+
+        `represented(field, value)` answers one question and only one: can the
+        compiled projection be asked to show `value` in `field`? It is supplied
+        by `mao.trust.handoff.effective`, which reads the compiled
+        `ProtectedCaseContext` — the object `SafeSynthesisContext` is built from
+        field by field — so the answer is about the payload and not about the
+        extractor's intermediate view.
+
+        A segment the projection cannot show becomes `UNRESOLVED`: it is
+        meaning-bearing text the projection does not carry, which is that
+        state's definition exactly. It is not given a state of its own, because
+        a fifth state would be a second opinion about what happened and this
+        module has already had to delete four of those. `UNRESOLVED` also means
+        the loss reaches `unresolved_lines`, so the clinician is pointed at the
+        source line rather than merely told a number moved.
+
+        No new `STRUCTURAL` producer is introduced here and none could be: the
+        only transition this performs is `TYPED_FACT -> UNRESOLVED`, and every
+        other segment is returned unchanged.
+
+        Idempotent, so applying it on more than one path cannot compound. A
+        segment already `UNRESOLVED` is returned untouched, and a segment the
+        projection still carries is unaffected by being asked twice.
+        """
+        return SourceAccounting(
+            segments=tuple(
+                self._restate(segment, represented) for segment in self.segments
+            )
+        )
+
+    @staticmethod
+    def _restate(
+        segment: Segment, represented: Callable[[str, str], bool]
+    ) -> Segment:
+        if segment.state is not SegmentState.TYPED_FACT:
+            return segment
+        if represented(segment.carried_as, segment.represents):
+            return segment
+        return Segment(
+            line=segment.line,
+            start=segment.start,
+            end=segment.end,
+            state=SegmentState.UNRESOLVED,
+            text=segment.text,
+            # The field no longer carries it, so the claim that it did is
+            # dropped with the state. `represents` is KEPT: it is what the
+            # projection was asked for and could not show, and discarding it
+            # would make the displacement unexaminable.
+            carried_as="",
+            kind=segment.kind,
+            represents=segment.represents,
+        )
+
     def report(self) -> CompletenessReport:
         unresolved = self.in_state(SegmentState.UNRESOLVED)
         return CompletenessReport(
@@ -246,13 +342,21 @@ class SourceAccounting:
 def account(
     protected_text: str,
     events: tuple[RedactionEvent, ...],
-    carried: dict[int, list[tuple[int, int, str]]],
+    carried: dict[int, list[tuple[int, int, str, str]]],
 ) -> SourceAccounting:
     """Attribute every part of `protected_text` to exactly one state.
 
     `events` are the redactions that actually happened, in this text's own
     coordinates. `carried` maps a line index to the SPANS of that line the
-    extractor turned into a typed fact, each with the field that carries it.
+    extractor turned into a typed fact, each with the field that carries it AND
+    the value that field would carry — which is what `against()` later puts to
+    the projection that ships. The value is recorded at the point the span is
+    claimed, because only the extractor knows that `Aged 84` becomes a band and
+    `HR 36` becomes a number.
+
+    This is a CLAIM, not a conclusion. Until it is re-stated against the
+    compiled projection it says what the extractor carried, and at `ea46e7e`
+    that was mistaken for what the payload carries — see the module docstring.
 
     SPANS, not a per-line boolean. A line-level flag said "something on this
     line became a fact", and `Contraindicated per cardiology, HR 36` yields
@@ -275,7 +379,7 @@ def account(
         offsets.append(position)
         position += len(content) + len(terminator)
 
-    by_line: dict[int, list[tuple[int, int, SegmentState, str]]] = {}
+    by_line: dict[int, list[tuple[int, int, SegmentState, str, str]]] = {}
     for event in events:
         base = offsets[event.line] if event.line < len(offsets) else 0
         by_line.setdefault(event.line, []).append(
@@ -284,6 +388,7 @@ def account(
                 event.end - base,
                 SegmentState.IDENTIFIER_REMOVED,
                 event.kind,
+                "",
             )
         )
         # The other STRUCTURAL producer, and the reason it is legitimate: the
@@ -302,12 +407,13 @@ def account(
                     event.label_end - label_base,
                     SegmentState.STRUCTURAL,
                     event.kind,
+                    "",
                 )
             )
     for index, spans in carried.items():
-        for start, end, field in spans:
+        for start, end, field, represents in spans:
             by_line.setdefault(index, []).append(
-                (start, end, SegmentState.TYPED_FACT, field)
+                (start, end, SegmentState.TYPED_FACT, field, represents)
             )
 
     segments: list[Segment] = []
@@ -328,7 +434,7 @@ def _account_line(
     index: int,
     base: int,
     line: str,
-    marks: list[tuple[int, int, SegmentState, str]],
+    marks: list[tuple[int, int, SegmentState, str, str]],
 ) -> list[Segment]:
     """Account one line: the marked spans, then everything between them.
 
@@ -350,8 +456,8 @@ def _account_line(
     segments: list[Segment] = []
     ordered = sorted(
         (
-            (max(0, start), min(len(line), end), state, kind)
-            for start, end, state, kind in marks
+            (max(0, start), min(len(line), end), state, kind, represents)
+            for start, end, state, kind, represents in marks
             if start < len(line) and end > 0 and start < end
         ),
         # A whole-line TYPED_FACT and a redaction inside it both claim the same
@@ -363,7 +469,7 @@ def _account_line(
 
     cursor = 0
     residue: list[tuple[int, int]] = []
-    for start, end, state, kind in ordered:
+    for start, end, state, kind, represents in ordered:
         if end <= cursor:
             continue
         start = max(start, cursor)
@@ -378,6 +484,7 @@ def _account_line(
                 text=line[start:end],
                 kind="" if state is SegmentState.TYPED_FACT else kind,
                 carried_as=kind if state is SegmentState.TYPED_FACT else "",
+                represents=represents if state is SegmentState.TYPED_FACT else "",
             )
         )
         cursor = end
