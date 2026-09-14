@@ -42,7 +42,6 @@ ignore = ["RUF100", "RUF001", "RUF002", "RUF003"]
 
 # Optional-dependency probes: the import IS the availability check.
 "app/graph_explorer.py" = ["F401"]
-"mao/data/download_pmc.py" = ["F401"]
 
 # Heavy model imports are deferred behind runtime guards on purpose.
 "mao/rag/reranker.py" = ["E402"]

@@ -1,0 +1,15 @@
+{
+  "artifact_id": "mao-corpus-sample",
+  "repo": "ArunMendu/mao-corpus-sample",
+  "repo_type": "dataset",
+  "revision": "34a44a84f1b77fb0146442fd90b7ca577ff27bb9",
+  "files": [
+    {
+      "path": "corpus_v1_sample.parquet",
+      "sha256": "8e5f54bde8aff7e5f9c9bc7545a7d948f93037ffea299da4d0fda8673f2a706d",
+      "bytes": 56651,
+      "rows": 7
+    }
+  ],
+  "note": "Offline CI fixture. Resolved from the committed bytes in tests/fixtures/corpus; never fetched over the network."
+}

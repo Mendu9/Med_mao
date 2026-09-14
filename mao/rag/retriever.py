@@ -93,25 +93,18 @@ def _load_bm25_from_disk() -> None:
         try:
             from rank_bm25 import BM25Okapi
 
-            # Try local disk first, then HF Hub (for HF Spaces where the 95MB file can't be bundled)
+            # Local disk only (R6). This used to fall back to an
+            # `hf_hub_download` with no `revision=`, no checksum, and a
+            # hardcoded POSIX-only /tmp local_dir — a floating, unverified fetch
+            # into a path that does not exist on Windows. What it fetched was
+            # the legacy 161 MB
+            # corpus, which the P2-0 audit found carries no redistribution right
+            # for 35% of its documents, so pinning that download was not the fix.
+            #
+            # A published corpus artifact is materialized through `mao.artifacts`
+            # instead, which verifies an immutable revision and SHA-256 before
+            # anything reads the bytes.
             _bm25_json_resolved = _BM25_JSON_PATH
-            if not _bm25_json_resolved.exists():
-                hf_repo = os.getenv("BM25_HF_REPO", "ArunMendu/Med_mao-data")
-                hf_filename = os.getenv("BM25_HF_FILENAME", "bm25_corpus.json")
-                try:
-                    from huggingface_hub import hf_hub_download
-                    logger.info("BM25 corpus not on disk — downloading from HF Hub (%s/%s)", hf_repo, hf_filename)
-                    downloaded = hf_hub_download(
-                        repo_id=hf_repo,
-                        filename=hf_filename,
-                        repo_type="dataset",
-                        local_dir="/tmp",
-                    )
-                    import pathlib
-                    _bm25_json_resolved = pathlib.Path(downloaded)
-                    logger.info("BM25 corpus downloaded to %s", _bm25_json_resolved)
-                except Exception as dl_exc:
-                    logger.warning("BM25 HF Hub download failed — BM25 disabled: %s", dl_exc)
 
             if _bm25_json_resolved.exists():
                 import json as _json
@@ -152,6 +145,17 @@ def _load_bm25_from_disk() -> None:
                 logger.info(
                     "BM25 index rebuilt from legacy pickle: %d documents", len(corpus)
                 )
+                return
+
+            # No corpus on disk at all — the normal state of a fresh clone.
+            # Degrade to dense-only retrieval rather than retrying this load on
+            # every query; `_bm25_loaded` is the "we tried" flag, not "we have it".
+            logger.warning(
+                "No BM25 corpus found at %s — BM25 disabled for this session; "
+                "dense retrieval is unaffected",
+                _BM25_JSON_PATH,
+            )
+            _bm25_loaded = True
         except Exception as exc:
             logger.warning("BM25 disk load failed — BM25 disabled for this session: %s", exc)
             _bm25_loaded = True  # prevent infinite retry on corrupt data

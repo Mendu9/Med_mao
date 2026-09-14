@@ -1,0 +1,51 @@
+{
+  "artifact_id": "mao-corpus-source",
+  "repo": "ArunMendu/mao-corpus-source",
+  "repo_type": "dataset",
+  "revision": "5a74767a457d2c07fdb116d0070f3ffe65d84338",
+  "files": [
+    {
+      "path": "corpus_manifest.json",
+      "sha256": "86a72763dcf59c6e49a6bdde511983a313293ad8f19e7bbb58c1f29bbab1d02a",
+      "bytes": 1257
+    },
+    {
+      "path": "documents.parquet",
+      "sha256": "1a06ca1b6a22ae28b320c4462d337ce706337379dabbd80f5b91287c2ea60290",
+      "bytes": 7991287,
+      "rows": 584
+    },
+    {
+      "path": "exclusions.json",
+      "sha256": "a9041d060f121cd5533eaa6f7a5d08b79683c7d300a8387504a007d8031bc883",
+      "bytes": 42451
+    },
+    {
+      "path": "provenance.json",
+      "sha256": "bd2475505b659c88eb89d5d33cba0d8e937e5e44d53514de47b5a3c8b159e176",
+      "bytes": 999919
+    }
+  ],
+  "corpus_version": "1.0.0",
+  "granularity": "document",
+  "license_summary": {
+    "CC-BY-NC-4.0": 102,
+    "CC-BY-4.0": 460,
+    "CC-BY-3.0": 7,
+    "CC-BY-NC-SA-4.0": 7,
+    "CC-BY-NC-3.0": 6,
+    "CC-BY-2.0": 1,
+    "CC-BY-NC-SA-1.0": 1
+  },
+  "counts": {
+    "candidates": 900,
+    "admitted": 584,
+    "excluded": 316,
+    "excluded_by_reason": {
+      "license": 315,
+      "retracted": 1
+    },
+    "legacy_pdfs_excluded": 42
+  },
+  "pinned_utc": "2026-09-14T05:11:43+00:00"
+}
