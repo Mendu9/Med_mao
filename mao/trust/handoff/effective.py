@@ -51,7 +51,22 @@ show it"* — is true by construction.
 
 `resolve()` is the BUILD side: it performs the override arithmetic once, with
 provenance, and `compiler.case_from_facts` assembles the `ProtectedCaseContext`
-out of its values.
+out of its values — for SIX of the eight fields.
+
+ADV20-6 / ADV20-3, deferred from Phase 1 and corrected here in P2-1: `vitals`
+and `labs` do NOT come from the resolution. `case_from_facts` builds them from
+`facts` directly (`compiler.py:148-149`), and `resolve` hardcodes both to a bare
+`stated=()` literal (see `resolve`). The control-document half of this was
+corrected at Phase 1 close; this docstring was not, because no application code
+was modified at that gate — so the file said "out of its values" without
+qualification while two fields bypassed the model entirely.
+
+That matters beyond accuracy: `HandoffRefused._WANTED` asks a refused caller for
+`vitals` and `labs` BY NAME, and a caller who resupplies either has the key
+silently dropped. Two of the seven fields in the refusal advice are INERT. That
+is ADV20-5, it is NOT fixed here, and it belongs with the structured-field
+schema work — the same place that decides which keys may be SENT is the place to
+state which are HONOURED. Fixing the docstring does not fix the field.
 
 `of_case()` is the MEASURE side: it reads those same fields back off the
 compiled context — the object `SafeSynthesisContext` is built from field by

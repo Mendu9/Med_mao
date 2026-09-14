@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from mao.core.deident.ambiguity import AmbiguousDocument
+from mao.trust.handoff.compiler import HandoffRefused
 from mao.trust.inputs import limits
 
 from mao.api.executor import get_executor
@@ -104,6 +105,25 @@ async def run_graph(state: MAOState, request_id: str) -> dict[str, Any]:
         # exception's message to the application log — and that message named
         # the very text that could not be de-identified, putting the patient's
         # name in a log on the de-identification failure path.
+        raise
+    except HandoffRefused:
+        # ADV20-1. NOT a failure — the third deliberate refusal raised from
+        # inside the graph, and the third to need this clause. `compile_handoff`
+        # raises it when no payload can be built that both excludes the
+        # identifiers and carries enough of the case to answer; the route turns
+        # it into a 422 naming the structured fields that would resolve it.
+        #
+        # Without this clause it fell to the generic handler below and the
+        # caller got a 500 with none of those seven fields — so the product's
+        # own refusal -> structured-resupply workflow could not complete, while
+        # the refusal message went to the application log instead, where no
+        # caller can act on it. Section P made that the common path rather than
+        # a rare one.
+        #
+        # Staying out of `logger.exception` matters for the same reason as the
+        # two clauses above, though not for the same risk: the message holds no
+        # document text, but a deliberate refusal logged at ERROR with a
+        # traceback trains operators to read this path as broken.
         raise
     except Exception as exc:
         # Full cause here, where it is useful and stays inside the process.

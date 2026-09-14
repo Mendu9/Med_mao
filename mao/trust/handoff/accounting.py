@@ -132,18 +132,32 @@ class SegmentState(str, Enum):
     UNRESOLVED = "unresolved"
 
 
-#: Characters that cannot carry meaning on their own. A run consisting only of
-#: these is structure — a separator, a rule, a bullet, the punctuation left
-#: behind when a label's value was removed.
-#:
-#: This is a STRUCTURAL set and not a vocabulary: it names no word, and adding a
-#: word to it is not possible. `str.isalnum()` decides the rest, which covers
-#: every script rather than the Latin one.
-_PUNCTUATION = " \t\r\n|=#*_`~/\\<>[](){}«»“”‘’\"'.,;:!?-–—•■□▪●○+&@%$^"
-
-
 def _carries_meaning(text: str) -> bool:
-    """Whether this run has any character a reader could take meaning from."""
+    """Whether this run has any character a reader could take meaning from.
+
+    The boundary is `str.isalnum()`, and nothing else. A run with no
+    alphanumeric character is STRUCTURAL — a separator, a rule, a bullet, the
+    punctuation left behind when a label's value was removed.
+
+    A `_PUNCTUATION` constant listing those characters used to sit here.
+    AR19-3 / ADV18-6 found it DEAD: nothing read it, and its comment described a
+    boundary the code does not consult, so a reader checking what counts as
+    structure was reading a set that decides nothing. Removed in P2-1. The rule
+    is `isalnum()`, which covers every script rather than the Latin one, and it
+    is now stated where it is implemented.
+
+    D-8 IS OPEN AND IS NOT RESOLVED BY THIS. AR19-1 / ADV19-3: an alnum-free run
+    in ANY script is structural, so a residue like '↓↓' leaves the accountable
+    population, while invariant 12's English wording ("meaning-bearing residue")
+    is broader than this operational definition — and a clinician does take
+    meaning from '↓↓'. Re-measured by BOTH reviewers at a153f0c: 13 of 13
+    reproduce in the adversarial shape, 0 in the realistic shape, and neither
+    could construct a document where the symbol carried a decisive fact the rest
+    of the line did not. The gap is real, measured at three successive gates,
+    and belongs to the Evaluation Lab — widening this predicate by example is
+    the failure mode Phase 2 exists to end. Deleting the dead constant does not
+    narrow or widen it.
+    """
     return any(character.isalnum() for character in text)
 
 

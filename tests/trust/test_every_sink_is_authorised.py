@@ -414,6 +414,69 @@ class TestThePolicyTableDocumentsOnlyCoverageTheCodeHas:
             "documents coverage the code does not have."
         )
 
+    def test_every_flow_with_a_row_has_a_production_call_site(self) -> None:
+        """AR17-5b / ADV17-4 — the test above is DESTINATION-granular, and the
+        policy table is (destination, purpose)-granular.
+
+        Both reviews found `authorise_vector_embedding` with zero call sites and
+        both noted why removing the wrapper alone would have made things worse:
+        the `(VECTOR_STORE, EMBEDDING)` row would have survived with nothing
+        consulting it, and the check above keys on the PREFIX
+        `authorise_vector_`, which `authorise_vector_query` already satisfies.
+        So the destination stayed "covered" while one of its two purposes was
+        not — the gap was structurally undetectable at that granularity.
+
+        This asserts the missing half: a row is coverage the code has only if
+        something outside the egress package names that PURPOSE. Otherwise the
+        table documents a flow the application cannot make, which is the exact
+        A-4 finding ("Recorded: yes. Enforced: for one destination of seven.")
+        one level down.
+        """
+        from mao.trust.egress.policy import Destination, named_flows
+
+        callers = "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in pathlib.Path("mao").rglob("*.py")
+            if "trust/egress/" not in path.as_posix()
+        )
+
+        # The ONE symbol that can trigger each flow. A sink wrapper names its
+        # own purpose internally, so for those the wrapper IS the marker and the
+        # prefix must not be shared — `authorise_vector_query` and
+        # `authorise_vector_embedding` are two flows, not one.
+        # MODEL_PROVIDER has no wrapper: its call sites pass the purpose
+        # directly, so the purpose itself is the marker.
+        trigger = {
+            ("web_search", "evidence_search"): "authorise_web_search",
+            ("scholarly_api", "evidence_search"): "authorise_scholarly",
+            ("vector_store", "evidence_search"): "authorise_vector_query",
+            ("external_memory", "memory_write"): "authorise_memory_write",
+            ("external_memory", "memory_read"): "authorise_memory_read",
+        }
+
+        unread, unmapped = [], []
+        for destination, purpose, _classes in named_flows():
+            flow = (destination.value, purpose.value)
+            if destination is Destination.MODEL_PROVIDER:
+                marker = f"EgressPurpose.{purpose.name}"
+            elif flow in trigger:
+                marker = trigger[flow]
+            else:
+                unmapped.append("/".join(flow))
+                continue
+            if marker not in callers:
+                unread.append("/".join(flow))
+
+        assert unmapped == [], (
+            f"{sorted(unmapped)} is a policy row this test does not know how to "
+            "trigger. Add its wrapper here — an unmapped row is an unchecked row."
+        )
+        assert sorted(unread) == [], (
+            f"the policy table declares rows for {sorted(unread)} that nothing "
+            "outside the egress package can trigger. A row nothing reads "
+            "documents coverage the code does not have."
+        )
+
     def test_the_wrapper_check_would_notice_a_missing_caller(self) -> None:
         """Non-vacuity for the test above: the strings it looks for are the
         ones the wrappers are actually named, so a typo in this map would make
@@ -424,7 +487,9 @@ class TestThePolicyTableDocumentsOnlyCoverageTheCodeHas:
             "authorise_web_search",
             "authorise_scholarly",
             "authorise_vector_query",
-            "authorise_vector_embedding",
+            # `authorise_vector_embedding` is deliberately absent: retired in
+            # P2-1 with its policy row (AR17-5b / ADV17-4). Re-adding it here
+            # without a call site would re-create the finding.
             "authorise_memory_write",
             "authorise_memory_read",
         ):

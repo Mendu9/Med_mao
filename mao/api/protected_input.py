@@ -51,6 +51,7 @@ from fastapi import HTTPException
 from mao.guardrails.db_helper import log_guardrail_event
 from mao.guardrails.input_guardrails import GuardrailSeverity
 from mao.trust.classes import RawSensitiveInput
+from mao.trust.handoff.compiler import HandoffRefused
 from mao.trust.inputs import limits
 from mao.trust.inputs.boundary import ProtectedInput, protect
 
@@ -245,5 +246,43 @@ def payload_too_large(exc: limits.InputTooLarge, request_id: str) -> HTTPExcepti
     )
     return HTTPException(
         status_code=413,
+        detail=f"{exc} Quote this reference if you need help: {request_id}",
+    )
+
+
+def handoff_refused(exc: HandoffRefused, request_id: str) -> HTTPException:
+    """The 422 both chat routes answer with when no safe projection exists.
+
+    ADV20-1: this exception had no handler anywhere in `mao/`. It is raised
+    inside `compile_handoff`, several frames below the route, so it fell to
+    `run_graph`'s generic `except Exception` and reached the caller as an opaque
+    500 carrying none of the seven fields it names. The refusal was correct —
+    M-1 requires "clarify/request structured input or refuse" and the handoff IS
+    refused — but the caller was never told it had happened or what to send, so
+    the documented refusal -> structured-resupply loop was unreachable at the
+    transport.
+
+    Built here, once, for the same reason `payload_too_large` is: `/chat` and
+    `/chat/stream` drifted over `AmbiguousDocument` when each formatted its own
+    answer, one replying 422 and the other a bare 500.
+
+    422 rather than 500 because nothing failed. The request was understood and
+    declined, and the response says what would make it answerable — which is the
+    same posture, and the same status, as the `AmbiguousDocument` refusal
+    alongside it.
+
+    THE DETAIL CARRIES NO DOCUMENT CONTENT, by construction rather than by
+    filtering: `HandoffRefused.__init__` composes its message from a fixed
+    reason string, a coverage percentage and `_WANTED`, and holds no span, no
+    line and no source text. That is why this finding was HIGH and not CRITICAL,
+    and it is asserted in tests/api/test_a_refused_handoff_reaches_the_caller.py
+    rather than left as a claim.
+    """
+    logger.warning(
+        "request_id=%s refusing an unsafe clinical handoff: %s",
+        request_id, exc.reason,
+    )
+    return HTTPException(
+        status_code=422,
         detail=f"{exc} Quote this reference if you need help: {request_id}",
     )

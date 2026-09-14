@@ -45,7 +45,7 @@ from mao.trust.classes import NEVER_EXTERNAL, TrustClass
 #: Bumped whenever a row changes. A trace citing a version must be able to
 #: reconstruct the decision that was made, which means the version has to move
 #: when the decision does.
-EGRESS_POLICY_VERSION = "2026.09-2"
+EGRESS_POLICY_VERSION = "2026.09-3"
 
 
 class Destination(str, Enum):
@@ -148,10 +148,27 @@ _ALLOWED: dict[tuple[Destination, EgressPurpose], frozenset[TrustClass]] = {
     (Destination.VECTOR_STORE, EgressPurpose.EVIDENCE_SEARCH): frozenset(
         {TrustClass.SAFE_EVIDENCE_QUERY, TrustClass.SAFE_DERIVED_TEXT}
     ),
-    (Destination.VECTOR_STORE, EgressPurpose.EMBEDDING): frozenset(
-        {TrustClass.SAFE_EVIDENCE_QUERY, TrustClass.SAFE_DERIVED_TEXT,
-         TrustClass.PUBLIC_EVIDENCE}
-    ),
+    # (VECTOR_STORE, EMBEDDING) was here and is REMOVED — AR17-5b / ADV17-4,
+    # deferred from Phase 1 and closed in P2-1.
+    #
+    # Both reviews found `authorise_vector_embedding` with ZERO call sites.
+    # Embeddings resolve to a LOCAL sentence-transformers model, so the wrapper
+    # was dead code rather than an open sink — but the row is the part that
+    # mattered: it documented a flow the application cannot make, and the
+    # destination-level coverage test could not see the gap because it keys on
+    # the prefix `authorise_vector_`, which `authorise_vector_query` satisfies.
+    # Removing the wrapper ALONE would have left the row unread and made the gap
+    # LESS visible, which is why both are retired together and why the coverage
+    # test is now (destination, purpose)-granular.
+    #
+    # `EgressPurpose.EMBEDDING` is deliberately KEPT as vocabulary. P2-5 may
+    # select a HOSTED embedding model, which would be a real egress — at that
+    # point re-add this row together with a wrapper that has a real call site,
+    # and bump the version again. The enum member is not a claim of coverage;
+    # a row is.
+    #
+    # Absent key => refused, so an embedding call that appears before that
+    # decision is made fails closed rather than inheriting a stale allowance.
     # External memory. `01_ARCHITECTURE.md`: protected patient context must not
     # flow into external/general memory by default, so this row is narrow.
     (Destination.EXTERNAL_MEMORY, EgressPurpose.MEMORY_WRITE): frozenset(

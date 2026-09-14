@@ -83,9 +83,11 @@ def authorise_vector_query(texts: Sequence[str]) -> None:
     _authorise(Destination.VECTOR_STORE, EgressPurpose.EVIDENCE_SEARCH, texts)
 
 
-def authorise_vector_embedding(texts: Sequence[str]) -> None:
-    """Text handed to an embedding model on the way into the vector store."""
-    _authorise(Destination.VECTOR_STORE, EgressPurpose.EMBEDDING, texts)
+# `authorise_vector_embedding` was here and is REMOVED — AR17-5b / ADV17-4,
+# deferred from Phase 1 and closed in P2-1. It had zero call sites because
+# embeddings resolve to a LOCAL sentence-transformers model. It is retired
+# TOGETHER WITH its `(VECTOR_STORE, EMBEDDING)` policy row; see the note there
+# for why removing either one alone would have been worse than removing neither.
 
 
 def authorise_memory_write(texts: Sequence[str]) -> None:

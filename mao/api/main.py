@@ -23,6 +23,7 @@ from mao.core.deadline import request_deadline
 from mao.core.redis_client import get_redis, safe_get, safe_set
 from mao.api.cache_key import CacheKeyInputs, build_chat_cache_key
 from mao.api.protected_input import (
+    handoff_refused,
     payload_too_large,
     protect_chat_request,
     redaction_notice,
@@ -37,6 +38,7 @@ from mao.api.executor import get_executor, restart_executor, shutdown_executor
 from mao.api.finalize import finalize_response
 from mao.api.invocation import run_graph
 from mao.core.deident.ambiguity import AmbiguousDocument
+from mao.trust.handoff.compiler import HandoffRefused
 from mao.api.routes import ALL_ROUTERS
 from mao.api import sse
 from mao.guardrails import apply_input_guardrails
@@ -434,6 +436,13 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
                     + exc.report.describe()
                 ),
             ) from exc
+        except HandoffRefused as exc:
+            # ADV20-1. The SECOND refusal this route must translate, and the
+            # same posture as the one above: the request was understood and
+            # declined, and the answer names the structured fields that would
+            # make it answerable. Built by the shared constructor so the two
+            # routes cannot drift.
+            raise handoff_refused(exc, request_id) from exc
 
         result = await finalize_response(result, request_id)
 
@@ -618,6 +627,12 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request) -> StreamingR
                     + exc.report.describe()
                 ),
             ) from exc
+        except HandoffRefused as exc:
+            # ADV20-1, and the SAME 422 as `/chat`, from the same constructor.
+            # The stream route is where a missing clause costs most: it answered
+            # a bare `Internal Server Error` for `AmbiguousDocument` until one
+            # was added, which is the drift this shared construction prevents.
+            raise handoff_refused(exc, request_id) from exc
 
         result = await finalize_response(result, request_id)
 
