@@ -26,8 +26,13 @@ openai-whisper>=20231117
 # Also required by the corpus ingestion scripts under mao/data/.
 chromadb>=0.5,<2.0
 
-# --- Corpus ingestion / dataset building (mao/data/*) ----------------------
+# --- Corpus ingestion / dataset building (mao/data/*, mao/corpus/*) --------
 # Batch tooling, never touched on the serving path.
 datasets>=2.20.0
 biopython>=1.83
 lxml>=5.0
+# JATS parsing for corpus provenance (mao/corpus/provenance.py). Hardened
+# against the XML entity-expansion attacks the stdlib parser is exposed to.
+defusedxml>=0.7
+# Parquet writer for the corpus artifact (scripts/build_corpus_v1.py).
+pyarrow>=14.0

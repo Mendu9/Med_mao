@@ -41,6 +41,7 @@ IMPORT_TO_DISTRIBUTION = {
     "chromadb": "chromadb",
     "cv2": "opencv-python-headless",
     "datasets": "datasets",
+    "defusedxml": "defusedxml",
     "dotenv": "python-dotenv",
     "fastapi": "fastapi",
     "groq": "groq",
@@ -64,6 +65,7 @@ IMPORT_TO_DISTRIBUTION = {
     "pronto": "pronto",
     "psutil": "psutil",
     "pydantic": "pydantic",
+    "pyarrow": "pyarrow",
     "pypdf": "pypdf",
     "pytest": "pytest",
     "qdrant_client": "qdrant-client",
@@ -92,6 +94,7 @@ NOT_RUNTIME = {
     "pytest", "playwright", "setuptools",      # dev/test tooling
     "whisper",                                 # heavyweight optional model
     "chromadb", "datasets", "Bio", "lxml",     # ingestion / non-default backend
+    "defusedxml",                              # corpus provenance parsing (build-time)
 }
 
 
